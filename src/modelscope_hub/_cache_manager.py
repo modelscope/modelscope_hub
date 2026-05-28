@@ -123,6 +123,11 @@ def clear_cache(
     config = get_default_config()
     root = Path(cache_dir) if cache_dir else config.cache_dir
 
+    # Guard against accidental nuke: passing only ``repo_id`` would otherwise
+    # silently fall through to the "clear everything" branch below.
+    if repo_id and not repo_type:
+        raise CacheError("repo_type is required when repo_id is specified")
+
     if not root.is_dir():
         logger.info("Cache directory does not exist: %s", root)
         return 0

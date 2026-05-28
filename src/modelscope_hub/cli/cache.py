@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from argparse import _SubParsersAction
 
 from ..constants import RepoType
@@ -87,6 +88,15 @@ class _CacheClear(CLICommand):
         p.set_defaults(_command=CacheCommand, _cache_leaf=_CacheClear)
 
     def execute(self) -> None:
+        # Reject ambiguous "--repo-id without --repo-type" early so we never
+        # accidentally fall through to the "clear everything" branch.
+        if self.args.repo_id and not self.args.repo_type:
+            print(
+                "Error: --repo-type is required when using --repo-id",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+
         scope = self.args.repo_id or self.args.repo_type or "the entire cache"
         if not self.args.yes:
             answer = input(f"Clear {scope}? [y/N] ").strip().lower()

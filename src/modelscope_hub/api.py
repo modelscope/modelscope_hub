@@ -121,7 +121,9 @@ class HubApi:
     @property
     def uploader(self) -> UploadManager:
         if self._uploader is None:
-            self._uploader = UploadManager(self.legacy, self._config)
+            # Inject the OpenAPI client so small files (≤ 5 MiB) flow through
+            # ``POST /files/upload`` instead of the legacy commit endpoint.
+            self._uploader = UploadManager(self.legacy, self._config, self.openapi)
         return self._uploader
 
     # ==================================================================

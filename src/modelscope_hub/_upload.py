@@ -28,6 +28,7 @@ from .utils.logger import get_logger
 if TYPE_CHECKING:
     from .config import HubConfig
     from ._legacy_api import LegacyClient
+    from ._openapi import OpenAPIClient
 
 logger = get_logger("upload")
 
@@ -74,9 +75,15 @@ class UploadManager:
     Dependencies are injected via constructor for testability.
     """
 
-    def __init__(self, legacy_client: "LegacyClient", config: "HubConfig") -> None:
+    def __init__(
+        self,
+        legacy_client: "LegacyClient",
+        config: "HubConfig",
+        openapi_client: "OpenAPIClient | None" = None,
+    ) -> None:
         self._client = legacy_client
         self._config = config
+        self._openapi = openapi_client
 
     # ------------------------------------------------------------------
     # Public API
@@ -115,10 +122,22 @@ class UploadManager:
         dict
             Commit info from the server.
         """
-        # Determine size and sha256
+        # Determine size first; sha256 is only needed on the LFS path.
         size = self._get_size(path_or_fileobj)
-        sha256 = self._get_sha256(path_or_fileobj)
 
+        # OpenAPI-first: route small files (≤ UPLOAD_LFS_THRESHOLD) to
+        # ``POST /files/upload`` when an OpenAPI client is available.
+        if size <= UPLOAD_LFS_THRESHOLD and self._openapi is not None:
+            return self._openapi.upload_file(
+                file=path_or_fileobj,
+                path_in_repo=path_in_repo,
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                commit_message=commit_message,
+            )
+
+        sha256 = self._get_sha256(path_or_fileobj)
         if size > UPLOAD_LFS_THRESHOLD:
             # LFS path: validate → upload blob → commit pointer
             return self._upload_lfs(
@@ -131,16 +150,15 @@ class UploadManager:
                 commit_message=commit_message,
                 revision=revision,
             )
-        else:
-            # Direct commit path: encode content as base64
-            return self._upload_direct(
-                repo_id=repo_id,
-                repo_type=repo_type,
-                path_or_fileobj=path_or_fileobj,
-                path_in_repo=path_in_repo,
-                commit_message=commit_message,
-                revision=revision,
-            )
+        # Legacy fallback for small files when no OpenAPI client is wired in.
+        return self._upload_direct(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            path_or_fileobj=path_or_fileobj,
+            path_in_repo=path_in_repo,
+            commit_message=commit_message,
+            revision=revision,
+        )
 
     def upload_folder(
         self,
@@ -308,10 +326,17 @@ class UploadManager:
 
         upload_url = validated.get(sha256)
         if upload_url:
-            # Step 2: Upload the blob
+            # Step 2: Upload the blob. For path-like inputs we own the file
+            # handle and must close it; bytes / file-like inputs are passed
+            # through unchanged (their lifetime is the caller's concern).
             logger.info("Uploading LFS blob %s... (%d bytes)", sha256[:8], size)
-            data = self._open_for_upload(path_or_fileobj)
-            self._client.upload_blob(upload_url=upload_url, data=data, size=size)
+            if isinstance(path_or_fileobj, (str, Path)):
+                with open(Path(path_or_fileobj), "rb") as fh:
+                    self._client.upload_blob(upload_url=upload_url, data=fh, size=size)
+            else:
+                self._client.upload_blob(
+                    upload_url=upload_url, data=path_or_fileobj, size=size
+                )
         else:
             logger.info("Blob %s... already exists, skipping upload", sha256[:8])
 
@@ -409,14 +434,6 @@ class UploadManager:
         """Upload a single blob file to its presigned URL."""
         with open(local_path, "rb") as fh:
             self._client.upload_blob(upload_url=upload_url, data=fh, size=size)
-
-    def _open_for_upload(self, path_or_fileobj: PathOrFileObj) -> BinaryIO | bytes:
-        """Return a readable object suitable for upload."""
-        if isinstance(path_or_fileobj, bytes):
-            return path_or_fileobj
-        if isinstance(path_or_fileobj, (str, Path)):
-            return open(Path(path_or_fileobj), "rb")
-        return path_or_fileobj
 
     @staticmethod
     def _lfs_pointer(sha256: str, size: int) -> str:

@@ -5,7 +5,7 @@ Supports single-file and whole-repo (snapshot) downloads with:
 - SHA256 integrity verification
 - tqdm progress display
 - Parallel downloads via ThreadPoolExecutor
-- Local cache directory management (blob store + symlink pointer)
+- Local snapshot cache directory management
 """
 
 from __future__ import annotations
@@ -60,10 +60,9 @@ class DownloadManager:
     ) -> Path:
         """Download a single file from a repository.
 
-        Uses the blob-store layout::
+        Uses the snapshot cache layout::
 
-            {cache_dir}/{type}s/{repo_id}/blobs/{sha256}
-            {cache_dir}/{type}s/{repo_id}/snapshots/{revision}/{file_path}  → symlink to blob
+            {cache_dir}/{type}s/{owner}--{name}/snapshots/{revision}/{file_path}
 
         Parameters
         ----------
@@ -94,9 +93,8 @@ class DownloadManager:
             logger.debug("Cache hit: %s", target)
             return target
 
-        # Ensure directories exist
+        # Ensure the snapshot directory exists before streaming into it.
         ensure_dir(target.parent)
-        blob_dir = ensure_dir(root / "blobs")
 
         # Perform download with resume support
         tmp_path = self._download_with_resume(repo_id, repo_type, file_path, revision, target)
