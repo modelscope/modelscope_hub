@@ -1,0 +1,414 @@
+"""Internal client for ``/api/v1/`` endpoints not covered by the OpenAPI spec.
+
+This module is **private** — external callers should interact through the
+public :class:`~modelscope_hub.api.HubApi` facade.
+"""
+
+from __future__ import annotations
+
+import uuid
+from typing import Any, BinaryIO, IO, Union
+
+import requests
+from requests.adapters import HTTPAdapter, Retry
+
+from .constants import API_MAX_RETRIES, API_TIMEOUT, LEGACY_API_PREFIX, RepoType
+from .errors import NetworkError, raise_for_status
+from .utils.logger import get_logger
+
+logger = get_logger("legacy_api")
+
+# ---------------------------------------------------------------------------
+# Repo-type routing table: maps RepoType → URL path segment (plural)
+# ---------------------------------------------------------------------------
+_REPO_TYPE_SEGMENT: dict[str, str] = {
+    RepoType.MODEL: "models",
+    RepoType.DATASET: "datasets",
+    RepoType.STUDIO: "studios",
+    RepoType.SKILL: "skills",
+    RepoType.MCP: "mcps",
+}
+
+# For /api/v1/repos/ style endpoints, all use "{type}s" pattern
+_REPOS_SEGMENT: dict[str, str] = {
+    RepoType.MODEL: "models",
+    RepoType.DATASET: "datasets",
+    RepoType.STUDIO: "studios",
+    RepoType.SKILL: "skills",
+    RepoType.MCP: "mcps",
+}
+
+
+def _resolve_segment(repo_type: str) -> str:
+    """Return the URL path segment for the given repo_type."""
+    return _REPO_TYPE_SEGMENT.get(repo_type, f"{repo_type}s")
+
+
+class LegacyClient:
+    """Internal client for /api/v1/ endpoints not covered by OpenAPI.
+
+    All network IO goes through :meth:`_request`, which handles auth headers,
+    retries, and structured error raising.
+    """
+
+    def __init__(
+        self,
+        token: str | None,
+        endpoint: str,
+        timeout: int = API_TIMEOUT,
+        max_retries: int = API_MAX_RETRIES,
+    ) -> None:
+        self._token = token
+        self._endpoint = endpoint.rstrip("/")
+        self._timeout = timeout
+
+        self._session = requests.Session()
+        retry = Retry(
+            total=max_retries,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "POST", "PUT", "DELETE"],
+        )
+        adapter = HTTPAdapter(max_retries=retry)
+        self._session.mount("https://", adapter)
+        self._session.mount("http://", adapter)
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+    @property
+    def endpoint(self) -> str:
+        return self._endpoint
+
+    @property
+    def token(self) -> str | None:
+        return self._token
+
+    @token.setter
+    def token(self, value: str | None) -> None:
+        self._token = value
+
+    # ------------------------------------------------------------------
+    # Transport
+    # ------------------------------------------------------------------
+    def _build_url(self, path: str) -> str:
+        """Construct full URL from a path relative to the legacy API prefix."""
+        return f"{self._endpoint}{LEGACY_API_PREFIX}/{path.lstrip('/')}"
+
+    def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "X-Request-ID": uuid.uuid4().hex,
+        }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        if extra:
+            headers.update(extra)
+        return headers
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: Any | None = None,
+        data: Any | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
+        stream: bool = False,
+    ) -> requests.Response:
+        """Unified request dispatcher with auth, retry, and error handling."""
+        url = self._build_url(path)
+        merged_headers = self._headers(headers)
+        # Remove Content-Type for non-json payloads
+        if data is not None and json_body is None:
+            merged_headers.pop("Content-Type", None)
+
+        try:
+            resp = self._session.request(
+                method=method,
+                url=url,
+                params=params,
+                json=json_body,
+                data=data,
+                headers=merged_headers,
+                timeout=timeout or self._timeout,
+                stream=stream,
+            )
+        except requests.ConnectionError as exc:
+            raise NetworkError(f"Connection failed: {exc}") from exc
+        except requests.Timeout as exc:
+            raise NetworkError(f"Request timed out: {exc}") from exc
+
+        raise_for_status(resp)
+        return resp
+
+    def _json_data(self, resp: requests.Response) -> Any:
+        """Extract the 'Data' field from a standard legacy API JSON response."""
+        body = resp.json()
+        return body.get("Data", body)
+
+    # ------------------------------------------------------------------
+    # Auth
+    # ------------------------------------------------------------------
+    def login(self, access_token: str) -> dict:
+        """Authenticate via access token and return user info + git token.
+
+        POST /api/v1/login
+        """
+        resp = self._request("POST", "login", json_body={"AccessToken": access_token})
+        return self._json_data(resp)
+
+    # ------------------------------------------------------------------
+    # Repo CRUD (model / dataset)
+    # ------------------------------------------------------------------
+    def create_repo(
+        self,
+        repo_id: str,
+        repo_type: str,
+        visibility: int = 1,
+        license: str = "Apache-2.0",
+        **kwargs: Any,
+    ) -> dict:
+        """Create a new repository.
+
+        POST /api/v1/models  (for model)
+        POST /api/v1/datasets (for dataset)
+        """
+        segment = _resolve_segment(repo_type)
+        parts = repo_id.split("/", 1)
+        owner = parts[0]
+        name = parts[1] if len(parts) > 1 else parts[0]
+
+        body: dict[str, Any] = {
+            "Path": owner,
+            "Name": name,
+            "Visibility": visibility,
+            "License": license,
+        }
+        # Merge extra kwargs (ChineseName, Description, etc.)
+        body.update(kwargs)
+
+        resp = self._request("POST", segment, json_body=body)
+        return self._json_data(resp)
+
+    def delete_repo(self, repo_id: str, repo_type: str) -> None:
+        """Delete a repository.
+
+        DELETE /api/v1/models/{owner}/{name}
+        DELETE /api/v1/datasets/{dataset_id}
+        """
+        segment = _resolve_segment(repo_type)
+        self._request("DELETE", f"{segment}/{repo_id}")
+
+    # ------------------------------------------------------------------
+    # File Tree
+    # ------------------------------------------------------------------
+    def list_repo_files(
+        self,
+        repo_id: str,
+        repo_type: str,
+        revision: str = "master",
+        recursive: bool = True,
+        root: str | None = None,
+    ) -> list[dict]:
+        """List files in a repository.
+
+        GET /api/v1/{type}s/{repo_id}/repo/files?Revision=&Recursive=&Root=
+        """
+        segment = _resolve_segment(repo_type)
+        params: dict[str, Any] = {
+            "Revision": revision,
+            "Recursive": str(recursive),
+        }
+        if root:
+            params["Root"] = root
+
+        resp = self._request("GET", f"{segment}/{repo_id}/repo/files", params=params)
+        data = self._json_data(resp)
+        if isinstance(data, list):
+            return data
+        # Sometimes wrapped: {"Data": {"Files": [...]}}
+        if isinstance(data, dict):
+            return data.get("Files", data.get("files", []))
+        return []
+
+    # ------------------------------------------------------------------
+    # Revisions
+    # ------------------------------------------------------------------
+    def list_revisions(self, repo_id: str, repo_type: str) -> list[dict]:
+        """List branches and tags of a repository.
+
+        GET /api/v1/{type}s/{repo_id}/revisions
+        """
+        segment = _resolve_segment(repo_type)
+        resp = self._request("GET", f"{segment}/{repo_id}/revisions")
+        data = self._json_data(resp)
+        if isinstance(data, dict):
+            revision_map = data.get("RevisionMap", {})
+            tags = revision_map.get("Tags", [])
+            branches = revision_map.get("Branches", [])
+            return tags + branches
+        return data if isinstance(data, list) else []
+
+    def create_tag(
+        self,
+        repo_id: str,
+        repo_type: str,
+        tag: str,
+        revision: str,
+    ) -> dict:
+        """Create a tag on a repository.
+
+        POST /api/v1/{type}s/{repo_id}/repo/tag
+        """
+        segment = _resolve_segment(repo_type)
+        body = {"Tag": tag, "Revision": revision}
+        resp = self._request("POST", f"{segment}/{repo_id}/repo/tag", json_body=body)
+        return self._json_data(resp)
+
+    # ------------------------------------------------------------------
+    # Git Commits
+    # ------------------------------------------------------------------
+    def create_commit(
+        self,
+        repo_id: str,
+        repo_type: str,
+        operations: list[dict],
+        commit_message: str,
+        revision: str = "master",
+    ) -> dict:
+        """Create a Git commit with file operations.
+
+        POST /api/v1/repos/{type}s/{repo_id}/commit/{revision}
+
+        Each operation should be a dict with keys:
+        - action: "create" | "update" | "delete"
+        - file_path: path in repo
+        - content: base64 content (for create/update of small files)
+        """
+        segment = _resolve_segment(repo_type)
+        payload = {
+            "commit_message": commit_message,
+            "actions": operations,
+        }
+        resp = self._request(
+            "POST",
+            f"repos/{segment}/{repo_id}/commit/{revision}",
+            json_body=payload,
+        )
+        return self._json_data(resp)
+
+    # ------------------------------------------------------------------
+    # Blob Upload (LFS)
+    # ------------------------------------------------------------------
+    def validate_blobs(
+        self,
+        repo_id: str,
+        repo_type: str,
+        objects: list[dict[str, Any]],
+    ) -> dict[str, str | None]:
+        """Check which blobs need uploading via the LFS batch API.
+
+        POST /api/v1/repos/{type}s/{repo_id}/info/lfs/objects/batch
+
+        Returns mapping: sha256 → upload_url (if needs upload) or None (exists).
+        """
+        segment = _resolve_segment(repo_type)
+        payload = {"operation": "upload", "objects": objects}
+        resp = self._request(
+            "POST",
+            f"repos/{segment}/{repo_id}/info/lfs/objects/batch",
+            json_body=payload,
+        )
+        data = self._json_data(resp)
+
+        result: dict[str, str | None] = {}
+        resp_objects = data.get("objects", []) if isinstance(data, dict) else []
+        for obj in resp_objects:
+            oid = obj.get("oid", "")
+            actions = obj.get("actions", {})
+            upload_action = actions.get("upload", {})
+            href = upload_action.get("href")
+            result[oid] = href  # None means already exists
+        return result
+
+    def upload_blob(
+        self,
+        upload_url: str,
+        data: Union[str, bytes, BinaryIO, IO[bytes]],
+        size: int,
+        *,
+        headers: dict[str, str] | None = None,
+        timeout: int | None = None,
+    ) -> requests.Response:
+        """Upload a blob to the presigned URL returned by :meth:`validate_blobs`.
+
+        PUT {upload_url}
+        """
+        upload_headers: dict[str, str] = {
+            "Content-Length": str(size),
+            "X-Request-ID": uuid.uuid4().hex,
+        }
+        if self._token:
+            upload_headers["Authorization"] = f"Bearer {self._token}"
+        if headers:
+            upload_headers.update(headers)
+
+        try:
+            resp = self._session.put(
+                upload_url,
+                data=data,
+                headers=upload_headers,
+                timeout=timeout or max(self._timeout, 300),
+            )
+        except requests.ConnectionError as exc:
+            raise NetworkError(f"Blob upload connection failed: {exc}") from exc
+        except requests.Timeout as exc:
+            raise NetworkError(f"Blob upload timed out: {exc}") from exc
+
+        raise_for_status(resp)
+        return resp
+
+    # ------------------------------------------------------------------
+    # Raw Download URL
+    # ------------------------------------------------------------------
+    def get_download_url(
+        self,
+        repo_id: str,
+        repo_type: str,
+        file_path: str,
+        revision: str = "master",
+    ) -> str:
+        """Construct the file download URL (no request is made).
+
+        URL pattern: {endpoint}/api/v1/{type}s/{repo_id}/repo?Revision={rev}&FilePath={path}
+        """
+        segment = _resolve_segment(repo_type)
+        return (
+            f"{self._endpoint}{LEGACY_API_PREFIX}/{segment}/{repo_id}/repo"
+            f"?Revision={revision}&FilePath={file_path}"
+        )
+
+    def download_stream(
+        self,
+        repo_id: str,
+        repo_type: str,
+        file_path: str,
+        revision: str = "master",
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        """Start a streaming download of a file.
+
+        Returns a Response with stream=True for chunked reading.
+        """
+        segment = _resolve_segment(repo_type)
+        params = {"Revision": revision, "FilePath": file_path}
+        return self._request(
+            "GET",
+            f"{segment}/{repo_id}/repo",
+            params=params,
+            headers=headers,
+            stream=True,
+        )

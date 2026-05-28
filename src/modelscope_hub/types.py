@@ -1,0 +1,201 @@
+"""Typed data containers returned by the SDK.
+
+Every dataclass is constructible from a raw API payload via :func:`from_dict`,
+which silently ignores fields the server may add in the future. This keeps the
+client forward-compatible while still benefiting from static typing.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field, fields
+from datetime import datetime, timezone
+from typing import Any, Generic, Mapping, Type, TypeVar
+
+from .constants import RepoType, Visibility
+
+T = TypeVar("T")
+_TDataclass = TypeVar("_TDataclass", bound="_FromDictMixin")
+
+
+def _coerce_datetime(value: Any) -> datetime | None:
+    """Best-effort conversion of an API timestamp into a :class:`datetime`."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, (int, float)):
+        # ModelScope timestamps may arrive in seconds or milliseconds.
+        seconds = value / 1000 if value > 1e12 else value
+        return datetime.fromtimestamp(seconds, tz=timezone.utc)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
+class _FromDictMixin:
+    """Adds tolerant ``from_dict`` construction to a dataclass."""
+
+    @classmethod
+    def from_dict(cls: Type[_TDataclass], data: Mapping[str, Any] | None) -> _TDataclass:
+        if not data:
+            return cls()  # type: ignore[call-arg]
+        known = {f.name for f in fields(cls)}  # type: ignore[arg-type]
+        kwargs = {key: value for key, value in data.items() if key in known}
+        return cls(**kwargs)  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# User
+# ---------------------------------------------------------------------------
+@dataclass(slots=True)
+class UserInfo(_FromDictMixin):
+    id: str | int | None = None
+    username: str | None = None
+    email: str | None = None
+    avatar_url: str | None = None
+    description: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Repository
+# ---------------------------------------------------------------------------
+@dataclass(slots=True)
+class RepoInfo(_FromDictMixin):
+    id: str | int | None = None
+    owner: str | None = None
+    name: str | None = None
+    repo_type: RepoType | str | None = None
+    visibility: Visibility | int | None = None
+    description: str | None = None
+    downloads: int = 0
+    likes: int = 0
+    created_at: datetime | str | int | None = None
+    updated_at: datetime | str | int | None = None
+    license: str | None = None
+    tags: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.repo_type, str):
+            try:
+                self.repo_type = RepoType(self.repo_type)
+            except ValueError:
+                pass
+        if isinstance(self.visibility, int) and not isinstance(self.visibility, Visibility):
+            try:
+                self.visibility = Visibility(self.visibility)
+            except ValueError:
+                pass
+        self.created_at = _coerce_datetime(self.created_at) or self.created_at
+        self.updated_at = _coerce_datetime(self.updated_at) or self.updated_at
+
+    @property
+    def repo_id(self) -> str | None:
+        """Canonical ``owner/name`` identifier, when both parts are known."""
+        if self.owner and self.name:
+            return f"{self.owner}/{self.name}"
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Files & commits
+# ---------------------------------------------------------------------------
+@dataclass(slots=True)
+class FileInfo(_FromDictMixin):
+    path: str = ""
+    size: int = 0
+    blob_id: str | None = None
+    type: str = "blob"  # "blob" | "tree"
+    last_modified: datetime | str | int | None = None
+    lfs: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        self.last_modified = _coerce_datetime(self.last_modified) or self.last_modified
+
+    @property
+    def is_dir(self) -> bool:
+        return self.type == "tree"
+
+    @property
+    def is_lfs(self) -> bool:
+        return self.lfs is not None
+
+
+@dataclass(slots=True)
+class CommitInfo(_FromDictMixin):
+    sha: str = ""
+    message: str = ""
+    author: str | None = None
+    date: datetime | str | int | None = None
+
+    def __post_init__(self) -> None:
+        self.date = _coerce_datetime(self.date) or self.date
+
+
+# ---------------------------------------------------------------------------
+# Pagination
+# ---------------------------------------------------------------------------
+@dataclass(slots=True)
+class PagedResult(Generic[T]):
+    items: list[T] = field(default_factory=list)
+    total_count: int = 0
+    page_number: int = 1
+    page_size: int = 0
+
+    @property
+    def has_next(self) -> bool:
+        if self.page_size <= 0:
+            return False
+        return self.page_number * self.page_size < self.total_count
+
+    def __iter__(self):  # pragma: no cover - convenience iteration
+        return iter(self.items)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+
+# ---------------------------------------------------------------------------
+# Cache
+# ---------------------------------------------------------------------------
+@dataclass(slots=True)
+class CachedRepoInfo(_FromDictMixin):
+    repo_id: str = ""
+    repo_type: RepoType | str | None = None
+    revision: str | None = None
+    size_on_disk: int = 0
+    nb_files: int = 0
+    last_accessed: datetime | str | int | None = None
+    local_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if isinstance(self.repo_type, str):
+            try:
+                self.repo_type = RepoType(self.repo_type)
+            except ValueError:
+                pass
+        self.last_accessed = _coerce_datetime(self.last_accessed) or self.last_accessed
+
+
+@dataclass(slots=True)
+class CacheInfo:
+    repos: list[CachedRepoInfo] = field(default_factory=list)
+    total_size: int = 0
+    cache_dir: str | None = None
+
+    @property
+    def total_repos(self) -> int:
+        return len(self.repos)
+
+
+__all__ = [
+    "CacheInfo",
+    "CachedRepoInfo",
+    "CommitInfo",
+    "FileInfo",
+    "PagedResult",
+    "RepoInfo",
+    "UserInfo",
+]

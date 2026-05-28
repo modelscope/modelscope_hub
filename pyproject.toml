@@ -1,0 +1,58 @@
+[project]
+name = "modelscope-hub"
+version = "0.1.0"
+description = "An OpenAPI-first Python SDK for interacting with the ModelScope Hub platform."
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+readme = "README.md"
+keywords = ["modelscope", "hub", "sdk", "openapi", "machine-learning"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "requests>=2.28",
+    "tqdm>=4.64.0",
+    "filelock>=3.9",
+    "urllib3>=1.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-mock",
+    "responses>=0.20",
+    "ruff",
+    "mypy",
+]
+
+[project.scripts]
+modelscope = "modelscope_hub.cli.main:run_cmd"
+ms = "modelscope_hub.cli.main:run_cmd"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = false
+warn_return_any = true
