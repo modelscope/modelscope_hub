@@ -1,6 +1,6 @@
 [project]
 name = "modelscope-hub"
-version = "0.1.0"
+dynamic = ["version"]
 description = "An OpenAPI-first Python SDK for interacting with the ModelScope Hub platform."
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
@@ -44,6 +44,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "modelscope_hub.version.__version__"}
 
 [tool.ruff]
 target-version = "py313"
