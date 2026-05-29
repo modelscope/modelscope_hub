@@ -16,12 +16,12 @@ import hashlib
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, IO, Union
+from typing import TYPE_CHECKING, BinaryIO, IO, Union
 
 from tqdm.auto import tqdm
 
-from .constants import DOWNLOAD_CHUNK_SIZE, UPLOAD_LFS_THRESHOLD, RepoType
-from .errors import FileIntegrityError, HubError
+from .constants import UPLOAD_LFS_THRESHOLD
+from .errors import HubError
 from .utils.file_utils import compute_hash, get_file_size
 from .utils.logger import get_logger
 

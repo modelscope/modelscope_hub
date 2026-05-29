@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
-from typing import Any, Generic, Mapping, NotRequired, Type, TypedDict, TypeVar
+from typing import Any, Generic, Mapping, Type, TypedDict, TypeVar
 
 from .constants import RepoType, Visibility
 

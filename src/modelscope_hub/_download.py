@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 
 from tqdm.auto import tqdm
 
-from .constants import DOWNLOAD_CHUNK_SIZE, RepoType
+from .constants import DOWNLOAD_CHUNK_SIZE
 from .errors import FileIntegrityError, NetworkError
 from .utils.file_utils import compute_hash, ensure_dir
 from .utils.logger import get_logger
