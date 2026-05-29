@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from argparse import _SubParsersAction
+from argparse import Action
 
 from ..constants import RepoType
 from ..types import RepoInfo
@@ -16,7 +16,7 @@ class RepoCommand(CLICommand):
     """Top-level dispatcher for the ``repo`` subcommands."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         parser = subparsers.add_parser(
             "repo",
             help="Manage repositories (model, dataset, studio, skill).",
@@ -67,7 +67,7 @@ def _print_repo_info(repo: RepoInfo) -> None:
 # ---------------------------------------------------------------------------
 class _RepoCreate(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("create", help="Create a new repository.")
         p.add_argument("repo_id", help="Canonical 'owner/name' identifier.")
         add_repo_type_arg(p)
@@ -112,7 +112,7 @@ class _RepoCreate(CLICommand):
 
 class _RepoInfo(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("info", help="Show metadata for a repository.")
         p.add_argument("repo_id")
         add_repo_type_arg(p)
@@ -126,7 +126,7 @@ class _RepoInfo(CLICommand):
 
 class _RepoDelete(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("delete", help="Delete a repository (model or dataset).")
         p.add_argument("repo_id")
         add_repo_type_arg(p, choices=[RepoType.MODEL.value, RepoType.DATASET.value])
@@ -148,7 +148,7 @@ class _RepoDelete(CLICommand):
 
 class _RepoList(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("list", help="List repositories of a given type.")
         add_repo_type_arg(
             p,

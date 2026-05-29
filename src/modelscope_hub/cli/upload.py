@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from argparse import _SubParsersAction
+from argparse import Action
 from pathlib import Path
 
 from ..constants import RepoType
@@ -17,7 +17,7 @@ class UploadCommand(CLICommand):
     """
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser(
             "upload",
             help="Upload a file or folder to a repository.",

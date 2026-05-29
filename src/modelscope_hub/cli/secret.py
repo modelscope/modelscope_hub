@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from argparse import _SubParsersAction
+from argparse import Action
 
 from ..constants import RepoType
 from .base import CLICommand, add_repo_type_arg, info, make_api, render_table, success
@@ -12,7 +12,7 @@ class SecretCommand(CLICommand):
     """Top-level dispatcher for the ``secret`` subcommands."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         parser = subparsers.add_parser("secret", help="Manage repository secrets (studio).")
         sub = parser.add_subparsers(dest="secret_action", metavar="ACTION")
         sub.required = True
@@ -42,7 +42,7 @@ def _add_studio_repo_type(parser) -> None:
 
 class _SecretList(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("list", help="List secrets of a studio space.")
         p.add_argument("repo_id")
         _add_studio_repo_type(p)
@@ -67,7 +67,7 @@ class _SecretList(CLICommand):
 
 class _SecretAdd(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("add", help="Add a new secret.")
         p.add_argument("repo_id")
         p.add_argument("key")
@@ -83,7 +83,7 @@ class _SecretAdd(CLICommand):
 
 class _SecretUpdate(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("update", help="Update an existing secret.")
         p.add_argument("repo_id")
         p.add_argument("key")
@@ -99,7 +99,7 @@ class _SecretUpdate(CLICommand):
 
 class _SecretDelete(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("delete", help="Delete a secret.")
         p.add_argument("repo_id")
         p.add_argument("key")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from argparse import _SubParsersAction
+from argparse import Action
 
 from .base import CLICommand, info, make_api, render_table, success
 
@@ -12,7 +12,7 @@ class McpCommand(CLICommand):
     """Top-level dispatcher for the ``mcp`` subcommands."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         parser = subparsers.add_parser("mcp", help="Manage MCP servers.")
         sub = parser.add_subparsers(dest="mcp_action", metavar="ACTION")
         sub.required = True
@@ -33,7 +33,7 @@ class McpCommand(CLICommand):
 
 class _McpList(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("list", help="List MCP servers.")
         p.add_argument("--search", default=None)
         p.add_argument("--page", dest="page_number", type=int, default=1)
@@ -65,7 +65,7 @@ class _McpList(CLICommand):
 
 class _McpInfo(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("info", help="Show details of an MCP server.")
         p.add_argument("server_id")
         p.set_defaults(_command=McpCommand, _mcp_leaf=_McpInfo)
@@ -78,7 +78,7 @@ class _McpInfo(CLICommand):
 
 class _McpDeploy(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("deploy", help="Deploy an MCP server.")
         p.add_argument("server_id")
         p.set_defaults(_command=McpCommand, _mcp_leaf=_McpDeploy)
@@ -91,7 +91,7 @@ class _McpDeploy(CLICommand):
 
 class _McpUndeploy(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("undeploy", help="Undeploy an MCP server.")
         p.add_argument("server_id")
         p.set_defaults(_command=McpCommand, _mcp_leaf=_McpUndeploy)

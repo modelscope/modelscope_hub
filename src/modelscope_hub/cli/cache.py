@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from argparse import _SubParsersAction
+from argparse import Action
 
 from ..constants import RepoType
 from .base import CLICommand, info, make_api, render_table, success
@@ -13,7 +13,7 @@ class CacheCommand(CLICommand):
     """Top-level dispatcher for the ``cache`` subcommands."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         parser = subparsers.add_parser("cache", help="Inspect or clear the local cache.")
         sub = parser.add_subparsers(dest="cache_action", metavar="ACTION")
         sub.required = True
@@ -42,7 +42,7 @@ def _human_size(num: int) -> str:
 
 class _CacheScan(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("scan", help="Show cached repositories and disk usage.")
         p.add_argument("--cache-dir", dest="cache_dir", default=None)
         p.set_defaults(_command=CacheCommand, _cache_leaf=_CacheScan)
@@ -74,7 +74,7 @@ class _CacheScan(CLICommand):
 
 class _CacheClear(CLICommand):
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("clear", help="Remove cached files.")
         p.add_argument("--cache-dir", dest="cache_dir", default=None)
         p.add_argument(

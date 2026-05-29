@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from argparse import _SubParsersAction
+from argparse import Action
 from pathlib import Path
 
 from ..constants import RepoType
@@ -13,7 +13,7 @@ class DownloadCommand(CLICommand):
     """Download files or whole repositories from ModelScope Hub."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser(
             "download",
             help="Download a file or full snapshot of a repository.",

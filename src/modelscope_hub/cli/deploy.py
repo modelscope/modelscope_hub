@@ -7,7 +7,7 @@ endpoints exposed by :class:`HubApi`.
 from __future__ import annotations
 
 import json
-from argparse import _SubParsersAction
+from argparse import Action
 
 from ..constants import RepoType
 from .base import (
@@ -24,7 +24,7 @@ class DeployCommand(CLICommand):
     """Deploy a Studio space or an MCP server."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("deploy", help="Deploy a studio space or MCP server.")
         p.add_argument("repo_id")
         add_repo_type_arg(
@@ -45,7 +45,7 @@ class StopCommand(CLICommand):
     """Stop a running Studio or undeploy an MCP server."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("stop", help="Stop a studio space or undeploy MCP server.")
         p.add_argument("repo_id")
         add_repo_type_arg(
@@ -66,7 +66,7 @@ class LogsCommand(CLICommand):
     """Stream paginated runtime / build logs of a Studio space."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser("logs", help="Fetch logs for a studio space.")
         p.add_argument("repo_id")
         add_repo_type_arg(
@@ -104,7 +104,7 @@ class SettingsCommand(CLICommand):
     """Update Studio / Skill settings via ``key=value`` tokens."""
 
     @staticmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         p = subparsers.add_parser(
             "settings",
             help="Update studio or skill settings (key=value pairs).",

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 from abc import ABC, abstractmethod
-from argparse import ArgumentParser, Namespace, _SubParsersAction
+from argparse import Action, ArgumentParser, Namespace
 from typing import Any, Iterable, Sequence
 
 from ..api import HubApi
@@ -32,7 +32,7 @@ class CLICommand(ABC):
 
     @staticmethod
     @abstractmethod
-    def register(subparsers: _SubParsersAction) -> None:
+    def register(subparsers: Action) -> None:
         """Attach this command's argparse parser to ``subparsers``."""
 
     @abstractmethod
