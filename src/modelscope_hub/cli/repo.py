@@ -75,10 +75,29 @@ class _RepoCreate(CLICommand):
         p.add_argument("--license", dest="license", default=None)
         p.add_argument("--chinese-name", dest="chinese_name", default=None)
         p.add_argument("--description", dest="description", default=None)
+        # Studio-specific options. They are accepted for any repo type for a
+        # uniform CLI surface and forwarded as extra kwargs — the API layer
+        # only emits them for Studios.
+        p.add_argument(
+            "--sdk-type",
+            dest="sdk_type",
+            choices=["gradio", "streamlit", "docker", "static"],
+            default=None,
+            help="Studio SDK type.",
+        )
+        p.add_argument("--sdk-version", dest="sdk_version", default=None, help="Studio SDK version.")
+        p.add_argument("--base-image", dest="base_image", default=None, help="Studio base image.")
+        p.add_argument("--cover-image", dest="cover_image", default=None, help="Studio cover image URL.")
+        p.add_argument("--hardware", dest="hardware", default=None, help="Studio hardware spec.")
         p.set_defaults(_command=RepoCommand, _repo_leaf=_RepoCreate)
 
     def execute(self) -> None:
         api = make_api(self.args)
+        extra: dict[str, object] = {}
+        for key in ("sdk_type", "sdk_version", "base_image", "cover_image", "hardware"):
+            value = getattr(self.args, key, None)
+            if value is not None:
+                extra[key] = value
         repo = api.create_repo(
             self.args.repo_id,
             self.args.repo_type,
@@ -86,6 +105,7 @@ class _RepoCreate(CLICommand):
             license=self.args.license,
             chinese_name=self.args.chinese_name,
             description=self.args.description,
+            **extra,
         )
         success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
 

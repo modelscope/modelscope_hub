@@ -53,6 +53,27 @@ _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
 )
 _LEGACY_DELETE_TYPES: frozenset[RepoType] = frozenset({RepoType.MODEL, RepoType.DATASET})
 
+# Mapping of common license display names to their SPDX identifiers. The Hub
+# backend rejects display names like ``"Apache License 2.0"`` — we translate
+# them transparently while passing unknown values (already SPDX) through.
+_LICENSE_DISPLAY_TO_SPDX: dict[str, str] = {
+    "Apache License 2.0": "apache-2.0",
+    "MIT License": "mit",
+    "GPL-2.0": "gpl-2.0",
+    "GPL-3.0": "gpl-3.0",
+    "LGPL-2.1": "lgpl-2.1",
+    "LGPL-3.0": "lgpl-3.0",
+    "AFL-3.0": "afl-3.0",
+    "ECL-2.0": "ecl-2.0",
+    "BSD-2-Clause": "bsd-2-clause",
+    "BSD-3-Clause": "bsd-3-clause",
+    "CC-BY-4.0": "cc-by-4.0",
+    "CC-BY-SA-4.0": "cc-by-sa-4.0",
+    "CC-BY-NC-4.0": "cc-by-nc-4.0",
+    "CC0-1.0": "cc0-1.0",
+    "Unlicense": "unlicense",
+}
+
 
 class HubApi:
     """Unified client for ModelScope Hub operations.
@@ -414,6 +435,8 @@ class HubApi:
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
         vis = self._normalize_visibility(visibility)
+        if license is not None:
+            license = _LICENSE_DISPLAY_TO_SPDX.get(license, license)
 
         if rt in _OPENAPI_CREATE_TYPES:
             payload: dict[str, Any] = {

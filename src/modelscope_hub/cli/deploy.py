@@ -76,8 +76,8 @@ class LogsCommand(CLICommand):
             required=False,
         )
         p.add_argument("--log-type", dest="log_type", choices=["runtime", "build"], default="runtime")
-        p.add_argument("--page", dest="page_num", type=int, default=1)
-        p.add_argument("--page-size", dest="page_size", type=int, default=50)
+        p.add_argument("--page", "--page-num", dest="page_num", type=int, default=1)
+        p.add_argument("--page-size", dest="page_size", type=int, default=100)
         p.add_argument("--keyword", default=None)
         p.set_defaults(_command=LogsCommand)
 
