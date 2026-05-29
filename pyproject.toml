@@ -52,6 +52,13 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "remote: tests requiring remote API access (need .env credentials)",
+]
+addopts = "-v --tb=short"
+
 [tool.mypy]
 python_version = "3.13"
 strict = false

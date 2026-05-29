@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
-from typing import Any, Generic, Mapping, Type, TypeVar
+from typing import Any, Generic, Mapping, NotRequired, Type, TypedDict, TypeVar
 
 from .constants import RepoType, Visibility
 
@@ -190,12 +190,89 @@ class CacheInfo:
         return len(self.repos)
 
 
+# ---------------------------------------------------------------------------
+# TypedDict payloads (for OpenAPI method signatures)
+# ---------------------------------------------------------------------------
+class CreateSkillPayload(TypedDict, total=False):
+    """Payload for creating a new skill via POST /skills."""
+
+    skill_name: str
+    owner: str
+    display_name: str
+    source_url: str
+    private: bool
+    description: str
+    license: str
+    category: str
+    tags: list[str]
+    logo_url: str
+    skill_file: str
+
+
+class UpdateSkillSettingsPayload(TypedDict, total=False):
+    """Payload for updating skill settings via PATCH /skills/{owner}/{skill_name}/settings."""
+
+    display_name: str
+    source_url: str
+    private: bool
+    description: str
+    license: str
+    category: str
+    tags: list[str]
+    logo_url: str
+    skill_file: str
+
+
+class CreateStudioPayload(TypedDict, total=False):
+    """Payload for creating a new studio via POST /studios."""
+
+    repo_name: str
+    owner: str
+    display_name: str
+    license: str
+    private: bool
+    description: str
+    cover_image: str
+    sdk_type: str
+    sdk_version: str
+    base_image: str
+    hardware: str
+
+
+class UpdateStudioSettingsPayload(TypedDict, total=False):
+    """Payload for updating studio settings via PATCH /studios/{owner}/{repo_name}/settings."""
+
+    display_name: str
+    license: str
+    private: bool
+    description: str
+    cover_image: str
+    sdk_type: str
+    sdk_version: str
+    base_image: str
+    hardware: str
+
+
+class DeployMcpServerPayload(TypedDict, total=False):
+    """Payload for deploying an MCP server via POST /mcp/servers/{id}/deploy."""
+
+    transport_type: str
+    expiration_minutes: int
+    auth_check: bool
+    env_info: dict[str, str]
+
+
 __all__ = [
     "CacheInfo",
     "CachedRepoInfo",
     "CommitInfo",
+    "CreateSkillPayload",
+    "CreateStudioPayload",
+    "DeployMcpServerPayload",
     "FileInfo",
     "PagedResult",
     "RepoInfo",
+    "UpdateSkillSettingsPayload",
+    "UpdateStudioSettingsPayload",
     "UserInfo",
 ]

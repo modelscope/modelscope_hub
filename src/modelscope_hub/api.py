@@ -42,35 +42,57 @@ __all__ = ["HubApi"]
 
 logger = get_logger("api")
 
-# Type alias for accepted repo_type inputs
 RepoTypeLike = "str | RepoType"
 
 
-# ---------------------------------------------------------------------------
 # Routing tables — declarative dispatch keeps :class:`HubApi` free of long
 # if/elif chains and makes adding new repo types a one-line change.
-# ---------------------------------------------------------------------------
-# Repo types that have first-class OpenAPI CRUD coverage today.
 _OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset({RepoType.STUDIO, RepoType.SKILL})
 _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
     {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
 )
-# Repo types whose deletion is only available on the legacy surface.
 _LEGACY_DELETE_TYPES: frozenset[RepoType] = frozenset({RepoType.MODEL, RepoType.DATASET})
 
 
 class HubApi:
-    """ModelScope Hub SDK — unified API entry point.
+    """Unified client for ModelScope Hub operations.
+
+    Provides a high-level interface for repository management, file
+    operations, deployment, secret management and local caching. All
+    repo-type-specific operations use a unified ``repo_type`` parameter
+    following the OpenAPI-First design — there are no type-specific
+    methods like ``create_model`` or ``get_dataset``.
+
+    Internally the class composes :class:`OpenAPIClient`,
+    :class:`LegacyClient`, :class:`DownloadManager`, :class:`UploadManager`
+    and the cache helpers. HTTP clients are instantiated lazily, so
+    ``HubApi()`` never fails just because no token is present.
 
     Parameters
     ----------
-    config:
-        Optional :class:`HubConfig`. When omitted, the process-wide default
-        from :func:`get_default_config` is used.
-    endpoint:
-        Override the API endpoint (takes precedence over ``config.endpoint``).
-    token:
-        Override the API token (takes precedence over ``config.token``).
+    config : HubConfig or None, optional
+        Pre-built configuration. When omitted, the process-wide default
+        from :func:`get_default_config` is used (which reads the
+        ``MODELSCOPE_API_TOKEN`` env var and the local config file).
+    endpoint : str or None, optional
+        Override the API endpoint. Takes precedence over ``config.endpoint``.
+        Defaults to ``https://modelscope.cn``.
+    token : str or None, optional
+        Override the API token. Takes precedence over ``config.token``.
+
+    Examples
+    --------
+    >>> from modelscope_hub import HubApi
+    >>> api = HubApi(token="ms-xxxxxxxx")
+    >>> user = api.whoami()
+    >>> user.username
+    'alice'
+
+    Create and manage repositories:
+
+    >>> api.create_repo("alice/my-model", repo_type="model", visibility="private")
+    >>> api.upload_file("alice/my-model", "model", "./weights.bin", "weights.bin")
+    >>> path = api.download_file("alice/my-model", "model", "weights.bin")
     """
 
     def __init__(
@@ -86,7 +108,6 @@ class HubApi:
         if token is not None:
             self._config.token = token
 
-        # Lazily-instantiated clients — see the cached properties below.
         self._openapi: OpenAPIClient | None = None
         self._legacy: LegacyClient | None = None
         self._downloader: DownloadManager | None = None
@@ -114,15 +135,19 @@ class HubApi:
 
     @property
     def downloader(self) -> DownloadManager:
+        """Lazily-constructed :class:`DownloadManager`."""
         if self._downloader is None:
             self._downloader = DownloadManager(self.legacy, self._config)
         return self._downloader
 
     @property
     def uploader(self) -> UploadManager:
+        """Lazily-constructed :class:`UploadManager`.
+
+        The OpenAPI client is injected so small files (≤ 5 MiB) flow through
+        ``POST /files/upload`` instead of the legacy commit endpoint.
+        """
         if self._uploader is None:
-            # Inject the OpenAPI client so small files (≤ 5 MiB) flow through
-            # ``POST /files/upload`` instead of the legacy commit endpoint.
             self._uploader = UploadManager(self.legacy, self._config, self.openapi)
         return self._uploader
 
@@ -228,18 +253,42 @@ class HubApi:
     # Authentication
     # ==================================================================
     def login(self, token: str) -> UserInfo:
-        """Persist ``token`` and return the authenticated user profile.
+        """Persist ``token`` locally and return the authenticated user profile.
 
-        We persist the token locally (so future sessions pick it up) and then
-        call ``GET /users/me`` through the OpenAPI surface to confirm the
-        token works.
+        The token is saved to the local config file so subsequent sessions
+        pick it up automatically. ``GET /users/me`` is then called to verify
+        the credential.
+
+        Parameters
+        ----------
+        token : str
+            ModelScope API token. Must be non-empty after stripping.
+
+        Returns
+        -------
+        UserInfo
+            Profile of the authenticated user.
+
+        Raises
+        ------
+        ValueError
+            When ``token`` is empty or whitespace-only.
+        AuthenticationError
+            When the server rejects the token. The bad token is cleared
+            from local storage before re-raising.
+
+        Examples
+        --------
+        >>> api = HubApi()
+        >>> user = api.login("ms-xxxxxxxx")
+        >>> user.username
+        'alice'
         """
         if not token or not token.strip():
             raise ValueError("token must be a non-empty string")
 
         token = token.strip()
         self._config.save_token(token)
-        # Reset cached clients so they observe the new credential.
         self._openapi = None
         if self._legacy is not None:
             self._legacy.token = token
@@ -247,7 +296,6 @@ class HubApi:
         try:
             return self.whoami()
         except AuthenticationError as exc:
-            # Clean up the bad token to avoid trapping the user in a loop.
             self._config.clear_token()
             raise AuthenticationError(
                 "Login failed: the provided token was rejected by the server.",
@@ -255,14 +303,41 @@ class HubApi:
             ) from exc
 
     def logout(self) -> None:
-        """Clear the locally persisted token."""
+        """Clear the locally persisted token.
+
+        Cached HTTP clients are reset so subsequent calls behave as if
+        no credential was ever provided.
+
+        Examples
+        --------
+        >>> api.logout()
+        """
         self._config.clear_token()
         self._openapi = None
         if self._legacy is not None:
             self._legacy.token = None
 
     def whoami(self) -> UserInfo:
-        """Return the profile for the currently authenticated user."""
+        """Return the profile for the currently authenticated user.
+
+        Returns
+        -------
+        UserInfo
+            Authenticated user profile (username, email, avatar, ...).
+
+        Raises
+        ------
+        AuthenticationError
+            When no token is configured or the token is invalid.
+
+        Examples
+        --------
+        >>> from modelscope_hub import HubApi
+        >>> api = HubApi(token="ms-xxxxxxxx")
+        >>> user = api.whoami()
+        >>> print(user.username, user.email)
+        alice alice@example.com
+        """
         payload = self.openapi.get_current_user()
         return UserInfo.from_dict(payload if isinstance(payload, dict) else {})
 
@@ -282,8 +357,59 @@ class HubApi:
     ) -> RepoInfo:
         """Create a new repository.
 
+        Routing is decided by ``repo_type``:
+
         * ``studio`` / ``skill`` → OpenAPI ``POST /studios`` / ``POST /skills``
         * ``model`` / ``dataset`` → legacy ``POST /api/v1/{type}s``
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            One of ``"model"``, ``"dataset"``, ``"studio"``, ``"skill"``.
+        visibility : int, str or Visibility, optional
+            Visibility level. Accepts the integer wire encoding, a label
+            (``"public"`` / ``"private"``) or a :class:`Visibility` value.
+            Defaults to public.
+        license : str, optional
+            SPDX-style license identifier (e.g. ``"apache-2.0"``).
+        chinese_name : str, optional
+            Chinese display name shown on the Hub UI.
+        description : str, optional
+            Short description of the repository.
+        **extra : Any
+            Additional fields forwarded verbatim to the underlying client.
+
+        Returns
+        -------
+        RepoInfo
+            Metadata of the newly created repository.
+
+        Raises
+        ------
+        ValueError
+            When ``repo_id`` does not have the ``owner/name`` shape.
+        AuthenticationError
+            When the token is missing or invalid.
+
+        Examples
+        --------
+        Create a private model repository:
+
+        >>> info = api.create_repo(
+        ...     "alice/llama-7b-finetuned",
+        ...     repo_type="model",
+        ...     visibility="private",
+        ...     license="apache-2.0",
+        ...     description="A LoRA fine-tune of LLaMA-7B",
+        ... )
+        >>> info.repo_id
+        'alice/llama-7b-finetuned'
+
+        Create a public Studio space:
+
+        >>> api.create_repo("alice/chat-demo", repo_type="studio", visibility="public")
         """
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
@@ -312,8 +438,6 @@ class HubApi:
                 data, rt, owner_hint=owner, name_hint=name
             )
 
-        # Fallback to the legacy surface for model/dataset (and anything else
-        # that exposes the same shape).
         legacy_kwargs: dict[str, Any] = {}
         if vis is not None:
             legacy_kwargs["Visibility"] = vis
@@ -343,7 +467,37 @@ class HubApi:
         *,
         revision: str | None = None,  # noqa: ARG002 - reserved for future use
     ) -> RepoInfo:
-        """Fetch a repository's metadata via the OpenAPI surface."""
+        """Fetch a repository's metadata via the OpenAPI surface.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            One of ``"model"``, ``"dataset"``, ``"studio"``, ``"skill"``, ``"mcp"``.
+        revision : str, optional
+            Reserved for future use; currently ignored.
+
+        Returns
+        -------
+        RepoInfo
+            Repository metadata (id, owner, name, visibility, stats, ...).
+
+        Raises
+        ------
+        NotFoundError
+            When the repository does not exist or is not visible to the caller.
+        AuthenticationError
+            When the request requires auth and the token is missing or invalid.
+
+        Examples
+        --------
+        >>> info = api.get_repo("alice/llama-7b", repo_type="model")
+        >>> info.visibility
+        'public'
+        >>> info.downloads
+        1234
+        """
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
 
@@ -354,8 +508,6 @@ class HubApi:
         elif rt is RepoType.STUDIO:
             data = self.openapi.get_studio(owner, name)
         elif rt is RepoType.SKILL:
-            # Skills are addressed by id on read; fall back to listing if the
-            # id form is not the canonical owner/name pair.
             data = self.openapi.get_skill(f"{owner}/{name}")
         elif rt is RepoType.MCP:
             data = self.openapi.get_mcp_server(f"{owner}/{name}")
@@ -377,9 +529,51 @@ class HubApi:
         page_size: int = 10,
         **filters: Any,
     ) -> PagedResult[RepoInfo]:
-        """List repositories of the given type via OpenAPI."""
+        """List repositories of the given type via OpenAPI.
+
+        Parameters
+        ----------
+        repo_type : str or RepoType
+            One of ``"model"``, ``"dataset"``, ``"skill"``, ``"mcp"``.
+            ``"studio"`` raises :class:`NotImplementedError` (no list endpoint).
+        owner : str, optional
+            Restrict results to repositories owned by this user/org.
+        search : str, optional
+            Free-text search query.
+        sort : str, optional
+            Sort key understood by the upstream endpoint (e.g. ``"downloads"``).
+        page_number : int, optional
+            1-based page index. Default is 1.
+        page_size : int, optional
+            Items per page. Default is 10.
+        **filters : Any
+            Additional filter fields. ``None`` values are dropped.
+
+        Returns
+        -------
+        PagedResult[RepoInfo]
+            Paginated repository listing.
+
+        Raises
+        ------
+        NotImplementedError
+            When ``repo_type`` is ``"studio"`` (no list endpoint yet).
+
+        Examples
+        --------
+        Browse public LLaMA models:
+
+        >>> page = api.list_repos("model", search="llama", page_size=5)
+        >>> page.total_count
+        42
+        >>> [r.repo_id for r in page.items]
+        ['meta-llama/Llama-2-7b', ...]
+
+        List datasets owned by an organisation:
+
+        >>> api.list_repos("dataset", owner="my_org", page_number=2)
+        """
         rt = self._normalize_repo_type(repo_type)
-        # Build a clean filter mapping (drop ``None`` values).
         clean_filters: dict[str, Any] = {k: v for k, v in filters.items() if v is not None}
 
         if rt is RepoType.MODEL:
@@ -409,8 +603,6 @@ class HubApi:
                 extra=clean_filters or None,
             )
         elif rt is RepoType.STUDIO:
-            # Studios have no list endpoint on the OpenAPI surface today;
-            # exposing an empty page keeps the type contract uniform.
             raise NotImplementedError(
                 "Listing studios is not supported by the OpenAPI surface yet."
             )
@@ -426,18 +618,48 @@ class HubApi:
 
         Currently only ``model`` and ``dataset`` are deletable via the legacy
         surface; other types raise :class:`NotImplementedError`.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            Must be ``"model"`` or ``"dataset"``.
+
+        Raises
+        ------
+        ValueError
+            When ``repo_id`` is not in ``owner/name`` form.
+        NotImplementedError
+            When ``repo_type`` is not deletable through the SDK.
+        NotFoundError
+            When the target repository does not exist.
+        AuthenticationError
+            When the caller is not authorised to delete the repository.
+
+        Examples
+        --------
+        >>> api.delete_repo("alice/old-model", repo_type="model")
         """
         rt = self._normalize_repo_type(repo_type)
         if rt not in _LEGACY_DELETE_TYPES:
             raise NotImplementedError(
                 f"Deletion is not supported for repo_type={rt.value!r}."
             )
-        # Validate the repo_id shape before issuing the network call.
         self._parse_repo_id(repo_id)
         self.legacy.delete_repo(repo_id=repo_id, repo_type=str(rt))
 
     def repo_exists(self, repo_id: str, repo_type: RepoTypeLike) -> bool:
-        """Return ``True`` iff the repository exists and is visible to the caller."""
+        """Return ``True`` iff the repository exists and is visible to the caller.
+
+        This is a thin wrapper around :meth:`get_repo` that converts a
+        :class:`NotFoundError` into a boolean.
+
+        Examples
+        --------
+        >>> api.repo_exists("alice/my-model", "model")
+        True
+        """
         try:
             self.get_repo(repo_id, repo_type)
             return True
@@ -457,7 +679,56 @@ class HubApi:
         commit_message: str | None = None,
         revision: str | None = None,
     ) -> dict:
-        """Upload a single file. Routes via :class:`UploadManager`."""
+        """Upload a single file to a repository.
+
+        Routing to large/small upload paths is handled internally by
+        :class:`UploadManager` (small files ≤ 5 MiB use the OpenAPI
+        ``POST /files/upload`` endpoint; larger files use the legacy commit
+        flow with LFS where applicable).
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            Repository type (``"model"``, ``"dataset"``, ...).
+        path_or_fileobj : str, Path, bytes or BinaryIO
+            Local path, raw bytes, or a binary file-like object.
+        path_in_repo : str
+            Destination path inside the repository.
+        commit_message : str, optional
+            Commit message. Defaults to ``"Upload file"``.
+        revision : str, optional
+            Branch to commit on. Defaults to ``"master"``.
+
+        Returns
+        -------
+        dict
+            Raw upload-response payload (commit id, blob id, ...).
+
+        Raises
+        ------
+        AuthenticationError
+            When the token is missing or invalid.
+        NotFoundError
+            When the target repository does not exist.
+
+        Examples
+        --------
+        Upload a local model weight file:
+
+        >>> api.upload_file(
+        ...     "alice/llama-7b",
+        ...     repo_type="model",
+        ...     path_or_fileobj="./pytorch_model.bin",
+        ...     path_in_repo="pytorch_model.bin",
+        ...     commit_message="Add fine-tuned weights",
+        ... )
+
+        Upload raw bytes to a custom path:
+
+        >>> api.upload_file("alice/my-dataset", "dataset", b"col1,col2\n1,2\n", "data/sample.csv")
+        """
         rt = self._normalize_repo_type(repo_type)
         return self.uploader.upload_file(
             repo_id=repo_id,
@@ -481,7 +752,50 @@ class HubApi:
         ignore_patterns: list[str] | None = None,
         max_workers: int = 4,
     ) -> dict:
-        """Upload a whole folder. Routes via :class:`UploadManager`."""
+        """Upload an entire folder to a repository.
+
+        Files are walked recursively from ``folder_path`` and uploaded in
+        parallel. ``allow_patterns`` / ``ignore_patterns`` use ``fnmatch``
+        glob syntax to filter the file set.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            Repository type.
+        folder_path : str or Path
+            Local directory whose contents will be uploaded.
+        path_in_repo : str, optional
+            Destination prefix inside the repository. Defaults to the repo root.
+        commit_message : str, optional
+            Commit message. Defaults to ``"Upload folder"``.
+        revision : str, optional
+            Branch to commit on. Defaults to ``"master"``.
+        allow_patterns : list of str, optional
+            If given, only files matching at least one pattern are uploaded.
+        ignore_patterns : list of str, optional
+            Files matching any pattern are skipped.
+        max_workers : int, optional
+            Concurrency for parallel uploads. Default is 4.
+
+        Returns
+        -------
+        dict
+            Aggregated upload result (per-file status and commit metadata).
+
+        Examples
+        --------
+        Upload a model checkpoint directory while ignoring optimizer state:
+
+        >>> api.upload_folder(
+        ...     "alice/llama-7b",
+        ...     repo_type="model",
+        ...     folder_path="./checkpoint-1000",
+        ...     ignore_patterns=["*.optim", "events.out.*"],
+        ...     max_workers=8,
+        ... )
+        """
         rt = self._normalize_repo_type(repo_type)
         return self.uploader.upload_folder(
             repo_id=repo_id,
@@ -505,7 +819,47 @@ class HubApi:
         cache_dir: str | Path | None = None,
         force: bool = False,
     ) -> Path:
-        """Download a single file. Routes via :class:`DownloadManager`."""
+        """Download a single file from a repository.
+
+        The file is fetched into the local cache and a path pointing at the
+        cached blob is returned. Subsequent calls reuse the cached copy
+        unless ``force=True``.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            Repository type.
+        file_path : str
+            Path of the file inside the repository.
+        revision : str, optional
+            Branch, tag or commit SHA. Defaults to ``"master"``.
+        cache_dir : str or Path, optional
+            Override the default cache directory.
+        force : bool, optional
+            Re-download even if a cached copy exists. Default is ``False``.
+
+        Returns
+        -------
+        Path
+            Absolute path to the cached file on disk.
+
+        Raises
+        ------
+        NotFoundError
+            When the file or repository does not exist.
+
+        Examples
+        --------
+        >>> path = api.download_file(
+        ...     "alice/llama-7b",
+        ...     repo_type="model",
+        ...     file_path="config.json",
+        ... )
+        >>> path.read_text()[:30]
+        '{\n  "architectures": [\n    "Ll'
+        """
         rt = self._normalize_repo_type(repo_type)
         return self.downloader.download_file(
             repo_id=repo_id,
@@ -527,7 +881,46 @@ class HubApi:
         ignore_patterns: list[str] | None = None,
         max_workers: int = 4,
     ) -> Path:
-        """Download an entire repo snapshot. Routes via :class:`DownloadManager`."""
+        """Download an entire repository snapshot.
+
+        All files at the given ``revision`` are fetched into the local cache
+        in parallel. The returned path is the snapshot root directory.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            Repository type.
+        revision : str, optional
+            Branch, tag or commit SHA. Defaults to ``"master"``.
+        cache_dir : str or Path, optional
+            Override the default cache directory.
+        allow_patterns : list of str, optional
+            If given, only matching files are downloaded.
+        ignore_patterns : list of str, optional
+            Matching files are skipped.
+        max_workers : int, optional
+            Concurrency for parallel downloads. Default is 4.
+
+        Returns
+        -------
+        Path
+            Absolute path to the snapshot root directory.
+
+        Examples
+        --------
+        Download only the tokenizer assets of a model:
+
+        >>> root = api.download_repo(
+        ...     "alice/llama-7b",
+        ...     repo_type="model",
+        ...     allow_patterns=["tokenizer*", "*.json"],
+        ...     max_workers=8,
+        ... )
+        >>> sorted(p.name for p in root.iterdir())
+        ['config.json', 'tokenizer.json', 'tokenizer_config.json']
+        """
         rt = self._normalize_repo_type(repo_type)
         return self.downloader.download_repo(
             repo_id=repo_id,
@@ -547,7 +940,30 @@ class HubApi:
         revision: str | None = None,
         recursive: bool = True,
     ) -> list[FileInfo]:
-        """List files in a repository (legacy — no OpenAPI equivalent)."""
+        """List files inside a repository (legacy — no OpenAPI equivalent).
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            Repository type.
+        revision : str, optional
+            Branch, tag or commit SHA. Defaults to ``"master"``.
+        recursive : bool, optional
+            Walk subdirectories recursively. Default is ``True``.
+
+        Returns
+        -------
+        list of FileInfo
+            File metadata entries (path, size, blob id, last modified, ...).
+
+        Examples
+        --------
+        >>> files = api.list_repo_files("alice/llama-7b", "model")
+        >>> [f.path for f in files][:3]
+        ['README.md', 'config.json', 'pytorch_model.bin']
+        """
         rt = self._normalize_repo_type(repo_type)
         raw = self.legacy.list_repo_files(
             repo_id=repo_id,
@@ -577,7 +993,40 @@ class HubApi:
         commit_message: str | None = None,
         revision: str | None = None,
     ) -> dict:
-        """Delete one or more files via a legacy commit operation."""
+        """Delete one or more files via a legacy commit operation.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            Repository type.
+        file_paths : iterable of str
+            Paths of files to remove. Empty entries are ignored.
+        commit_message : str, optional
+            Commit message. Defaults to ``"Delete N file(s)"``.
+        revision : str, optional
+            Branch to commit on. Defaults to ``"master"``.
+
+        Returns
+        -------
+        dict
+            Commit response payload.
+
+        Raises
+        ------
+        ValueError
+            When ``file_paths`` resolves to an empty operation list.
+
+        Examples
+        --------
+        >>> api.delete_files(
+        ...     "alice/llama-7b",
+        ...     "model",
+        ...     ["old_weights.bin", "deprecated/config.json"],
+        ...     commit_message="Remove deprecated artifacts",
+        ... )
+        """
         rt = self._normalize_repo_type(repo_type)
         operations = [
             {"action": "delete", "file_path": p} for p in file_paths if p
@@ -598,7 +1047,14 @@ class HubApi:
     def list_repo_revisions(
         self, repo_id: str, repo_type: RepoTypeLike
     ) -> list[dict]:
-        """Return branches and tags of a repository (legacy)."""
+        """Return branches and tags of a repository (legacy).
+
+        Examples
+        --------
+        >>> revs = api.list_repo_revisions("alice/llama-7b", "model")
+        >>> [r["name"] for r in revs]
+        ['master', 'v1.0', 'experimental']
+        """
         rt = self._normalize_repo_type(repo_type)
         return self.legacy.list_revisions(repo_id=repo_id, repo_type=str(rt))
 
@@ -610,7 +1066,12 @@ class HubApi:
         *,
         revision: str | None = None,
     ) -> dict:
-        """Create a tag pointing at ``revision`` (defaults to ``master``)."""
+        """Create a tag pointing at ``revision`` (defaults to ``master``).
+
+        Examples
+        --------
+        >>> api.create_repo_tag("alice/llama-7b", "model", "v1.0")
+        """
         rt = self._normalize_repo_type(repo_type)
         return self.legacy.create_tag(
             repo_id=repo_id,
@@ -629,7 +1090,39 @@ class HubApi:
         *,
         payload: Mapping[str, Any] | None = None,
     ) -> dict:
-        """Deploy a Studio space or an MCP server."""
+        """Deploy a Studio space or an MCP server.
+
+        Parameters
+        ----------
+        repo_id : str
+            For Studios, an ``owner/name`` pair. For MCP servers, the
+            server identifier accepted by the OpenAPI surface.
+        repo_type : str or RepoType, optional
+            ``"studio"`` (default) or ``"mcp"``.
+        payload : Mapping, optional
+            Deployment configuration forwarded verbatim to the backend
+            (hardware tier, env vars, ...).
+
+        Returns
+        -------
+        dict
+            Deployment response payload (deployment id, status URL, ...).
+
+        Raises
+        ------
+        NotImplementedError
+            When ``repo_type`` is neither ``"studio"`` nor ``"mcp"``.
+
+        Examples
+        --------
+        Deploy a Studio space on a GPU instance:
+
+        >>> api.deploy_repo(
+        ...     "alice/chat-demo",
+        ...     repo_type="studio",
+        ...     payload={"instance_type": "GPU-A10", "min_replicas": 1},
+        ... )
+        """
         rt = self._normalize_repo_type(repo_type)
         if rt is RepoType.STUDIO:
             owner, name = self._parse_repo_id(repo_id)
@@ -645,7 +1138,12 @@ class HubApi:
         repo_id: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
     ) -> dict:
-        """Stop a running Studio or undeploy an MCP server."""
+        """Stop a running Studio or undeploy an MCP server.
+
+        Examples
+        --------
+        >>> api.stop_repo("alice/chat-demo", repo_type="studio")
+        """
         rt = self._normalize_repo_type(repo_type)
         if rt is RepoType.STUDIO:
             owner, name = self._parse_repo_id(repo_id)
@@ -665,8 +1163,47 @@ class HubApi:
         page_num: int = 1,
         page_size: int = 20,
         keyword: str | None = None,
+        start_timestamp: int | None = None,
+        end_timestamp: int | None = None,
     ) -> dict:
-        """Fetch paginated runtime/build logs for a Studio space."""
+        """Fetch paginated runtime/build logs for a Studio space.
+
+        Parameters
+        ----------
+        repo_id : str
+            Studio identifier in ``owner/name`` form.
+        repo_type : str or RepoType, optional
+            Must be ``"studio"``. Defaults to :class:`RepoType.STUDIO`.
+        log_type : str, optional
+            Either ``"runtime"`` (default) or ``"build"``.
+        page_num : int, optional
+            1-based page index. Default is 1.
+        page_size : int, optional
+            Lines per page. Default is 20.
+        keyword : str, optional
+            Filter logs containing this substring.
+        start_timestamp, end_timestamp : int, optional
+            Unix timestamps (seconds) bounding the log window.
+
+        Returns
+        -------
+        dict
+            Paginated log payload.
+
+        Raises
+        ------
+        NotImplementedError
+            When ``repo_type`` is not ``"studio"``.
+
+        Examples
+        --------
+        >>> logs = api.get_repo_logs(
+        ...     "alice/chat-demo",
+        ...     log_type="runtime",
+        ...     keyword="ERROR",
+        ...     page_size=50,
+        ... )
+        """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
             raise NotImplementedError(
@@ -676,6 +1213,7 @@ class HubApi:
         return self.openapi.get_studio_logs(
             owner, name, log_type,
             page_num=page_num, page_size=page_size, keyword=keyword,
+            start_timestamp=start_timestamp, end_timestamp=end_timestamp,
         )
 
     def update_repo_settings(
@@ -684,7 +1222,36 @@ class HubApi:
         repo_type: RepoTypeLike,
         **settings: Any,
     ) -> dict:
-        """Update repo settings (Studio or Skill)."""
+        """Update repo settings (Studio or Skill).
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType
+            Either ``"studio"`` or ``"skill"``.
+        **settings : Any
+            Setting key/value pairs forwarded to the backend.
+
+        Returns
+        -------
+        dict
+            Updated settings payload.
+
+        Raises
+        ------
+        NotImplementedError
+            When ``repo_type`` is neither studio nor skill.
+
+        Examples
+        --------
+        >>> api.update_repo_settings(
+        ...     "alice/chat-demo",
+        ...     repo_type="studio",
+        ...     visibility="public",
+        ...     hardware="GPU-A10",
+        ... )
+        """
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
         if rt is RepoType.STUDIO:
@@ -701,6 +1268,13 @@ class HubApi:
     def list_secrets(
         self, repo_id: str, repo_type: RepoTypeLike = RepoType.STUDIO
     ) -> list[dict]:
+        """List secrets attached to a Studio.
+
+        Examples
+        --------
+        >>> api.list_secrets("alice/chat-demo")
+        [{'key': 'OPENAI_API_KEY', 'updated_at': 1712345678}, ...]
+        """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
             raise NotImplementedError(
@@ -723,6 +1297,12 @@ class HubApi:
         value: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
     ) -> dict:
+        """Add a new secret to a Studio.
+
+        Examples
+        --------
+        >>> api.add_secret("alice/chat-demo", "OPENAI_API_KEY", "sk-...")
+        """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
             raise NotImplementedError("Only studio secrets are supported.")
@@ -736,6 +1316,12 @@ class HubApi:
         value: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
     ) -> dict:
+        """Update an existing secret value.
+
+        Examples
+        --------
+        >>> api.update_secret("alice/chat-demo", "OPENAI_API_KEY", "sk-new-...")
+        """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
             raise NotImplementedError("Only studio secrets are supported.")
@@ -748,6 +1334,12 @@ class HubApi:
         key: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
     ) -> dict:
+        """Delete a secret from a Studio.
+
+        Examples
+        --------
+        >>> api.delete_secret("alice/chat-demo", "OPENAI_API_KEY")
+        """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
             raise NotImplementedError("Only studio secrets are supported.")
@@ -765,7 +1357,30 @@ class HubApi:
         page_size: int = 10,
         **extra: Any,
     ) -> PagedResult[dict]:
-        """List MCP servers (OpenAPI)."""
+        """List MCP servers via the OpenAPI surface.
+
+        Parameters
+        ----------
+        search : str, optional
+            Free-text search query.
+        page_number : int, optional
+            1-based page index. Default is 1.
+        page_size : int, optional
+            Items per page. Default is 10.
+        **extra : Any
+            Additional filter fields. ``None`` values are dropped.
+
+        Returns
+        -------
+        PagedResult[dict]
+            Paginated MCP server listing.
+
+        Examples
+        --------
+        >>> page = api.list_mcp_servers(search="weather", page_size=5)
+        >>> page.total_count
+        12
+        """
         payload = self.openapi.list_mcp_servers(
             search=search,
             page_number=page_number,
@@ -775,22 +1390,80 @@ class HubApi:
         items, total, page, size = self._extract_paged(payload)
         return PagedResult(items=list(items), total_count=total, page_number=page, page_size=size)
 
-    def get_mcp_server(self, server_id: str) -> dict:
-        return self.openapi.get_mcp_server(server_id)
+    def get_mcp_server(
+        self,
+        server_id: str,
+        *,
+        get_operational_url: bool | None = None,
+    ) -> dict:
+        """Fetch a single MCP server's metadata.
+
+        Parameters
+        ----------
+        server_id : str
+            MCP server identifier.
+        get_operational_url : bool, optional
+            When ``True``, the response includes the live runtime URL.
+
+        Returns
+        -------
+        dict
+            MCP server metadata.
+
+        Examples
+        --------
+        >>> info = api.get_mcp_server("alice/weather-mcp", get_operational_url=True)
+        >>> info["operational_url"]
+        'https://...'
+        """
+        return self.openapi.get_mcp_server(
+            server_id, get_operational_url=get_operational_url
+        )
 
     def deploy_mcp_server(
         self, server_id: str, *, payload: Mapping[str, Any] | None = None
     ) -> dict:
+        """Deploy or redeploy an MCP server.
+
+        Examples
+        --------
+        >>> api.deploy_mcp_server("alice/weather-mcp", payload={"region": "cn-hangzhou"})
+        """
         return self.openapi.deploy_mcp_server(server_id, payload)
 
     def undeploy_mcp_server(self, server_id: str) -> dict:
+        """Undeploy a running MCP server.
+
+        Examples
+        --------
+        >>> api.undeploy_mcp_server("alice/weather-mcp")
+        """
         return self.openapi.undeploy_mcp_server(server_id)
 
     # ==================================================================
     # Cache
     # ==================================================================
     def scan_cache(self, cache_dir: str | Path | None = None) -> CacheInfo:
-        """Inspect the local cache directory."""
+        """Inspect the local cache directory.
+
+        Parameters
+        ----------
+        cache_dir : str or Path, optional
+            Override the default cache root.
+
+        Returns
+        -------
+        CacheInfo
+            Aggregated cache stats (total bytes, repo entries, ...).
+
+        Examples
+        --------
+        >>> info = api.scan_cache()
+        >>> info.size_on_disk
+        12345678
+        >>> [r.repo_id for r in info.repos][:3]
+        ['alice/llama-7b', 'bob/imagenet', 'carol/whisper-base']
+        """
         return _scan_cache(Path(cache_dir) if cache_dir else None)
 
     def clear_cache(
@@ -800,7 +1473,33 @@ class HubApi:
         repo_type: RepoTypeLike | None = None,
         repo_id: str | None = None,
     ) -> int:
-        """Remove cached data. Returns the number of bytes freed."""
+        """Remove cached data and return the number of bytes freed.
+
+        Parameters
+        ----------
+        cache_dir : str or Path, optional
+            Override the default cache root.
+        repo_type : str or RepoType, optional
+            Restrict deletion to a single repository type.
+        repo_id : str, optional
+            Restrict deletion to a single repository id.
+
+        Returns
+        -------
+        int
+            Number of bytes reclaimed from disk.
+
+        Examples
+        --------
+        Wipe the cache for a single model:
+
+        >>> api.clear_cache(repo_type="model", repo_id="alice/llama-7b")
+        4823412
+
+        Wipe everything:
+
+        >>> api.clear_cache()
+        """
         rt_value: str | None = None
         if repo_type is not None:
             rt_value = str(self._normalize_repo_type(repo_type))

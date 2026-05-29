@@ -27,6 +27,13 @@ import requests
 from .config import HubConfig, get_default_config
 from .constants import API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX
 from .errors import AuthenticationError, NetworkError, RateLimitError, ServerError, raise_for_status
+from .types import (
+    CreateSkillPayload,
+    CreateStudioPayload,
+    DeployMcpServerPayload,
+    UpdateSkillSettingsPayload,
+    UpdateStudioSettingsPayload,
+)
 from .utils.logger import get_logger
 
 __all__ = ["OpenAPIClient"]
@@ -366,7 +373,7 @@ class OpenAPIClient:
         )
         return self._request("GET", "/skills", params=params, require_token=False)
 
-    def create_skill(self, payload: Mapping[str, Any]) -> JSON:
+    def create_skill(self, payload: CreateSkillPayload | Mapping[str, Any]) -> JSON:
         """``POST /skills`` — create a new skill."""
         return self._request("POST", "/skills", json_body=dict(payload))
 
@@ -378,7 +385,7 @@ class OpenAPIClient:
         self,
         owner: str,
         skill_name: str,
-        settings: Mapping[str, Any],
+        settings: UpdateSkillSettingsPayload | Mapping[str, Any],
     ) -> JSON:
         """``PATCH /skills/{owner}/{skill_name}/settings`` — update skill settings."""
         return self._request(
@@ -390,7 +397,7 @@ class OpenAPIClient:
     # ==================================================================
     # Studios
     # ==================================================================
-    def create_studio(self, payload: Mapping[str, Any]) -> JSON:
+    def create_studio(self, payload: CreateStudioPayload | Mapping[str, Any]) -> JSON:
         """``POST /studios`` — create a new Studio space."""
         return self._request("POST", "/studios", json_body=dict(payload))
 
@@ -424,10 +431,18 @@ class OpenAPIClient:
         page_num: int = 1,
         page_size: int = 100,
         keyword: str | None = None,
+        start_timestamp: int | None = None,
+        end_timestamp: int | None = None,
     ) -> JSON:
         """``GET /studios/{owner}/{repo_name}/logs/{log_type}`` — paginated logs."""
         params = self._merge_params(
-            {"page_num": page_num, "page_size": page_size, "keyword": keyword}
+            {
+                "page_num": page_num,
+                "page_size": page_size,
+                "keyword": keyword,
+                "start_timestamp": start_timestamp,
+                "end_timestamp": end_timestamp,
+            }
         )
         return self._request(
             "GET",
@@ -467,7 +482,7 @@ class OpenAPIClient:
         self,
         owner: str,
         repo_name: str,
-        settings: Mapping[str, Any],
+        settings: UpdateStudioSettingsPayload | Mapping[str, Any],
     ) -> JSON:
         """``PATCH /studios/{owner}/{repo_name}/settings`` — update Studio settings."""
         return self._request(
@@ -502,14 +517,22 @@ class OpenAPIClient:
         """``GET /mcp/servers/operational`` — list servers deployed by the caller."""
         return self._request("GET", "/mcp/servers/operational")
 
-    def get_mcp_server(self, server_id: str | int) -> JSON:
+    def get_mcp_server(
+        self,
+        server_id: str | int,
+        *,
+        get_operational_url: bool | None = None,
+    ) -> JSON:
         """``GET /mcp/servers/{id}`` — fetch a single MCP server's manifest."""
-        return self._request("GET", f"/mcp/servers/{server_id}", require_token=False)
+        params = self._merge_params({"get_operational_url": get_operational_url})
+        return self._request(
+            "GET", f"/mcp/servers/{server_id}", params=params, require_token=False
+        )
 
     def deploy_mcp_server(
         self,
         server_id: str | int,
-        payload: Mapping[str, Any] | None = None,
+        payload: DeployMcpServerPayload | Mapping[str, Any] | None = None,
     ) -> JSON:
         """``POST /mcp/servers/{id}/deploy`` — deploy an MCP server for the caller."""
         return self._request(
