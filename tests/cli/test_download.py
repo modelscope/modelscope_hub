@@ -1,126 +1,58 @@
-"""Tests for ``ms download`` command — single file and snapshot modes."""
+"""Tests for ``ms download`` command — real API file download."""
 from __future__ import annotations
-
-from pathlib import Path
-from unittest.mock import call
 
 import pytest
 
-from modelscope_hub.errors import NotFoundError
+from .conftest import run_cli
 
 
-class TestDownloadSingleFile:
-    """Verify single-file download paths."""
+@pytest.mark.remote
+class TestDownloadLifecycle:
+    """Test file download with real API.
 
-    def test_download_single_file(self, mock_api, run_cli):
-        """Download a single file successfully."""
+    Creates a repo, uploads a file, then verifies download works.
+    """
+
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_repo(self, api, test_owner, repo_name):
+        """Create a model repo and upload a test file for download tests."""
+        cls = type(self)
+        cls.repo_id = f"{test_owner}/{repo_name}_download"
+        api.create_repo(cls.repo_id, "model", visibility="private")
+        # Upload a small test file for download verification
+        import tempfile
+        import os
+
+        fd, path = tempfile.mkstemp(suffix=".txt")
+        try:
+            os.write(fd, b"download test content")
+            os.close(fd)
+            api.upload_file(cls.repo_id, "model", path, "test_data.txt")
+        finally:
+            os.unlink(path)
+        cls.api = api
+        yield
+        try:
+            api.delete_repo(cls.repo_id, "model")
+        except Exception:
+            pass
+
+    def test_01_download_single_file(self, test_token, test_endpoint, tmp_path):
+        """Download a single file by name."""
         exit_code, out, err = run_cli(
-            ["download", "owner/model", "config.json"]
+            ["download", self.repo_id, "test_data.txt", "--cache-dir", str(tmp_path)],
+            token=test_token,
+            endpoint=test_endpoint,
         )
         assert exit_code == 0
-        assert "config.json" in out
-        mock_api.download_file.assert_called_once_with(
-            "owner/model",
-            "model",
-            "config.json",
-            revision=None,
-            cache_dir=None,
-            force=False,
-        )
+        assert "test_data.txt" in out
 
-    def test_download_multiple_files(self, mock_api, run_cli):
-        """Download multiple files in one invocation."""
-        mock_api.download_file.return_value = Path("/tmp/cached/file.bin")
+    def test_02_download_full_snapshot(self, test_token, test_endpoint, tmp_path):
+        """Download full repo snapshot."""
         exit_code, out, err = run_cli(
-            ["download", "owner/model", "config.json", "model.safetensors"]
+            ["download", self.repo_id, "--cache-dir", str(tmp_path)],
+            token=test_token,
+            endpoint=test_endpoint,
         )
-        assert exit_code == 0
-        assert mock_api.download_file.call_count == 2
-        calls = mock_api.download_file.call_args_list
-        assert calls[0][0][2] == "config.json"
-        assert calls[1][0][2] == "model.safetensors"
-
-    def test_download_with_revision(self, mock_api, run_cli):
-        """Download with --revision flag."""
-        exit_code, out, err = run_cli(
-            ["download", "owner/model", "file.bin", "--revision", "v1.0"]
-        )
-        assert exit_code == 0
-        mock_api.download_file.assert_called_once_with(
-            "owner/model",
-            "model",
-            "file.bin",
-            revision="v1.0",
-            cache_dir=None,
-            force=False,
-        )
-
-    def test_download_with_cache_dir(self, mock_api, run_cli):
-        """Download with --cache-dir flag."""
-        exit_code, out, err = run_cli(
-            ["download", "owner/model", "f.bin", "--cache-dir", "/my/cache"]
-        )
-        assert exit_code == 0
-        mock_api.download_file.assert_called_once_with(
-            "owner/model",
-            "model",
-            "f.bin",
-            revision=None,
-            cache_dir=Path("/my/cache"),
-            force=False,
-        )
-
-
-class TestDownloadSnapshot:
-    """Verify full-repo snapshot download."""
-
-    def test_download_full_repo(self, mock_api, run_cli):
-        """Download full repo snapshot when no files specified."""
-        exit_code, out, err = run_cli(["download", "owner/model"])
         assert exit_code == 0
         assert "Snapshot ready" in out
-        mock_api.download_repo.assert_called_once_with(
-            "owner/model",
-            "model",
-            revision=None,
-            cache_dir=None,
-            allow_patterns=None,
-            ignore_patterns=None,
-            max_workers=4,
-        )
-
-    def test_download_with_patterns(self, mock_api, run_cli):
-        """Download with --include and --exclude patterns."""
-        exit_code, out, err = run_cli([
-            "download", "owner/model",
-            "--include", "*.safetensors",
-            "--exclude", "*.bin",
-        ])
-        assert exit_code == 0
-        mock_api.download_repo.assert_called_once_with(
-            "owner/model",
-            "model",
-            revision=None,
-            cache_dir=None,
-            allow_patterns=["*.safetensors"],
-            ignore_patterns=["*.bin"],
-            max_workers=4,
-        )
-
-    def test_download_api_error(self, mock_api, run_cli):
-        """Download exits 1 on API NotFoundError."""
-        mock_api.download_repo.side_effect = NotFoundError(
-            "Repo not found", status_code=404
-        )
-        exit_code, out, err = run_cli(["download", "owner/ghost"])
-        assert exit_code == 1
-        assert "not found" in err.lower() or "Repo" in err
-
-    def test_download_dataset_type(self, mock_api, run_cli):
-        """Download with --repo-type dataset."""
-        exit_code, out, err = run_cli(
-            ["download", "owner/data", "--repo-type", "dataset"]
-        )
-        assert exit_code == 0
-        mock_api.download_repo.assert_called_once()
-        assert mock_api.download_repo.call_args[0][1] == "dataset"

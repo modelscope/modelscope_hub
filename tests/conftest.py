@@ -48,19 +48,19 @@ def pytest_collection_modifyitems(config, items):
 
 
 # ---------------------------------------------------------------------------
-# Global fixtures
+# Global fixtures (session-scoped for integration/remote tests)
 # ---------------------------------------------------------------------------
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_token() -> str:
     return os.environ.get("MODELSCOPE_TEST_TOKEN", "fake_token_for_unit_tests")
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_owner() -> str:
     return os.environ.get("MODELSCOPE_TEST_OWNER", "test_owner")
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def test_endpoint() -> str:
     return os.environ.get("MODELSCOPE_TEST_ENDPOINT", "https://modelscope.cn")
 

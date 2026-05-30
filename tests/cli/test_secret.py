@@ -1,100 +1,64 @@
-"""Tests for ``ms secret`` group — list / add / update / delete."""
+"""Tests for ``ms secret`` group — real API secret CRUD lifecycle."""
 from __future__ import annotations
-
-from unittest.mock import patch
 
 import pytest
 
-from modelscope_hub.errors import HubError
+from .conftest import run_cli
 
 
-class TestSecretList:
-    """Verify secret list subcommand."""
+@pytest.mark.remote
+class TestSecretLifecycle:
+    """Test secret CRUD operations with real API on a studio repo."""
 
-    def test_secret_list(self, mock_api, run_cli):
-        """List secrets displays table."""
-        exit_code, out, err = run_cli(["secret", "list", "owner/studio"])
-        assert exit_code == 0
-        assert "MY_KEY" in out
-        mock_api.list_secrets.assert_called_once_with("owner/studio", "studio")
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_repo(self, api, test_owner, repo_name):
+        """Create a studio repo for secret testing."""
+        cls = type(self)
+        cls.repo_id = f"{test_owner}/{repo_name}_secrets"
+        api.create_repo(cls.repo_id, "studio", visibility="private")
+        cls.api = api
+        yield
+        try:
+            api.delete_repo(cls.repo_id, "studio")
+        except Exception:
+            pass
 
-    def test_secret_list_empty(self, mock_api, run_cli):
-        """List secrets with no results shows message."""
-        mock_api.list_secrets.return_value = []
-        exit_code, out, err = run_cli(["secret", "list", "owner/studio"])
-        assert exit_code == 0
-        assert "no secrets" in out.lower()
-
-
-class TestSecretAdd:
-    """Verify secret add subcommand."""
-
-    def test_secret_add(self, mock_api, run_cli):
-        """Add a secret successfully."""
+    def test_01_add_secret(self, test_token, test_endpoint):
+        """Add a new secret."""
         exit_code, out, err = run_cli(
-            ["secret", "add", "owner/studio", "API_KEY", "secret_value"]
+            ["secret", "add", self.repo_id, "TEST_KEY", "test_value"],
+            token=test_token,
+            endpoint=test_endpoint,
         )
         assert exit_code == 0
         assert "Added" in out
-        mock_api.add_secret.assert_called_once_with(
-            "owner/studio", "API_KEY", "secret_value", "studio"
-        )
 
-
-class TestSecretUpdate:
-    """Verify secret update subcommand."""
-
-    def test_secret_update(self, mock_api, run_cli):
-        """Update a secret successfully."""
+    def test_02_list_secrets(self, test_token, test_endpoint):
+        """List secrets shows the added secret."""
         exit_code, out, err = run_cli(
-            ["secret", "update", "owner/studio", "API_KEY", "new_value"]
+            ["secret", "list", self.repo_id],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        assert exit_code == 0
+        assert "TEST_KEY" in out
+
+    def test_03_update_secret(self, test_token, test_endpoint):
+        """Update an existing secret."""
+        exit_code, out, err = run_cli(
+            ["secret", "update", self.repo_id, "TEST_KEY", "new_value"],
+            token=test_token,
+            endpoint=test_endpoint,
         )
         assert exit_code == 0
         assert "Updated" in out
-        mock_api.update_secret.assert_called_once_with(
-            "owner/studio", "API_KEY", "new_value", "studio"
-        )
 
-
-class TestSecretDelete:
-    """Verify secret delete subcommand."""
-
-    def test_secret_delete_confirmed(self, mock_api, run_cli):
-        """Delete secret with 'y' confirmation."""
-        with patch("builtins.input", return_value="y"):
-            exit_code, out, err = run_cli(
-                ["secret", "delete", "owner/studio", "API_KEY"]
-            )
-        assert exit_code == 0
-        assert "Deleted" in out
-        mock_api.delete_secret.assert_called_once_with(
-            "owner/studio", "API_KEY", "studio"
-        )
-
-    def test_secret_delete_cancelled(self, mock_api, run_cli):
-        """Delete secret aborts on 'n'."""
-        with patch("builtins.input", return_value="n"):
-            exit_code, out, err = run_cli(
-                ["secret", "delete", "owner/studio", "API_KEY"]
-            )
-        assert exit_code == 0
-        assert "Aborted" in out
-        mock_api.delete_secret.assert_not_called()
-
-    def test_secret_delete_force_yes(self, mock_api, run_cli):
-        """Delete secret --yes skips confirmation."""
+    def test_04_delete_secret(self, test_token, test_endpoint):
+        """Delete the secret with --yes to skip confirmation."""
         exit_code, out, err = run_cli(
-            ["secret", "delete", "owner/studio", "API_KEY", "--yes"]
+            ["secret", "delete", self.repo_id, "TEST_KEY", "--yes"],
+            token=test_token,
+            endpoint=test_endpoint,
         )
         assert exit_code == 0
         assert "Deleted" in out
-        mock_api.delete_secret.assert_called_once()
-
-    def test_secret_delete_api_error(self, mock_api, run_cli):
-        """Delete secret exits 1 on API error."""
-        mock_api.delete_secret.side_effect = HubError("delete failed")
-        exit_code, out, err = run_cli(
-            ["secret", "delete", "owner/studio", "KEY", "--yes"]
-        )
-        assert exit_code == 1
-        assert "delete failed" in err

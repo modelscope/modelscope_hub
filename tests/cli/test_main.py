@@ -3,13 +3,70 @@ from __future__ import annotations
 
 import io
 import sys
-from unittest.mock import patch
+from contextlib import ExitStack
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from modelscope_hub import __version__
 from modelscope_hub.cli.main import run_cmd
 from modelscope_hub.errors import HubError, NetworkError
+from modelscope_hub.types import UserInfo
+
+
+# ---------------------------------------------------------------------------
+# Local mock fixtures for unit tests (no real API calls)
+# ---------------------------------------------------------------------------
+_MAKE_API_TARGETS = [
+    "modelscope_hub.cli.base.make_api",
+    "modelscope_hub.cli.login.make_api",
+    "modelscope_hub.cli.repo.make_api",
+    "modelscope_hub.cli.download.make_api",
+    "modelscope_hub.cli.upload.make_api",
+    "modelscope_hub.cli.deploy.make_api",
+    "modelscope_hub.cli.secret.make_api",
+    "modelscope_hub.cli.mcp.make_api",
+    "modelscope_hub.cli.cache.make_api",
+]
+
+
+@pytest.fixture
+def mock_api():
+    """Create a mock HubApi instance with common return values."""
+    api = MagicMock()
+    api.whoami.return_value = UserInfo(
+        id="123", username="test_user", email="test@example.com"
+    )
+    return api
+
+
+@pytest.fixture
+def run_cli(mock_api):
+    """Run CLI commands with mocked API and capture output."""
+    def _run(args: list[str], input_text: str | None = None):
+        captured_out = io.StringIO()
+        captured_err = io.StringIO()
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        old_stdin = sys.stdin
+        try:
+            sys.stdout = captured_out
+            sys.stderr = captured_err
+            if input_text is not None:
+                sys.stdin = io.StringIO(input_text)
+            with ExitStack() as stack:
+                for target in _MAKE_API_TARGETS:
+                    stack.enter_context(patch(target, return_value=mock_api))
+                exit_code = run_cmd(args)
+        except SystemExit as e:
+            exit_code = int(e.code) if e.code else 0
+        finally:
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            sys.stdin = old_stdin
+        return exit_code, captured_out.getvalue(), captured_err.getvalue()
+
+    return _run
 
 
 class TestVersionAndHelp:

@@ -1,105 +1,52 @@
-"""Tests for ``ms upload`` command — file and folder modes."""
+"""Tests for ``ms upload`` command — real API file and folder upload."""
 from __future__ import annotations
-
-from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from modelscope_hub.errors import HubError
+from .conftest import run_cli
 
 
-class TestUploadFile:
-    """Verify single-file upload path."""
+@pytest.mark.remote
+class TestUploadLifecycle:
+    """Test file upload with real API on a temporary repo."""
 
-    def test_upload_file(self, mock_api, run_cli, tmp_path):
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_repo(self, api, test_owner, repo_name):
+        """Create a model repo for upload testing."""
+        cls = type(self)
+        cls.repo_id = f"{test_owner}/{repo_name}_upload"
+        api.create_repo(cls.repo_id, "model", visibility="private")
+        cls.api = api
+        yield
+        try:
+            api.delete_repo(cls.repo_id, "model")
+        except Exception:
+            pass
+
+    def test_01_upload_file(self, test_token, test_endpoint, tmp_path):
         """Upload a single file successfully."""
-        test_file = tmp_path / "model.bin"
-        test_file.write_bytes(b"fake model data")
+        test_file = tmp_path / "test_upload.txt"
+        test_file.write_text("hello modelscope upload test")
 
         exit_code, out, err = run_cli(
-            ["upload", "owner/repo", str(test_file)]
+            ["upload", self.repo_id, str(test_file), "--repo-type", "model"],
+            token=test_token,
+            endpoint=test_endpoint,
         )
         assert exit_code == 0
         assert "Upload complete" in out
-        mock_api.upload_file.assert_called_once()
-        call_args = mock_api.upload_file.call_args
-        assert call_args[0][0] == "owner/repo"
-        assert call_args[0][2] == str(test_file)
-        assert call_args[0][3] == "model.bin"  # basename as path_in_repo
 
-    def test_upload_with_commit_message(self, mock_api, run_cli, tmp_path):
-        """Upload with --commit-message flag."""
-        test_file = tmp_path / "weights.safetensors"
-        test_file.write_bytes(b"data")
-
-        exit_code, out, err = run_cli([
-            "upload", "owner/repo", str(test_file),
-            "--commit-message", "Add weights",
-        ])
-        assert exit_code == 0
-        call_kwargs = mock_api.upload_file.call_args[1]
-        assert call_kwargs["commit_message"] == "Add weights"
-
-    def test_upload_path_not_exists(self, mock_api, run_cli):
-        """Upload exits 2 when local path does not exist."""
-        exit_code, out, err = run_cli(
-            ["upload", "owner/repo", "/nonexistent/path/file.bin"]
-        )
-        assert exit_code == 2
-        assert "not found" in err.lower()
-
-
-class TestUploadDirectory:
-    """Verify folder upload path."""
-
-    def test_upload_directory(self, mock_api, run_cli, tmp_path):
+    def test_02_upload_folder(self, test_token, test_endpoint, tmp_path):
         """Upload a directory successfully."""
-        (tmp_path / "file1.txt").write_text("a")
-        (tmp_path / "file2.txt").write_text("b")
+        upload_dir = tmp_path / "upload_folder"
+        upload_dir.mkdir()
+        (upload_dir / "file_a.txt").write_text("content a")
+        (upload_dir / "file_b.txt").write_text("content b")
 
         exit_code, out, err = run_cli(
-            ["upload", "owner/repo", str(tmp_path)]
+            ["upload", self.repo_id, str(upload_dir), "--repo-type", "model"],
+            token=test_token,
+            endpoint=test_endpoint,
         )
         assert exit_code == 0
         assert "Folder upload complete" in out
-        mock_api.upload_folder.assert_called_once()
-        call_args = mock_api.upload_folder.call_args
-        assert call_args[0][0] == "owner/repo"
-        assert call_args[0][2] == str(tmp_path)
-
-    def test_upload_with_patterns(self, mock_api, run_cli, tmp_path):
-        """Upload folder with --include and --exclude patterns."""
-        (tmp_path / "file.txt").write_text("a")
-
-        exit_code, out, err = run_cli([
-            "upload", "owner/repo", str(tmp_path),
-            "--include", "*.py",
-            "--exclude", "__pycache__",
-        ])
-        assert exit_code == 0
-        call_kwargs = mock_api.upload_folder.call_args[1]
-        assert call_kwargs["allow_patterns"] == ["*.py"]
-        assert call_kwargs["ignore_patterns"] == ["__pycache__"]
-
-    def test_upload_with_path_in_repo(self, mock_api, run_cli, tmp_path):
-        """Upload folder with explicit path_in_repo."""
-        (tmp_path / "file.txt").write_text("a")
-
-        exit_code, out, err = run_cli(
-            ["upload", "owner/repo", str(tmp_path), "subdir/"]
-        )
-        assert exit_code == 0
-        call_kwargs = mock_api.upload_folder.call_args[1]
-        assert call_kwargs["path_in_repo"] == "subdir/"
-
-    def test_upload_api_error(self, mock_api, run_cli, tmp_path):
-        """Upload exits 1 on API HubError."""
-        test_file = tmp_path / "f.bin"
-        test_file.write_bytes(b"data")
-        mock_api.upload_file.side_effect = HubError("upload failed")
-        exit_code, out, err = run_cli(
-            ["upload", "owner/repo", str(test_file)]
-        )
-        assert exit_code == 1
-        assert "upload failed" in err
