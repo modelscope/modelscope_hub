@@ -76,6 +76,7 @@ class TestVersionAndHelp:
         """--version prints version string and exits 0."""
         with pytest.raises(SystemExit) as exc_info:
             run_cmd(["--version"])
+        print(f"\n** [--version] exit_code={exc_info.value.code}")
         assert exc_info.value.code == 0
 
     def test_help_flag(self, capsys):
@@ -84,12 +85,14 @@ class TestVersionAndHelp:
             run_cmd(["--help"])
         assert exc_info.value.code == 0
         out = capsys.readouterr().out
+        print(f"\n** [--help] exit_code={exc_info.value.code}, out={out[:200]!r}")
         assert "ModelScope Hub" in out
 
     def test_no_subcommand_shows_error(self, capsys):
         """Missing subcommand prints error and exits 2."""
         with pytest.raises(SystemExit) as exc_info:
             run_cmd([])
+        print(f"\n** [no subcommand] exit_code={exc_info.value.code}")
         assert exc_info.value.code == 2
 
 
@@ -99,14 +102,14 @@ class TestGlobalParameters:
     def test_global_token_passed_to_api(self, mock_api, run_cli):
         """--token is passed through to make_api."""
         with patch("modelscope_hub.cli.base.make_api", return_value=mock_api) as mock_make:
-            run_cli(["whoami"])
-            # make_api is called; verify args contain the token if passed
-            # Since our fixture patches make_api, we just validate it works
+            exit_code, out, err = run_cli(["whoami"])
+            print(f"\n** [whoami via token] exit_code={exit_code}, out={out!r}, err={err!r}")
             mock_api.whoami.assert_called_once()
 
     def test_global_endpoint_passed_to_api(self, mock_api, run_cli):
         """--endpoint is accepted without error."""
         exit_code, out, err = run_cli(["whoami"])
+        print(f"\n** [whoami via endpoint] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
 
     def test_verbose_flag_enables_debug(self, mock_api):
@@ -124,6 +127,7 @@ class TestGlobalParameters:
         finally:
             sys.stdout = old_stdout
             sys.stderr = old_stderr
+        print(f"\n** [--verbose whoami] out={captured_out.getvalue()!r}, err={captured_err.getvalue()!r}")
         # After the call, the root logger should have been configured for DEBUG
         root = logging.getLogger()
         # Reset after test
@@ -137,6 +141,7 @@ class TestExceptionHandling:
         """HubError from a command results in exit code 1."""
         mock_api.whoami.side_effect = HubError("Something went wrong")
         exit_code, out, err = run_cli(["whoami"])
+        print(f"\n** [HubError] exit_code={exit_code}, err={err!r}")
         assert exit_code == 1
         assert "Something went wrong" in err
 
@@ -144,6 +149,7 @@ class TestExceptionHandling:
         """NetworkError from a command results in exit code 1."""
         mock_api.whoami.side_effect = NetworkError("Connection refused")
         exit_code, out, err = run_cli(["whoami"])
+        print(f"\n** [NetworkError] exit_code={exit_code}, err={err!r}")
         assert exit_code == 1
         assert "Network error" in err
 
@@ -151,6 +157,7 @@ class TestExceptionHandling:
         """ValueError from a command results in exit code 2."""
         mock_api.whoami.side_effect = ValueError("bad input")
         exit_code, out, err = run_cli(["whoami"])
+        print(f"\n** [ValueError] exit_code={exit_code}, err={err!r}")
         assert exit_code == 2
         assert "bad input" in err
 
@@ -158,6 +165,7 @@ class TestExceptionHandling:
         """NotImplementedError from a command results in exit code 2."""
         mock_api.whoami.side_effect = NotImplementedError("not yet")
         exit_code, out, err = run_cli(["whoami"])
+        print(f"\n** [NotImplementedError] exit_code={exit_code}, err={err!r}")
         assert exit_code == 2
         assert "not yet" in err
 
@@ -165,5 +173,6 @@ class TestExceptionHandling:
         """KeyboardInterrupt from a command results in exit code 130."""
         mock_api.whoami.side_effect = KeyboardInterrupt()
         exit_code, out, err = run_cli(["whoami"])
+        print(f"\n** [KeyboardInterrupt] exit_code={exit_code}, err={err!r}")
         assert exit_code == 130
         assert "Interrupted" in err

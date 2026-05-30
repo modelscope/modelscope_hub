@@ -17,6 +17,8 @@ class TestMcpOperations:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [mcp list]")
+        print(f"** exit_code={exit_code}, out={out[:300]!r}, err={err!r}")
         assert exit_code == 0
         # May have servers or show "no MCP servers found"
         assert "mcp" in out.lower() or "no MCP servers found" in out or "id" in out.lower()
@@ -28,4 +30,6 @@ class TestMcpOperations:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [mcp list --search test]")
+        print(f"** exit_code={exit_code}, out={out[:300]!r}, err={err!r}")
         assert exit_code == 0

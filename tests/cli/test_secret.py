@@ -30,6 +30,8 @@ class TestSecretLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [secret add] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Added" in out
 
@@ -40,6 +42,8 @@ class TestSecretLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [secret list] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "TEST_KEY" in out
 
@@ -50,6 +54,8 @@ class TestSecretLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [secret update] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Updated" in out
 
@@ -60,5 +66,7 @@ class TestSecretLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [secret delete] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Deleted" in out

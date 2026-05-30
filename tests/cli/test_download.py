@@ -44,6 +44,8 @@ class TestDownloadLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [download single] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "test_data.txt" in out
 
@@ -54,5 +56,7 @@ class TestDownloadLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [download snapshot] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Snapshot ready" in out

@@ -33,6 +33,8 @@ class TestUploadLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [upload file] repo_id={self.repo_id}, file={test_file}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Upload complete" in out
 
@@ -48,5 +50,7 @@ class TestUploadLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [upload folder] repo_id={self.repo_id}, dir={upload_dir}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Folder upload complete" in out

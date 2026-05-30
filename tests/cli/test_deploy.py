@@ -35,6 +35,8 @@ class TestDeployLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [deploy] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Deploy requested" in out
 
@@ -45,6 +47,8 @@ class TestDeployLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [logs] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out[:300]!r}, err={err!r}")
         # Logs command should succeed even if empty
         assert exit_code == 0
 
@@ -55,6 +59,8 @@ class TestDeployLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [settings] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Updated" in out
 
@@ -65,5 +71,7 @@ class TestDeployLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [stop] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Stop requested" in out

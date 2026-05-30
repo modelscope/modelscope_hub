@@ -30,6 +30,8 @@ class TestRepoLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [repo create] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Created" in out
 
@@ -40,6 +42,8 @@ class TestRepoLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [repo info] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "repo_id" in out or self.repo_id in out
 
@@ -50,6 +54,8 @@ class TestRepoLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [repo list] owner={test_owner}")
+        print(f"** exit_code={exit_code}, out={out[:200]!r}, err={err!r}")
         assert exit_code == 0
 
     def test_04_delete_repo(self, test_token, test_endpoint):
@@ -59,5 +65,7 @@ class TestRepoLifecycle:
             token=test_token,
             endpoint=test_endpoint,
         )
+        print(f"\n** [repo delete] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Deleted" in out

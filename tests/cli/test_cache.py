@@ -78,6 +78,7 @@ class TestCacheScan:
     def test_cache_scan(self, mock_api, run_cli):
         """cache scan displays summary and table."""
         exit_code, out, err = run_cli(["cache", "scan"])
+        print(f"\n** [cache scan] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "/tmp/cache" in out
         assert "owner/model1" in out
@@ -90,6 +91,7 @@ class TestCacheScan:
             repos=[], total_size=0, cache_dir="/tmp/cache"
         )
         exit_code, out, err = run_cli(["cache", "scan"])
+        print(f"\n** [cache scan empty] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "0 repo(s)" in out
 
@@ -98,6 +100,7 @@ class TestCacheScan:
         exit_code, out, err = run_cli(
             ["cache", "scan", "--cache-dir", "/custom/cache"]
         )
+        print(f"\n** [cache scan --cache-dir] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         mock_api.scan_cache.assert_called_once_with("/custom/cache")
 
@@ -109,6 +112,7 @@ class TestCacheClear:
         """cache clear with confirmation 'y' clears everything."""
         with patch("builtins.input", return_value="y"):
             exit_code, out, err = run_cli(["cache", "clear"])
+        print(f"\n** [cache clear confirmed] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Freed" in out
         mock_api.clear_cache.assert_called_once_with(
@@ -121,6 +125,7 @@ class TestCacheClear:
         """cache clear with confirmation 'n' aborts."""
         with patch("builtins.input", return_value="n"):
             exit_code, out, err = run_cli(["cache", "clear"])
+        print(f"\n** [cache clear cancelled] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Aborted" in out
         mock_api.clear_cache.assert_not_called()
@@ -131,6 +136,7 @@ class TestCacheClear:
             exit_code, out, err = run_cli(
                 ["cache", "clear", "--repo-type", "model"]
             )
+        print(f"\n** [cache clear --repo-type] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         mock_api.clear_cache.assert_called_once_with(
             cache_dir=None,
@@ -143,12 +149,14 @@ class TestCacheClear:
         exit_code, out, err = run_cli(
             ["cache", "clear", "--repo-id", "owner/model", "--yes"]
         )
+        print(f"\n** [cache clear missing type] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 2
         assert "repo-type" in err.lower()
 
     def test_cache_clear_force_yes(self, mock_api, run_cli):
         """cache clear --yes skips confirmation."""
         exit_code, out, err = run_cli(["cache", "clear", "--yes"])
+        print(f"\n** [cache clear --yes] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         assert "Freed" in out
         mock_api.clear_cache.assert_called_once()
@@ -161,6 +169,7 @@ class TestCacheClear:
             "--repo-id", "owner/model1",
             "--yes",
         ])
+        print(f"\n** [cache clear specific] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
         mock_api.clear_cache.assert_called_once_with(
             cache_dir=None,
