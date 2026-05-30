@@ -1,7 +1,7 @@
 [project]
 name = "modelscope-hub"
 dynamic = ["version"]
-description = "An OpenAPI-first Python SDK for interacting with the ModelScope Hub platform."
+description = "The official Python client to connect with ModelScope Hub."
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 readme = "README.md"
