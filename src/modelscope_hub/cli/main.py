@@ -51,7 +51,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"modelscope_hub {__version__}",
+        version=f"modelscope-hub {__version__}",
     )
     parser.add_argument(
         "--token",
