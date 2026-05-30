@@ -1,5 +1,5 @@
 [project]
-name = "modelscope_hub"
+name = "modelscope-hub"
 dynamic = ["version"]
 description = "An OpenAPI-first Python SDK for interacting with the ModelScope Hub platform."
 requires-python = ">=3.10"
