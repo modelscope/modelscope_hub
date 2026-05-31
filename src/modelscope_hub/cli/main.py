@@ -133,6 +133,7 @@ def _register_clear_cache_alias(subparsers) -> None:
     group = p.add_mutually_exclusive_group()
     group.add_argument("--model", type=str, default=None, help=SUPPRESS)
     group.add_argument("--dataset", type=str, default=None, help=SUPPRESS)
+    p.add_argument("--cache-dir", dest="cache_dir", default=None, help="Override cache directory.")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
     p.set_defaults(_command=_ClearCacheAlias)
 
@@ -146,7 +147,7 @@ class _CreateAlias(CLICommand):
 
     def execute(self) -> None:
         from .compat import _merge_subcmd_auth
-        _merge_subcmd_auth(self.args)
+        _merge_subcmd_auth(self.args, warn=False)
         self.args.exist_ok = getattr(self.args, "exist_ok", False)
         _RepoCreate(self.args).execute()
 

@@ -861,13 +861,15 @@ class HubApi:
             Branch, tag or commit SHA. Defaults to ``"master"``.
         cache_dir : str or Path, optional
             Override the default cache directory.
+        local_dir : str or Path, optional
+            When set, download directly into this directory instead of cache.
         force : bool, optional
             Re-download even if a cached copy exists. Default is ``False``.
 
         Returns
         -------
         Path
-            Absolute path to the cached file on disk.
+            Absolute path to the downloaded file on disk.
 
         Raises
         ------
@@ -922,6 +924,8 @@ class HubApi:
             Branch, tag or commit SHA. Defaults to ``"master"``.
         cache_dir : str or Path, optional
             Override the default cache directory.
+        local_dir : str or Path, optional
+            When set, download directly into this directory instead of cache.
         allow_patterns : list of str, optional
             If given, only matching files are downloaded.
         ignore_patterns : list of str, optional
@@ -932,7 +936,7 @@ class HubApi:
         Returns
         -------
         Path
-            Absolute path to the snapshot root directory.
+            Absolute path to the snapshot/local directory.
 
         Examples
         --------

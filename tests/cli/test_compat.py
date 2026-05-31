@@ -135,6 +135,23 @@ class TestNormalizeDownloadArgs:
         assert args.repo_id == "owner/repo"
         assert "file.bin" in args.files
 
+    def test_model_overrides_explicit_repo_type(self, parser):
+        """--model always implies repo_type='model', even if --repo-type is given."""
+        args = parser.parse_args(["download", "--model", "o/r", "--repo-type", "dataset"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            normalize_download_args(args)
+        assert args.repo_type == "model"
+
+    def test_collection_to_repo_id(self, parser):
+        """--collection maps to repo_id with repo_type='collection'."""
+        args = parser.parse_args(["download", "--collection", "my_collection"])
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            normalize_download_args(args)
+        assert args.repo_id == "my_collection"
+        assert args.repo_type == "collection"
+
 
 # ---------------------------------------------------------------------------
 # Include/Exclude patterns
@@ -177,6 +194,11 @@ class TestAliases:
     def test_clear_cache_alias(self, parser):
         args = parser.parse_args(["clear-cache", "--model", "owner/repo"])
         assert args.model == "owner/repo"
+        assert hasattr(args, "cache_dir")
+
+    def test_clear_cache_with_cache_dir(self, parser):
+        args = parser.parse_args(["clear-cache", "--model", "owner/repo", "--cache-dir", "/tmp"])
+        assert args.cache_dir == "/tmp"
 
     def test_clear_cache_dataset(self, parser):
         args = parser.parse_args(["clear-cache", "--dataset", "owner/data"])

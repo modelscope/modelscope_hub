@@ -82,7 +82,7 @@ class DownloadCommand(CLICommand):
 
         api = make_api(self.args)
         cache_dir: Path | None = Path(self.args.cache_dir) if self.args.cache_dir else None
-        local_dir: Path | None = Path(self.args.local_dir) if getattr(self.args, "local_dir", None) else None
+        local_dir: Path | None = Path(self.args.local_dir) if self.args.local_dir else None
 
         if self.args.files:
             for file_path in self.args.files:

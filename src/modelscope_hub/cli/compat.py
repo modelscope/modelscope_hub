@@ -91,7 +91,7 @@ def normalize_download_args(args: Namespace) -> Namespace:
       --cache_dir (underscore) → cache_dir
       subcmd_token/subcmd_endpoint → token/endpoint
     """
-    # --model / --dataset → repo_id + repo_type
+    # --model / --dataset / --collection → repo_id + repo_type
     if getattr(args, "model", None):
         deprecated_arg("--model", "positional repo_id")
         if args.repo_id is not None:
@@ -99,8 +99,7 @@ def normalize_download_args(args: Namespace) -> Namespace:
                 args.files = []
             args.files.insert(0, args.repo_id)
         args.repo_id = args.model
-        if not getattr(args, "repo_type", None) or args.repo_type == "model":
-            args.repo_type = "model"
+        args.repo_type = "model"
     elif getattr(args, "dataset", None):
         deprecated_arg("--dataset", "positional repo_id with --repo-type dataset")
         if args.repo_id is not None:
@@ -109,6 +108,14 @@ def normalize_download_args(args: Namespace) -> Namespace:
             args.files.insert(0, args.repo_id)
         args.repo_id = args.dataset
         args.repo_type = "dataset"
+    elif getattr(args, "collection", None):
+        deprecated_arg("--collection", "positional repo_id with --repo-type collection")
+        if args.repo_id is not None:
+            if not args.files:
+                args.files = []
+            args.files.insert(0, args.repo_id)
+        args.repo_id = args.collection
+        args.repo_type = "collection"
 
     # --local_dir (underscore) → local_dir
     legacy_local = getattr(args, "local_dir_legacy", None)
@@ -158,14 +165,27 @@ def normalize_patterns(value: Any) -> list[str] | None:
     return result or None
 
 
-def _merge_subcmd_auth(args: Namespace) -> None:
-    """Merge subcommand-level --token/--endpoint with global (subcmd wins)."""
+def _merge_subcmd_auth(args: Namespace, *, warn: bool = True) -> None:
+    """Merge subcommand-level --token/--endpoint into the namespace.
+
+    Subcommand-level values take precedence over global values (they are
+    more specific). When *warn* is True, a deprecation warning is emitted
+    advising users to use the global form.
+
+    Parameters
+    ----------
+    warn : bool
+        Emit deprecation warnings. Set to False when called from alias
+        adapters where subcommand-level auth is the expected interface.
+    """
     subcmd_token = getattr(args, "subcmd_token", None)
     if subcmd_token:
-        deprecated_arg("subcommand --token", "global --token (before subcommand)")
+        if warn:
+            deprecated_arg("subcommand --token", "global --token (before subcommand)")
         args.token = subcmd_token
 
     subcmd_endpoint = getattr(args, "subcmd_endpoint", None)
     if subcmd_endpoint:
-        deprecated_arg("subcommand --endpoint", "global --endpoint (before subcommand)")
+        if warn:
+            deprecated_arg("subcommand --endpoint", "global --endpoint (before subcommand)")
         args.endpoint = subcmd_endpoint

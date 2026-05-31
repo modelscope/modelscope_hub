@@ -27,6 +27,7 @@ class LegacyHubApi:
     ) -> None:
         if endpoint and not endpoint.startswith("http"):
             endpoint = f"https://{endpoint}"
+        self._endpoint = endpoint
         self._api = HubApi(endpoint=endpoint, token=token)
 
     # ------------------------------------------------------------------
@@ -73,10 +74,11 @@ class LegacyHubApi:
         **kwargs: Any,
     ) -> None:
         """Create a repository (legacy signature)."""
+        api = self._api
         if token:
-            self._api._config.token = token
+            api = HubApi(token=token, endpoint=endpoint or self._endpoint)
         try:
-            self._api.create_repo(
+            api.create_repo(
                 repo_id,
                 repo_type=repo_type,
                 visibility=visibility,
