@@ -51,7 +51,7 @@ ms login
 ms login --token $MODELSCOPE_API_TOKEN
 ```
 
-Get your token at [modelscope.cn/my/myaccesstoken](https://modelscope.cn/my/myaccesstoken) or [modelscope.ai/my/myaccesstoken](https://modelscope.ai/my/myaccesstoken).
+Get your token at [modelscope.cn/my/access/token](https://modelscope.cn/my/access/token) or [modelscope.ai/my/access/token](https://modelscope.ai/my/access/token).
 
 ```python
 from modelscope_hub import HubApi
@@ -234,6 +234,7 @@ ms repo delete my-org/my-model --repo-type model --yes
 | `--sdk-type` | no | Studio SDK: `gradio`, `streamlit`, `docker`, `static` |
 | `--sdk-version` | no | Studio SDK version |
 | `--base-image` | no | Studio base Docker image |
+| `--cover-image` | no | Studio cover image URL |
 | `--hardware` | no | Studio hardware spec |
 
 </details>
@@ -249,12 +250,17 @@ ms settings my-org/chat-demo cpu=4 memory=8192
 ms stop my-org/chat-demo --repo-type studio
 ```
 
+<details>
+<summary>Options</summary>
+
 | Command | Key Options |
 |---------|-------------|
 | `ms deploy <repo_id>` | `--repo-type {studio,mcp}` |
 | `ms stop <repo_id>` | `--repo-type {studio,mcp}` |
 | `ms logs <repo_id>` | `--log-type {runtime,build}`, `--keyword`, `--page`, `--page-size` |
 | `ms settings <repo_id> key=val...` | Key-value pairs passed to backend |
+
+</details>
 
 ### `ms secret`
 
@@ -267,12 +273,17 @@ ms secret update my-org/demo API_KEY sk-new
 ms secret delete my-org/demo API_KEY --yes
 ```
 
+<details>
+<summary>Subcommands</summary>
+
 | Subcommand | Arguments | Description |
 |------------|-----------|-------------|
 | `add` | `repo_id key value` | Add a new secret |
 | `list` | `repo_id` | List all secret keys |
 | `update` | `repo_id key value` | Update a secret value |
 | `delete` | `repo_id key [--yes]` | Delete a secret |
+
+</details>
 
 ### `ms mcp`
 
@@ -285,12 +296,17 @@ ms mcp deploy my-org/weather-mcp
 ms mcp undeploy my-org/weather-mcp
 ```
 
+<details>
+<summary>Subcommands</summary>
+
 | Subcommand | Arguments | Key Options |
 |------------|-----------|-------------|
 | `list` | — | `--search`, `--page`, `--page-size` |
-| `info` | `server_id` | `--operational-url` |
+| `info` | `server_id` | — |
 | `deploy` | `server_id` | — |
 | `undeploy` | `server_id` | — |
+
+</details>
 
 ### `ms cache`
 
@@ -303,10 +319,15 @@ ms cache clear --repo-type model --yes
 ms cache clear --repo-id my-org/old-model --repo-type model --yes
 ```
 
+<details>
+<summary>Options</summary>
+
 | Subcommand | Key Options |
 |------------|-------------|
 | `scan` | `--cache-dir DIR` |
 | `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--yes` |
+
+</details>
 
 ---
 
@@ -402,7 +423,7 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 |---------------------|---------|
 | `MODELSCOPE_API_TOKEN` | Default API token |
 | `MODELSCOPE_ENDPOINT` | API endpoint (default: `https://modelscope.cn`) |
-| `MODELSCOPE_CACHE_DIR` | Override cache directory |
+| `MODELSCOPE_CACHE` | Override cache directory |
 
 Token is persisted locally after `ms login` and auto-loaded in subsequent sessions.
 
