@@ -13,7 +13,7 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 [![license](https://img.shields.io/github/license/modelscope/modelscope_hub.svg)](https://github.com/modelscope/modelscope_hub/blob/main/LICENSE)
 [![open issues](https://isitmaintained.com/badge/open/modelscope/modelscope_hub.svg)](https://github.com/modelscope/modelscope_hub/issues)
 [![GitHub pull-requests](https://img.shields.io/github/issues-pr/modelscope/modelscope_hub.svg)](https://github.com/modelscope/modelscope_hub/pulls)
-[![GitHub latest commit](https://badgen.net/github/last-commit/modelscope/modelscope_hub)](https://github.com/modelscope/modelscope_hub/commit/)
+[![GitHub latest commit](https://badgen.net/github/last-commit/modelscope/modelscope_hub)](https://github.com/modelscope/modelscope_hub/commits/main)
 
 [modelscope.cn](https://modelscope.cn) | [modelscope.ai](https://modelscope.ai)
 
