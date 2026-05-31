@@ -1,24 +1,20 @@
 <p align="center">
-  <img src="https://modelscope.cn/static/favicon.png" width="60" alt="ModelScope">
-</p>
+    <br>
+    <img src="https://modelscope.oss-cn-beijing.aliyuncs.com/modelscope.gif" width="400"/>
+    <br>
+<p>
 
-<h3 align="center">modelscope-hub</h3>
+<div align="center">
 
-<p align="center">
-  <em>The official Python SDK & CLI for <a href="https://modelscope.cn">ModelScope Hub</a> — download, upload, and manage AI assets from one unified interface.</em>
-</p>
+The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — download, upload, and manage AI assets from one unified interface.
 
-<p align="center">
-  <a href="https://modelscope.cn">modelscope.cn</a> &nbsp;|&nbsp; <a href="https://modelscope.ai">modelscope.ai</a>
-</p>
+[![PyPI](https://img.shields.io/pypi/v/modelscope-hub)](https://pypi.org/project/modelscope-hub/)
+[![Python](https://img.shields.io/pypi/pyversions/modelscope-hub)](https://pypi.org/project/modelscope-hub/)
+[![License](https://img.shields.io/github/license/modelscope/modelscope_hub)](https://github.com/modelscope/modelscope_hub/blob/main/LICENSE)
 
-<p align="center">
-  <a href="https://pypi.org/project/modelscope-hub/"><img alt="PyPI" src="https://img.shields.io/pypi/v/modelscope-hub"></a>
-  <a href="https://pypi.org/project/modelscope-hub/"><img alt="Python" src="https://img.shields.io/pypi/pyversions/modelscope-hub"></a>
-  <a href="https://github.com/modelscope/modelscope_hub/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/modelscope/modelscope_hub"></a>
-</p>
+[modelscope.cn](https://modelscope.cn) | [modelscope.ai](https://modelscope.ai)
 
----
+</div>
 
 ## Why modelscope-hub?
 
