@@ -59,10 +59,14 @@ def add_repo_type_arg(
     required: bool = True,
     help: str = "Repository type.",
 ) -> None:
-    """Attach a uniform ``--repo-type`` argument to ``parser``."""
+    """Attach a uniform ``--repo-type`` argument to ``parser``.
+
+    Also accepts the legacy ``--repo_type`` (underscore) form for backward
+    compatibility with the old ``modelscope`` CLI.
+    """
     valid = list(choices) if choices else [t.value for t in RepoType]
     parser.add_argument(
-        "--repo-type",
+        "--repo-type", "--repo_type",
         dest="repo_type",
         choices=valid,
         default=default,

@@ -840,6 +840,7 @@ class HubApi:
         *,
         revision: str | None = None,
         cache_dir: str | Path | None = None,
+        local_dir: str | Path | None = None,
         force: bool = False,
     ) -> Path:
         """Download a single file from a repository.
@@ -890,6 +891,7 @@ class HubApi:
             file_path=file_path,
             revision=revision or "master",
             cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
             force=force,
         )
 
@@ -900,6 +902,7 @@ class HubApi:
         *,
         revision: str | None = None,
         cache_dir: str | Path | None = None,
+        local_dir: str | Path | None = None,
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         max_workers: int = 4,
@@ -950,6 +953,7 @@ class HubApi:
             repo_type=str(rt),
             revision=revision or "master",
             cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,

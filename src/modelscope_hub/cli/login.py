@@ -8,7 +8,7 @@ independently.
 from __future__ import annotations
 
 import getpass
-from argparse import Action
+from argparse import Action, SUPPRESS
 
 from .base import CLICommand, error, info, make_api, success
 
@@ -29,9 +29,16 @@ class LoginCommand(CLICommand):
             default=None,
             help="API token. If omitted, you will be prompted interactively.",
         )
+        # Legacy compat: subcommand-level --endpoint
+        parser.add_argument("--endpoint", dest="subcmd_endpoint", default=None, help=SUPPRESS)
         parser.set_defaults(_command=LoginCommand)
 
     def execute(self) -> None:
+        # Merge legacy subcommand --endpoint
+        subcmd_ep = getattr(self.args, "subcmd_endpoint", None)
+        if subcmd_ep and not getattr(self.args, "endpoint", None):
+            self.args.endpoint = subcmd_ep
+
         token = self.args.login_token or getattr(self.args, "token", None)
         if not token:
             try:

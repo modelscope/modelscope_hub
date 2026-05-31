@@ -9,19 +9,21 @@ and translates SDK exceptions into friendly, machine-parseable output.
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import logging
 import sys
+from argparse import SUPPRESS
 from typing import Sequence
 
 from .. import __version__
 from ..errors import HubError, NetworkError
-from .base import error
-from .cache import CacheCommand
+from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
+from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
 from .download import DownloadCommand
 from .login import LoginCommand, WhoamiCommand
 from .mcp import McpCommand
-from .repo import RepoCommand
+from .repo import RepoCommand, _RepoCreate
 from .secret import SecretCommand
 from .upload import UploadCommand
 
@@ -42,6 +44,9 @@ _COMMANDS = [
     CacheCommand,
 ]
 
+# Plugin entry-point group name
+_PLUGIN_GROUP = "modelscope_hub.cli_plugins"
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -49,6 +54,7 @@ def _build_parser() -> argparse.ArgumentParser:
         description="ModelScope Hub command-line interface.",
     )
     parser.add_argument(
+        "-V",
         "--version",
         action="version",
         version=f"modelscope-hub {__version__}",
@@ -71,12 +77,142 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
     subparsers.required = True
+
     for cmd in _COMMANDS:
         cmd.register(subparsers)
+
+    # Register top-level aliases for backward compatibility
+    _register_aliases(subparsers)
+
+    # Discover and register CLI plugins from other packages
+    _discover_plugins(subparsers)
 
     return parser
 
 
+# ---------------------------------------------------------------------------
+# Aliases — backward compat with old `modelscope create`, `scan-cache`, etc.
+# ---------------------------------------------------------------------------
+def _register_aliases(subparsers) -> None:
+    """Register top-level command aliases for legacy CLI compatibility."""
+    _register_create_alias(subparsers)
+    _register_scan_cache_alias(subparsers)
+    _register_clear_cache_alias(subparsers)
+
+
+def _register_create_alias(subparsers) -> None:
+    """``ms create`` → alias for ``ms repo create``."""
+    from ..constants import RepoType
+
+    p = subparsers.add_parser("create", help="[Alias] Create a new repository.")
+    p.add_argument("repo_id", help="Canonical 'owner/name' identifier.")
+    add_repo_type_arg(p)
+    p.add_argument("--visibility", choices=["public", "private", "internal"], default=None)
+    p.add_argument("--license", dest="license", default=None)
+    p.add_argument("--chinese-name", "--chinese_name", dest="chinese_name", default=None)
+    p.add_argument("--description", dest="description", default=None)
+    p.add_argument("--exist-ok", "--exist_ok", dest="exist_ok", action="store_true", default=False)
+    # Legacy hidden
+    p.add_argument("--token", dest="subcmd_token", default=None, help=SUPPRESS)
+    p.add_argument("--endpoint", dest="subcmd_endpoint", default=None, help=SUPPRESS)
+    p.set_defaults(_command=_CreateAlias)
+
+
+def _register_scan_cache_alias(subparsers) -> None:
+    """``ms scan-cache`` → alias for ``ms cache scan``."""
+    p = subparsers.add_parser("scan-cache", help="[Alias] Show cached repos and disk usage.")
+    p.add_argument("--dir", "--cache-dir", dest="cache_dir", default=None)
+    p.set_defaults(_command=_ScanCacheAlias)
+
+
+def _register_clear_cache_alias(subparsers) -> None:
+    """``ms clear-cache`` → alias for ``ms cache clear``."""
+    from ..constants import RepoType
+
+    p = subparsers.add_parser("clear-cache", help="[Alias] Remove cached files.")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--model", type=str, default=None, help=SUPPRESS)
+    group.add_argument("--dataset", type=str, default=None, help=SUPPRESS)
+    p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
+    p.set_defaults(_command=_ClearCacheAlias)
+
+
+class _CreateAlias(CLICommand):
+    """Adapter: top-level ``create`` → ``repo create``."""
+
+    @staticmethod
+    def register(subparsers) -> None:
+        pass  # registration handled by _register_create_alias
+
+    def execute(self) -> None:
+        from .compat import _merge_subcmd_auth
+        _merge_subcmd_auth(self.args)
+        self.args.exist_ok = getattr(self.args, "exist_ok", False)
+        _RepoCreate(self.args).execute()
+
+
+class _ScanCacheAlias(CLICommand):
+    """Adapter: top-level ``scan-cache`` → ``cache scan``."""
+
+    @staticmethod
+    def register(subparsers) -> None:
+        pass
+
+    def execute(self) -> None:
+        _CacheScan(self.args).execute()
+
+
+class _ClearCacheAlias(CLICommand):
+    """Adapter: top-level ``clear-cache`` → ``cache clear``.
+
+    Maps legacy --model/--dataset to repo_type + repo_id.
+    """
+
+    @staticmethod
+    def register(subparsers) -> None:
+        pass
+
+    def execute(self) -> None:
+        model = getattr(self.args, "model", None)
+        dataset = getattr(self.args, "dataset", None)
+        if model:
+            self.args.repo_type = "model"
+            self.args.repo_id = model
+        elif dataset:
+            self.args.repo_type = "dataset"
+            self.args.repo_id = dataset
+        else:
+            self.args.repo_type = None
+            self.args.repo_id = None
+        _CacheClear(self.args).execute()
+
+
+# ---------------------------------------------------------------------------
+# Plugin discovery
+# ---------------------------------------------------------------------------
+def _discover_plugins(subparsers) -> None:
+    """Discover CLI plugins registered via entry_points."""
+    try:
+        eps = importlib.metadata.entry_points(group=_PLUGIN_GROUP)
+    except TypeError:
+        eps = importlib.metadata.entry_points().get(_PLUGIN_GROUP, [])
+
+    for ep in eps:
+        try:
+            cmd_cls = ep.load()
+            if hasattr(cmd_cls, "register"):
+                cmd_cls.register(subparsers)
+            elif hasattr(cmd_cls, "define_args"):
+                cmd_cls.define_args(subparsers)
+        except Exception as exc:
+            logging.getLogger(__name__).debug(
+                "Failed to load CLI plugin %r: %s", ep.name, exc
+            )
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 def run_cmd(argv: Sequence[str] | None = None) -> int:
     """Console-script entry point referenced by ``[project.scripts]``."""
     parser = _build_parser()

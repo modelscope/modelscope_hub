@@ -73,8 +73,11 @@ class _RepoCreate(CLICommand):
         add_repo_type_arg(p)
         p.add_argument("--visibility", choices=["public", "private", "internal"], default=None)
         p.add_argument("--license", dest="license", default=None)
-        p.add_argument("--chinese-name", dest="chinese_name", default=None)
+        p.add_argument("--chinese-name", "--chinese_name", dest="chinese_name", default=None)
         p.add_argument("--description", dest="description", default=None)
+        p.add_argument("--exist-ok", "--exist_ok", dest="exist_ok",
+                       action="store_true", default=False,
+                       help="Do not error if repository already exists.")
         # Studio-specific options. They are accepted for any repo type for a
         # uniform CLI surface and forwarded as extra kwargs — the API layer
         # only emits them for Studios.
@@ -98,16 +101,22 @@ class _RepoCreate(CLICommand):
             value = getattr(self.args, key, None)
             if value is not None:
                 extra[key] = value
-        repo = api.create_repo(
-            self.args.repo_id,
-            self.args.repo_type,
-            visibility=self.args.visibility,
-            license=self.args.license,
-            chinese_name=self.args.chinese_name,
-            description=self.args.description,
-            **extra,
-        )
-        success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
+        try:
+            repo = api.create_repo(
+                self.args.repo_id,
+                self.args.repo_type,
+                visibility=self.args.visibility,
+                license=self.args.license,
+                chinese_name=self.args.chinese_name,
+                description=getattr(self.args, "description", None),
+                **extra,
+            )
+            success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
+        except Exception as exc:
+            if getattr(self.args, "exist_ok", False) and "exist" in str(exc).lower():
+                info(f"Repository already exists: {self.args.repo_id}")
+                return
+            raise
 
 
 class _RepoInfo(CLICommand):

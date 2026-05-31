@@ -56,11 +56,14 @@ class DownloadManager:
         file_path: str,
         revision: str = "master",
         cache_dir: Path | None = None,
+        local_dir: Path | None = None,
         force: bool = False,
     ) -> Path:
         """Download a single file from a repository.
 
-        Uses the snapshot cache layout::
+        When *local_dir* is provided the file is placed directly under that
+        directory (preserving relative path structure).  Otherwise the
+        standard cache layout is used::
 
             {cache_dir}/{type}s/{owner}--{name}/snapshots/{revision}/{file_path}
 
@@ -76,6 +79,8 @@ class DownloadManager:
             Branch, tag, or commit hash.
         cache_dir:
             Override for the default cache directory.
+        local_dir:
+            When set, download directly into this directory instead of cache.
         force:
             Re-download even if file exists in cache.
 
@@ -84,22 +89,19 @@ class DownloadManager:
         Path
             Absolute path to the downloaded (or cached) file on disk.
         """
-        root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
-        snapshot_dir = root / "snapshots" / revision
-        target = snapshot_dir / file_path
+        if local_dir is not None:
+            target = Path(local_dir) / file_path
+        else:
+            root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+            target = root / "snapshots" / revision / file_path
 
-        # Return cached file if valid and not forced
         if not force and target.exists():
             logger.debug("Cache hit: %s", target)
             return target
 
-        # Ensure the snapshot directory exists before streaming into it.
         ensure_dir(target.parent)
-
-        # Perform download with resume support
-        tmp_path = self._download_with_resume(repo_id, repo_type, file_path, revision, target)
-
-        return tmp_path
+        self._download_with_resume(repo_id, repo_type, file_path, revision, target)
+        return target
 
     def download_repo(
         self,
@@ -107,6 +109,7 @@ class DownloadManager:
         repo_type: str,
         revision: str = "master",
         cache_dir: Path | None = None,
+        local_dir: Path | None = None,
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         max_workers: int = 4,
@@ -123,6 +126,8 @@ class DownloadManager:
             Branch, tag, or commit hash.
         cache_dir:
             Override for the default cache directory.
+        local_dir:
+            When set, download directly into this directory instead of cache.
         allow_patterns:
             Only files matching these globs will be downloaded.
         ignore_patterns:
@@ -133,12 +138,14 @@ class DownloadManager:
         Returns
         -------
         Path
-            Absolute path to the snapshot directory.
+            Absolute path to the snapshot/local directory.
         """
-        root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
-        snapshot_dir = ensure_dir(root / "snapshots" / revision)
+        if local_dir is not None:
+            output_dir = ensure_dir(Path(local_dir))
+        else:
+            root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+            output_dir = ensure_dir(root / "snapshots" / revision)
 
-        # Fetch file tree
         files = self._client.list_repo_files(
             repo_id=repo_id,
             repo_type=repo_type,
@@ -146,7 +153,6 @@ class DownloadManager:
             recursive=True,
         )
 
-        # Filter files
         file_paths: list[str] = []
         for f in files:
             path = f.get("Path") or f.get("path") or f.get("Name") or ""
@@ -163,11 +169,10 @@ class DownloadManager:
 
         if not file_paths:
             logger.info("No files to download for %s@%s", repo_id, revision)
-            return snapshot_dir
+            return output_dir
 
         logger.info("Downloading %d files from %s@%s", len(file_paths), repo_id, revision)
 
-        # Parallel download
         errors: list[str] = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -178,6 +183,7 @@ class DownloadManager:
                     file_path=fp,
                     revision=revision,
                     cache_dir=cache_dir,
+                    local_dir=local_dir,
                 ): fp
                 for fp in file_paths
             }
@@ -196,7 +202,7 @@ class DownloadManager:
         if errors:
             logger.warning("%d file(s) failed to download", len(errors))
 
-        return snapshot_dir
+        return output_dir
 
     # ------------------------------------------------------------------
     # Internal helpers
