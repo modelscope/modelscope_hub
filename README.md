@@ -264,7 +264,7 @@ ms stop my-org/chat-demo --repo-type studio
 
 ### `ms secret`
 
-Manage secrets for Studio spaces.
+Manage secrets for Studio spaces (studio only, `--repo-type` defaults to `studio`).
 
 ```bash
 ms secret add my-org/demo API_KEY sk-xxx
@@ -282,6 +282,8 @@ ms secret delete my-org/demo API_KEY --yes
 | `list` | `repo_id` | List all secret keys |
 | `update` | `repo_id key value` | Update a secret value |
 | `delete` | `repo_id key [--yes]` | Delete a secret |
+
+All subcommands accept `--repo-type` (default: `studio`, currently the only supported type).
 
 </details>
 
