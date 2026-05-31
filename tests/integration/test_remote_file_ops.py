@@ -1,7 +1,7 @@
 """Integration tests for file operations, versioning, and auth edge cases.
 
 These tests hit the real ModelScope API. They require
-MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in .env.
+MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 """
 from __future__ import annotations
 

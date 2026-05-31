@@ -4,7 +4,7 @@ These tests verify that the OpenAPIClient correctly communicates with
 the ModelScope Hub OpenAPI surface. They exercise the client directly,
 independent of the HubApi facade.
 
-Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in .env.
+Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 """
 from __future__ import annotations
 

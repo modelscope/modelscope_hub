@@ -1,7 +1,7 @@
 """Integration tests for remote repo operations.
 
 These tests create real repos on ModelScope and clean up after themselves.
-Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in .env.
+Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 """
 from __future__ import annotations
 

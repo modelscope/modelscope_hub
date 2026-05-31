@@ -25,7 +25,7 @@ def _load_dotenv(path: Path) -> None:
         os.environ.setdefault(key, value)
 
 
-_load_dotenv(Path(__file__).parent.parent / ".env")
+_load_dotenv(Path(__file__).parent / ".env")
 
 
 # ---------------------------------------------------------------------------

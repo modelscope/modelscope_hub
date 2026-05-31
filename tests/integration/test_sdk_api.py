@@ -4,7 +4,7 @@ These tests exercise the SDK's public methods directly (not via CLI),
 making real API calls to ModelScope Hub. They focus on the most important
 user-facing interfaces: download, upload, repo management, and OpenAPI queries.
 
-Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in .env.
+Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 """
 from __future__ import annotations
 
