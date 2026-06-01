@@ -112,6 +112,8 @@ class LegacyClient:
             "Content-Type": "application/json",
             "X-Request-ID": uuid.uuid4().hex,
         }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
         if extra:
             headers.update(extra)
         return headers
@@ -119,9 +121,10 @@ class LegacyClient:
     def _ensure_session_auth(self) -> None:
         """Set the ``m_session_id`` cookie on the session for legacy API auth.
 
-        The legacy ``/api/v1/`` surface authenticates via cookies, not the
-        ``Authorization: Bearer`` header. The ``m_session_id`` cookie value
-        is simply the access token — no login round-trip is required.
+        Both cookie and Bearer header are sent: older endpoints rely on
+        the ``m_session_id`` cookie, while newer endpoints accept the
+        ``Authorization: Bearer`` header. Sending both is harmless and
+        maximises compatibility.
         """
         if self._session_authenticated or not self._token:
             return
@@ -200,33 +203,12 @@ class LegacyClient:
     # ------------------------------------------------------------------
     # Repo CRUD (model / dataset)
     # ------------------------------------------------------------------
-    def create_repo(
-        self,
-        repo_id: str,
-        repo_type: str,
-        visibility: int = 1,
-        license: str = "Apache-2.0",
-        **kwargs: Any,
-    ) -> dict:
-        """Create a new repository.
+    def create_repo(self, repo_type: str, body: dict[str, Any]) -> dict:
+        """POST /api/v1/{type}s — create a new repository.
 
-        POST /api/v1/models  (for model)
-        POST /api/v1/datasets (for dataset)
+        ``body`` is the fully-constructed request payload (PascalCase keys).
         """
         segment = _resolve_segment(repo_type)
-        parts = repo_id.split("/", 1)
-        owner = parts[0]
-        name = parts[1] if len(parts) > 1 else parts[0]
-
-        body: dict[str, Any] = {
-            "Path": owner,
-            "Name": name,
-            "Visibility": visibility,
-            "License": license,
-        }
-        # Merge extra kwargs (ChineseName, Description, etc.)
-        body.update(kwargs)
-
         resp = self._request("POST", segment, json_body=body)
         return self._json_data(resp)
 

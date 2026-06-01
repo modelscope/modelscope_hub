@@ -52,11 +52,14 @@ class TestDownloadLifecycle:
         cls.api = api
         print("** Setup: done")
         yield
-        try:
-            api.delete_repo(cls.repo_id, "model")
-            print(f"** Teardown: deleted repo {cls.repo_id}")
-        except Exception as e:
-            print(f"** Teardown: failed to delete repo {cls.repo_id}: {e}")
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                api.delete_repo(cls.repo_id, "model")
+                print(f"** Teardown: deleted repo {cls.repo_id}")
+            except Exception as e:
+                print(f"** Teardown: cleanup via web console: {cls.repo_id} ({e})")
 
     def test_01_download_single_file(self, test_token, test_endpoint, tmp_path):
         """Download a single file by name."""

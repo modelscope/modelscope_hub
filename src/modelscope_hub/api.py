@@ -54,8 +54,6 @@ _OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset({RepoType.STUDIO, RepoTyp
 _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
     {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
 )
-_LEGACY_DELETE_TYPES: frozenset[RepoType] = frozenset({RepoType.MODEL, RepoType.DATASET})
-
 # Mapping of common license display names to their SPDX identifiers. The Hub
 # backend rejects display names like ``"Apache License 2.0"`` — we translate
 # them transparently while passing unknown values (already SPDX) through.
@@ -518,24 +516,19 @@ class HubApi:
                 data, rt, owner_hint=owner, name_hint=name
             )
 
-        legacy_kwargs: dict[str, Any] = {}
-        if vis is not None:
-            legacy_kwargs["Visibility"] = vis
-        if license is not None:
-            legacy_kwargs["License"] = license
+        body: dict[str, Any] = {
+            "Path": owner,
+            "Name": name,
+            "Visibility": vis if vis is not None else int(Visibility.PUBLIC),
+            "License": license or "Apache-2.0",
+        }
         if chinese_name is not None:
-            legacy_kwargs["ChineseName"] = chinese_name
+            body["ChineseName"] = chinese_name
         if description is not None:
-            legacy_kwargs["Description"] = description
-        legacy_kwargs.update(extra)
+            body["Description"] = description
+        body.update(extra)
 
-        data = self.legacy.create_repo(
-            repo_id=repo_id,
-            repo_type=str(rt),
-            visibility=vis if vis is not None else int(Visibility.PUBLIC),
-            license=license or "Apache-2.0",
-            **legacy_kwargs,
-        )
+        data = self.legacy.create_repo(repo_type=str(rt), body=body)
         return self._repo_info_from_payload(
             data, rt, owner_hint=owner, name_hint=name
         )
@@ -696,36 +689,29 @@ class HubApi:
     def delete_repo(self, repo_id: str, repo_type: RepoTypeLike) -> None:
         """Delete a repository.
 
-        Currently only ``model`` and ``dataset`` are deletable via the legacy
-        surface; other types raise :class:`NotImplementedError`.
+        .. deprecated::
+            Programmatic repository deletion is not currently supported by
+            the Hub API for security reasons. This method will be restored
+            in a future release once proper token-scoped authentication is
+            available. To delete a repository now, use the web console at
+            https://modelscope.cn.
 
         Parameters
         ----------
         repo_id : str
             Canonical ``owner/name`` identifier.
         repo_type : str or RepoType
-            Must be ``"model"`` or ``"dataset"``.
-
-        Raises
-        ------
-        ValueError
-            When ``repo_id`` is not in ``owner/name`` form.
-        NotImplementedError
-            When ``repo_type`` is not deletable through the SDK.
-        NotFoundError
-            When the target repository does not exist.
-        AuthenticationError
-            When the caller is not authorised to delete the repository.
-
-        Examples
-        --------
-        >>> api.delete_repo("alice/old-model", repo_type="model")
+            Repository type (``"model"``, ``"dataset"``, etc.).
         """
+        import warnings
+        warnings.warn(
+            "This function is deprecated due to security reasons, "
+            "and will be recovered in future versions with proper token authentication. "
+            "Please go to https://modelscope.cn to delete repositories via the web console.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         rt = self._normalize_repo_type(repo_type)
-        if rt not in _LEGACY_DELETE_TYPES:
-            raise NotImplementedError(
-                f"Deletion is not supported for repo_type={rt.value!r}."
-            )
         self._parse_repo_id(repo_id)
         self.legacy.delete_repo(repo_id=repo_id, repo_type=str(rt))
 
