@@ -477,7 +477,7 @@ class OpenAPIClient:
         return self._request(
             "DELETE",
             f"/studios/{owner}/{repo_name}/secrets",
-            params=[("key", key)],
+            json_body={"key": key},
         )
 
     def update_studio_settings(

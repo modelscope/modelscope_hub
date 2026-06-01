@@ -1,6 +1,8 @@
 """Tests for ``ms upload`` command — real API file and folder upload."""
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from .conftest import run_cli
@@ -18,10 +20,12 @@ class TestUploadLifecycle:
         api.create_repo(cls.repo_id, "model", visibility="private")
         cls.api = api
         yield
-        try:
-            api.delete_repo(cls.repo_id, "model")
-        except Exception:
-            pass
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                api.delete_repo(cls.repo_id, "model")
+            except Exception:
+                pass
 
     def test_01_upload_file(self, test_token, test_endpoint, tmp_path):
         """Upload a single file successfully."""

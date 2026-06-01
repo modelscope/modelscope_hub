@@ -1,6 +1,8 @@
 """Tests for ``ms repo`` group — real API lifecycle: create → info → list → delete."""
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from .conftest import run_cli
@@ -17,11 +19,12 @@ class TestRepoLifecycle:
         cls.repo_id = f"{test_owner}/{repo_name}"
         cls.api = api
         yield
-        # Cleanup: ensure the repo is deleted regardless of test outcome
-        try:
-            api.delete_repo(cls.repo_id, "model")
-        except Exception:
-            pass
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                api.delete_repo(cls.repo_id, "model")
+            except Exception:
+                pass
 
     def test_01_create_repo(self, test_token, test_endpoint):
         """Create a private model repo."""

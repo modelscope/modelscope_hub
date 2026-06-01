@@ -1,6 +1,8 @@
 """Tests for ``ms secret`` group — real API secret CRUD lifecycle."""
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from .conftest import run_cli
@@ -18,10 +20,12 @@ class TestSecretLifecycle:
         api.create_repo(cls.repo_id, "studio", visibility="private")
         cls.api = api
         yield
-        try:
-            api.delete_repo(cls.repo_id, "studio")
-        except Exception:
-            pass
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                api.delete_repo(cls.repo_id, "studio")
+            except Exception:
+                pass
 
     def test_01_add_secret(self, test_token, test_endpoint):
         """Add a new secret."""
