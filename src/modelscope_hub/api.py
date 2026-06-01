@@ -37,7 +37,7 @@ from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .config import HubConfig, get_default_config
 from .constants import RepoType, Visibility
-from .errors import AuthenticationError, NotFoundError
+from .errors import AuthenticationError, HubError, NotFoundError
 from .types import CacheInfo, FileInfo, PagedResult, RepoInfo, UserInfo
 from .utils.logger import get_logger
 
@@ -170,7 +170,12 @@ class HubApi:
         ``POST /files/upload`` instead of the legacy commit endpoint.
         """
         if self._uploader is None:
-            self._uploader = UploadManager(self.legacy, self._config, self.openapi)
+            self._uploader = UploadManager(
+                self.legacy,
+                self._config,
+                self.openapi,
+                create_repo_fn=self._create_repo_exist_ok,
+            )
         return self._uploader
 
     # ==================================================================
@@ -189,6 +194,13 @@ class HubApi:
                 f"Invalid repo_id {repo_id!r}: owner and name must both be non-empty."
             )
         return owner, name
+
+    def _create_repo_exist_ok(self, repo_id: str, repo_type: str) -> None:
+        """Auto-create the repo if it doesn't exist, silently ignore if it does."""
+        try:
+            self.create_repo(repo_id, repo_type)
+        except HubError:
+            pass
 
     @staticmethod
     def _normalize_repo_type(repo_type: RepoTypeLike) -> RepoType:
@@ -754,14 +766,15 @@ class HubApi:
         path_in_repo: str,
         *,
         commit_message: str | None = None,
+        commit_description: str | None = None,
         revision: str | None = None,
+        buffer_size_mb: int = 16,
+        disable_tqdm: bool = False,
     ) -> dict:
         """Upload a single file to a repository.
 
-        Routing to large/small upload paths is handled internally by
-        :class:`UploadManager` (small files ≤ 5 MiB use the OpenAPI
-        ``POST /files/upload`` endpoint; larger files use the legacy commit
-        flow with LFS where applicable).
+        Always uploads the blob first (even for small files), then commits.
+        LFS mode is determined by file suffix and size threshold.
 
         Parameters
         ----------
@@ -775,13 +788,19 @@ class HubApi:
             Destination path inside the repository.
         commit_message : str, optional
             Commit message. Defaults to ``"Upload file"``.
+        commit_description : str, optional
+            Extended commit description.
         revision : str, optional
             Branch to commit on. Defaults to ``"master"``.
+        buffer_size_mb : int, optional
+            Buffer size in MiB for reading file data. Default 16.
+        disable_tqdm : bool, optional
+            Disable progress bar. Default False.
 
         Returns
         -------
         dict
-            Raw upload-response payload (commit id, blob id, ...).
+            Commit info from the server.
 
         Raises
         ------
@@ -792,8 +811,6 @@ class HubApi:
 
         Examples
         --------
-        Upload a local model weight file:
-
         >>> api.upload_file(
         ...     "alice/llama-7b",
         ...     repo_type="model",
@@ -801,10 +818,6 @@ class HubApi:
         ...     path_in_repo="pytorch_model.bin",
         ...     commit_message="Add fine-tuned weights",
         ... )
-
-        Upload raw bytes to a custom path:
-
-        >>> api.upload_file("alice/my-dataset", "dataset", b"col1,col2\n1,2\n", "data/sample.csv")
         """
         rt = self._normalize_repo_type(repo_type)
         return self.uploader.upload_file(
@@ -813,7 +826,10 @@ class HubApi:
             path_or_fileobj=path_or_fileobj,
             path_in_repo=path_in_repo,
             commit_message=commit_message or "Upload file",
+            commit_description=commit_description,
             revision=revision or "master",
+            buffer_size_mb=buffer_size_mb,
+            disable_tqdm=disable_tqdm,
         )
 
     def upload_folder(
@@ -824,16 +840,18 @@ class HubApi:
         *,
         path_in_repo: str = "",
         commit_message: str | None = None,
+        commit_description: str | None = None,
         revision: str | None = None,
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
-        max_workers: int = 4,
-    ) -> dict:
-        """Upload an entire folder to a repository.
+        max_workers: int | None = None,
+        use_cache: bool = True,
+    ) -> dict | list[dict] | None:
+        """Upload an entire folder to a repository with resumable support.
 
         Files are walked recursively from ``folder_path`` and uploaded in
-        parallel. ``allow_patterns`` / ``ignore_patterns`` use ``fnmatch``
-        glob syntax to filter the file set.
+        parallel with adaptive batching, per-file retry, and ReAct progressive
+        retry fallback.
 
         Parameters
         ----------
@@ -847,6 +865,8 @@ class HubApi:
             Destination prefix inside the repository. Defaults to the repo root.
         commit_message : str, optional
             Commit message. Defaults to ``"Upload folder"``.
+        commit_description : str, optional
+            Extended commit description.
         revision : str, optional
             Branch to commit on. Defaults to ``"master"``.
         allow_patterns : list of str, optional
@@ -854,17 +874,21 @@ class HubApi:
         ignore_patterns : list of str, optional
             Files matching any pattern are skipped.
         max_workers : int, optional
-            Concurrency for parallel uploads. Default is 4.
+            Concurrency for parallel uploads. Defaults to adaptive.
+        use_cache : bool, optional
+            Use ``.ms_upload_cache`` for resumable uploads. Default True.
 
         Returns
         -------
+        None
+            If all files were already committed (nothing to do).
         dict
-            Aggregated upload result (per-file status and commit metadata).
+            If only one batch was committed.
+        list of dict
+            If multiple batches were committed.
 
         Examples
         --------
-        Upload a model checkpoint directory while ignoring optimizer state:
-
         >>> api.upload_folder(
         ...     "alice/llama-7b",
         ...     repo_type="model",
@@ -880,10 +904,12 @@ class HubApi:
             folder_path=folder_path,
             path_in_repo=path_in_repo,
             commit_message=commit_message or "Upload folder",
+            commit_description=commit_description,
             revision=revision or "master",
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,
+            use_cache=use_cache,
         )
 
     def download_file(

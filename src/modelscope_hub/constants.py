@@ -105,6 +105,14 @@ def _env_int(name: str, default: int) -> int:
     return value if value > 0 else default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    """Read a boolean from the environment, falling back to ``default``."""
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 # ---------------------------------------------------------------------------
 # Network / IO tunables
 # ---------------------------------------------------------------------------
@@ -123,6 +131,83 @@ UPLOAD_LFS_THRESHOLD: int = _env_int("UPLOAD_LFS_THRESHOLD", 5 * 1024 * 1024)
 Default of 5 MiB aligns with the OpenAPI direct file-upload limit.
 """
 
+# Upload: LFS enforcement threshold (suffix-independent)
+UPLOAD_LFS_ENFORCE_THRESHOLD: int = _env_int(
+    "UPLOAD_LFS_ENFORCE_THRESHOLD", 1 * 1024 * 1024
+)
+
+# Upload: blob retry
+UPLOAD_BLOB_MAX_RETRIES: int = _env_int("UPLOAD_BLOB_MAX_RETRIES", 5)
+UPLOAD_BLOB_RETRY_BACKOFF: int = _env_int("UPLOAD_BLOB_RETRY_BACKOFF", 2)
+UPLOAD_BLOB_RETRY_MAX_WAIT: int = _env_int("UPLOAD_BLOB_RETRY_MAX_WAIT", 60)
+UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD: int = _env_int(
+    "UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD", 5 * 1024 * 1024
+)
+
+# Upload: batching
+UPLOAD_COMMIT_BATCH_SIZE: int = _env_int("UPLOAD_COMMIT_BATCH_SIZE", 256)
+UPLOAD_ADAPTIVE_BATCH_SIZE: bool = _env_bool("UPLOAD_ADAPTIVE_BATCH_SIZE", True)
+UPLOAD_VALIDATE_BLOB_BATCH_SIZE: int = _env_int(
+    "UPLOAD_VALIDATE_BLOB_BATCH_SIZE", 64
+)
+
+# Upload: commit retry
+UPLOAD_COMMIT_MAX_RETRIES: int = _env_int("UPLOAD_COMMIT_MAX_RETRIES", 5)
+
+# Upload: failed file retry & ReAct
+UPLOAD_FAILED_FILE_MAX_RETRIES: int = _env_int(
+    "UPLOAD_FAILED_FILE_MAX_RETRIES", 3
+)
+UPLOAD_REACT_ENABLED: bool = _env_bool("UPLOAD_REACT_ENABLED", True)
+UPLOAD_REACT_ROUND2_BASE_DELAY: int = _env_int(
+    "UPLOAD_REACT_ROUND2_BASE_DELAY", 2
+)
+UPLOAD_REACT_ROUND3_FILE_DELAY: int = _env_int(
+    "UPLOAD_REACT_ROUND3_FILE_DELAY", 5
+)
+UPLOAD_REACT_BACKOFF_MAX_EXPONENT: int = _env_int(
+    "UPLOAD_REACT_BACKOFF_MAX_EXPONENT", 5
+)
+UPLOAD_REACT_MAX_DELAY: int = _env_int("UPLOAD_REACT_MAX_DELAY", 120)
+
+# Upload: workers
+DEFAULT_MAX_WORKERS: int = _env_int(
+    "DEFAULT_MAX_WORKERS", min(8, (os.cpu_count() or 4) + 4)
+)
+
+# Upload: cache / tracker
+UPLOAD_USE_CACHE: bool = _env_bool("UPLOAD_USE_CACHE", True)
+UPLOAD_CACHE_FILE: str = ".ms_upload_cache"
+UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
+
+# Upload: limits
+UPLOAD_MAX_FILE_SIZE: int = _env_int(
+    "UPLOAD_MAX_FILE_SIZE", 100 * 1024 * 1024 * 1024
+)
+UPLOAD_MAX_FILE_COUNT: int = _env_int("UPLOAD_MAX_FILE_COUNT", 100_000)
+
+# LFS suffix lists (from old SDK — determines upload mode regardless of size)
+MODEL_LFS_SUFFIX: list[str] = [
+    ".7z", ".arrow", ".bin", ".bz2", ".ckpt", ".ftz", ".gz", ".h5",
+    ".joblib", ".mlmodel", ".model", ".msgpack", ".npy", ".npz", ".onnx",
+    ".ot", ".parquet", ".pb", ".pickle", ".pkl", ".pt", ".pth", ".rar",
+    ".safetensors", ".tar", ".tflite", ".tgz", ".wasm", ".xz", ".zip", ".zst",
+]
+DATASET_LFS_SUFFIX: list[str] = [
+    ".7z", ".aac", ".arrow", ".audio", ".bmp", ".bin", ".bz2", ".flac",
+    ".ftz", ".gif", ".gz", ".h5", ".jack", ".jpeg", ".jpg", ".png", ".jsonl",
+    ".joblib", ".lz4", ".msgpack", ".npy", ".npz", ".ot", ".parquet", ".pb",
+    ".pickle", ".pcm", ".pkl", ".raw", ".rar", ".sam", ".tar", ".tgz",
+    ".wasm", ".wav", ".webm", ".webp", ".zip", ".zst", ".tiff", ".mp3",
+    ".mp4", ".ogg",
+]
+
+# Default ignore patterns for folder upload
+DEFAULT_IGNORE_PATTERNS: list[str] = [
+    ".git", ".git/*", "*/.git", "**/.git/**",
+    ".cache", ".cache/*", "*/.cache", "**/.cache/**",
+]
+
 
 # ---------------------------------------------------------------------------
 # Filesystem layout
@@ -136,15 +221,39 @@ __all__ = [
     "API_MAX_RETRIES",
     "API_TIMEOUT",
     "CONFIG_DIR_NAME",
+    "DATASET_LFS_SUFFIX",
     "DEFAULT_CACHE_DIR_NAME",
     "DEFAULT_ENDPOINT",
+    "DEFAULT_IGNORE_PATTERNS",
+    "DEFAULT_MAX_WORKERS",
     "DOWNLOAD_CHUNK_SIZE",
     "LEGACY_API_PREFIX",
     "License",
+    "MODEL_LFS_SUFFIX",
     "OPENAPI_PREFIX",
     "RepoType",
     "StrEnum",
     "TOKEN_FILE_NAME",
+    "UPLOAD_ADAPTIVE_BATCH_SIZE",
+    "UPLOAD_BLOB_MAX_RETRIES",
+    "UPLOAD_BLOB_RETRY_BACKOFF",
+    "UPLOAD_BLOB_RETRY_MAX_WAIT",
+    "UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD",
+    "UPLOAD_CACHE_FILE",
+    "UPLOAD_COMMIT_BATCH_SIZE",
+    "UPLOAD_COMMIT_MAX_RETRIES",
+    "UPLOAD_FAILED_FILE_MAX_RETRIES",
+    "UPLOAD_LEGACY_PROGRESS_FILE",
+    "UPLOAD_LFS_ENFORCE_THRESHOLD",
     "UPLOAD_LFS_THRESHOLD",
+    "UPLOAD_MAX_FILE_COUNT",
+    "UPLOAD_MAX_FILE_SIZE",
+    "UPLOAD_REACT_BACKOFF_MAX_EXPONENT",
+    "UPLOAD_REACT_ENABLED",
+    "UPLOAD_REACT_MAX_DELAY",
+    "UPLOAD_REACT_ROUND2_BASE_DELAY",
+    "UPLOAD_REACT_ROUND3_FILE_DELAY",
+    "UPLOAD_USE_CACHE",
+    "UPLOAD_VALIDATE_BLOB_BATCH_SIZE",
     "Visibility",
 ]
