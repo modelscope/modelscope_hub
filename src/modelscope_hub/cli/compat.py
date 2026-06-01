@@ -151,18 +151,27 @@ def normalize_patterns(value: Any) -> list[str] | None:
     """Flatten pattern values into a simple list.
 
     Handles output from both PatternAction and legacy nargs='*'.
+    Also splits comma-separated values (matching old SDK's ``convert_patterns``).
     """
     if value is None:
         return None
     if isinstance(value, str):
-        return [value]
+        value = [value]
     result: list[str] = []
     for item in value:
         if isinstance(item, list):
-            result.extend(item)
+            for sub in item:
+                result.extend(_split_commas(sub))
         else:
-            result.append(item)
+            result.extend(_split_commas(item))
     return result or None
+
+
+def _split_commas(s: str) -> list[str]:
+    """Split a string on commas and strip whitespace from each part."""
+    if "," in s:
+        return [part.strip() for part in s.split(",") if part.strip()]
+    return [s.strip()] if s.strip() else []
 
 
 def _merge_subcmd_auth(args: Namespace, *, warn: bool = True) -> None:

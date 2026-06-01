@@ -5,19 +5,47 @@ Supports single-file and whole-repo (snapshot) downloads with:
 - SHA256 integrity verification
 - tqdm progress display
 - Parallel downloads via ThreadPoolExecutor
+- Parallel range download (split large files into parts)
+- Per-file download retry with backoff
+- File lock for multiprocess safety
+- User-agent / snapshot headers
+- Intra-cloud acceleration
+- Local-files-only (offline) mode
+- Custom progress callbacks
 - Local snapshot cache directory management
 """
 
 from __future__ import annotations
 
+import contextlib
+import copy
+import errno
 import fnmatch
+import hashlib
+import io
+import os
+import platform
+import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import requests
 from tqdm.auto import tqdm
+from urllib3.util.retry import Retry
 
-from .constants import DOWNLOAD_CHUNK_SIZE
+from .constants import (
+    DOWNLOAD_CHUNK_SIZE,
+    DOWNLOAD_PARALLEL_THRESHOLD_MB,
+    DOWNLOAD_PARALLELS,
+    DOWNLOAD_PART_SIZE,
+    DOWNLOAD_RETRY_TIMES,
+    DOWNLOAD_TIMEOUT,
+    ENV_FILE_LOCK,
+    ENV_INTRA_CLOUD_ACCELERATION,
+    ENV_INTRA_CLOUD_REGION,
+)
 from .errors import FileIntegrityError, NetworkError
 from .utils.file_utils import compute_hash, ensure_dir
 from .utils.logger import get_logger
@@ -28,7 +56,119 @@ if TYPE_CHECKING:
 
 logger = get_logger("download")
 
+DOWNLOAD_HASH_RETRY_TIMES = 3
 
+
+# ---------------------------------------------------------------------------
+# Progress callback system
+# ---------------------------------------------------------------------------
+class ProgressCallback:
+    """Base class for download progress callbacks.
+
+    Subclass and override :meth:`update` / :meth:`end` to track download
+    progress. Instances are created per-file by
+    ``callback_cls(filename, file_size)``.
+    """
+
+    def __init__(self, filename: str, file_size: int):
+        self.filename = filename
+        self.file_size = file_size
+
+    def update(self, size: int) -> None:
+        pass
+
+    def end(self) -> None:
+        pass
+
+
+class TqdmCallback(ProgressCallback):
+    """Progress callback backed by tqdm."""
+
+    def __init__(self, filename: str, file_size: int):
+        super().__init__(filename, file_size)
+        self.progress = tqdm(
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            total=file_size if file_size > 0 else 1,
+            initial=0,
+            desc=f"Downloading [{self.filename}]",
+            leave=True,
+        )
+
+    def update(self, size: int) -> None:
+        self.progress.update(size)
+
+    def end(self) -> None:
+        self.progress.close()
+
+
+# ---------------------------------------------------------------------------
+# File lock
+# ---------------------------------------------------------------------------
+@contextlib.contextmanager
+def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
+    """Acquire a file lock when *enabled*, otherwise no-op."""
+    if not enabled or lock_path is None:
+        yield
+        return
+
+    from filelock import FileLock, SoftFileLock, Timeout
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    default_interval = 60
+    lock = FileLock(str(lock_path), timeout=default_interval)
+
+    while True:
+        try:
+            lock.acquire(timeout=default_interval)
+        except Timeout:
+            logger.info(
+                "Still waiting to acquire lock on %s",
+                lock_path,
+            )
+        except NotImplementedError as exc:
+            if "use SoftFileLock instead" in str(exc):
+                logger.warning(
+                    "Filesystem does not support flock, falling back to SoftFileLock for %s",
+                    lock_path,
+                )
+                lock = SoftFileLock(str(lock_path), timeout=default_interval)
+                continue
+            raise
+        except OSError as exc:
+            if exc.errno in (errno.ESTALE, errno.ENOENT, getattr(errno, "EREMOTEIO", -1)):
+                logger.warning(
+                    "OSError (errno=%d) on %s, falling back to SoftFileLock.",
+                    exc.errno, lock_path,
+                )
+                lock = SoftFileLock(str(lock_path), timeout=default_interval)
+                continue
+            raise
+        else:
+            break
+
+    try:
+        yield lock
+    finally:
+        try:
+            lock.release()
+        except OSError:
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+
+def _file_lock_enabled() -> bool:
+    """Check whether file locking is enabled via environment."""
+    from .constants import _env_bool
+    return _env_bool(ENV_FILE_LOCK, True)
+
+
+# ---------------------------------------------------------------------------
+# Pattern matching
+# ---------------------------------------------------------------------------
 def _matches_patterns(path: str, patterns: list[str] | None) -> bool:
     """Check if path matches any of the glob patterns."""
     if not patterns:
@@ -36,6 +176,102 @@ def _matches_patterns(path: str, patterns: list[str] | None) -> bool:
     return any(fnmatch.fnmatch(path, pat) for pat in patterns)
 
 
+# ---------------------------------------------------------------------------
+# Parallel range download
+# ---------------------------------------------------------------------------
+def _download_part_with_retry(params: tuple) -> None:
+    """Download a byte range with retry and resume support."""
+    file_path, progress_callbacks, start, end, url, file_name, headers, cookies = params
+    get_headers = {} if headers is None else copy.deepcopy(headers)
+    get_headers["X-Request-ID"] = uuid.uuid4().hex
+    retry = Retry(
+        total=DOWNLOAD_RETRY_TIMES,
+        backoff_factor=1,
+        allowed_methods=["GET"],
+    )
+    part_file_name = f"{file_path}_{start}_{end}"
+    while True:
+        try:
+            partial_length = 0
+            if os.path.exists(part_file_name):
+                with open(part_file_name, "rb") as f:
+                    partial_length = f.seek(0, io.SEEK_END)
+                    for cb in progress_callbacks:
+                        cb.update(partial_length)
+            download_start = start + partial_length
+            if download_start > end:
+                break
+            get_headers["Range"] = f"bytes={download_start}-{end}"
+            with open(part_file_name, "ab+") as f:
+                r = requests.get(
+                    url, stream=True, headers=get_headers,
+                    cookies=cookies, timeout=DOWNLOAD_TIMEOUT,
+                )
+                r.raise_for_status()
+                for chunk in r.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                    if chunk:
+                        f.write(chunk)
+                        for cb in progress_callbacks:
+                            cb.update(len(chunk))
+            break
+        except Exception as exc:
+            retry = retry.increment("GET", url, error=exc)
+            logger.warning("Downloading part %s-%s failed: %s, will retry", start, end, exc)
+            retry.sleep()
+
+
+def _parallel_download(
+    url: str,
+    target: Path,
+    file_size: int,
+    headers: dict[str, str] | None,
+    cookies: dict | None,
+    progress_callbacks: list[ProgressCallback] | None = None,
+) -> str:
+    """Split a large file into parts and download in parallel.
+
+    Returns the SHA256 hex digest of the merged file.
+    """
+    callbacks = progress_callbacks or []
+    part_size = DOWNLOAD_PART_SIZE
+    tasks: list[tuple] = []
+    file_path = str(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    num_full_parts = file_size // part_size
+    for idx in range(num_full_parts):
+        start = idx * part_size
+        end = (idx + 1) * part_size - 1
+        tasks.append((file_path, callbacks, start, end, url, target.name, headers, cookies))
+    remainder_start = num_full_parts * part_size
+    if remainder_start < file_size:
+        tasks.append((file_path, callbacks, remainder_start, file_size - 1, url, target.name, headers, cookies))
+
+    parallels = min(DOWNLOAD_PARALLELS, 16)
+    with ThreadPoolExecutor(max_workers=parallels, thread_name_prefix="download") as executor:
+        list(executor.map(_download_part_with_retry, tasks))
+
+    for cb in callbacks:
+        cb.end()
+
+    hash_sha256 = hashlib.sha256()
+    with open(file_path, "wb") as output_file:
+        for task in tasks:
+            part_file_name = f"{task[0]}_{task[2]}_{task[3]}"
+            with open(part_file_name, "rb") as part_file:
+                while True:
+                    chunk = part_file.read(16 * DOWNLOAD_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    output_file.write(chunk)
+                    hash_sha256.update(chunk)
+            os.remove(part_file_name)
+    return hash_sha256.hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Download manager
+# ---------------------------------------------------------------------------
 class DownloadManager:
     """Internal file download implementation.
 
@@ -45,6 +281,79 @@ class DownloadManager:
     def __init__(self, legacy_client: "LegacyClient", config: "HubConfig") -> None:
         self._client = legacy_client
         self._config = config
+        self._cached_region: str | None = None
+
+    # ------------------------------------------------------------------
+    # User-agent & headers
+    # ------------------------------------------------------------------
+    def _build_user_agent(self, user_agent: dict | str | None = None) -> str:
+        from .version import __version__
+
+        env = os.environ.get("MODELSCOPE_CLOUD_ENVIRONMENT", "custom")
+        user_name = os.environ.get("MODELSCOPE_CLOUD_USERNAME", "unknown")
+
+        ua = (
+            f"modelscope_hub/{__version__}; python/{platform.python_version()}; "
+            f"session_id/{uuid.uuid4().hex}; platform/{platform.platform()}; "
+            f"processor/{platform.processor()}; env/{env}; user/{user_name}"
+        )
+        if isinstance(user_agent, dict):
+            ua += "; " + "; ".join(f"{k}/{v}" for k, v in user_agent.items())
+        elif isinstance(user_agent, str):
+            ua += "; " + user_agent
+        return ua
+
+    def _detect_region(self) -> str:
+        """Detect Alibaba cloud region ID for intra-cloud acceleration."""
+        if self._cached_region is not None:
+            return self._cached_region
+
+        endpoint = self._client.endpoint
+        internal_url = f"{endpoint}/api/v1/repos/internalAccelerationInfo"
+
+        def _get(url: str, timeout: float):
+            try:
+                resp = requests.get(url, timeout=timeout)
+                resp.raise_for_status()
+                return resp
+            except requests.exceptions.RequestException:
+                return None
+
+        region_id = ""
+        resp = _get(internal_url, 0.2)
+        if resp is not None:
+            data = resp.json()
+            query_addr = ""
+            if "Data" in data:
+                query_addr = data["Data"].get("InternalRegionQueryAddress", "")
+            if query_addr:
+                domain_resp = _get(query_addr, 0.2)
+                if domain_resp is not None:
+                    region_id = domain_resp.text.strip()
+
+        self._cached_region = region_id
+        return region_id
+
+    def _build_download_headers(
+        self,
+        user_agent: dict | str | None = None,
+    ) -> dict[str, str]:
+        from .constants import _env_bool
+
+        headers: dict[str, str] = {
+            "user-agent": self._build_user_agent(user_agent),
+            "snapshot-identifier": uuid.uuid4().hex,
+        }
+        if _env_bool(ENV_INTRA_CLOUD_ACCELERATION, True):
+            region = os.environ.get(ENV_INTRA_CLOUD_REGION, "").strip()
+            if not region:
+                try:
+                    region = self._detect_region()
+                except Exception:
+                    region = ""
+            if region:
+                headers["x-aliyun-region-id"] = region
+        return headers
 
     # ------------------------------------------------------------------
     # Public API
@@ -58,6 +367,11 @@ class DownloadManager:
         cache_dir: Path | None = None,
         local_dir: Path | None = None,
         force: bool = False,
+        expected_sha256: str | None = None,
+        local_files_only: bool = False,
+        file_size: int | None = None,
+        user_agent: dict | str | None = None,
+        progress_callbacks: list[type[ProgressCallback]] | None = None,
     ) -> Path:
         """Download a single file from a repository.
 
@@ -83,6 +397,19 @@ class DownloadManager:
             When set, download directly into this directory instead of cache.
         force:
             Re-download even if file exists in cache.
+        expected_sha256:
+            When provided, verify downloaded file hash and use it for
+            cache hit validation.
+        local_files_only:
+            When ``True``, return the cached path without network access.
+            Raises ``ValueError`` if the file is not cached.
+        file_size:
+            Known file size (enables parallel range download for large files).
+        user_agent:
+            Custom user-agent info appended to the default UA string.
+        progress_callbacks:
+            List of :class:`ProgressCallback` *classes* (not instances).
+            Each class is instantiated per-file with ``(filename, file_size)``.
 
         Returns
         -------
@@ -95,12 +422,52 @@ class DownloadManager:
             root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
             target = root / "snapshots" / revision / file_path
 
+        if local_files_only:
+            if target.exists():
+                return target
+            raise ValueError(
+                "Cannot find the requested files in the cached path and outgoing"
+                " traffic has been disabled. To enable look-ups and downloads"
+                " online, set 'local_files_only' to False."
+            )
+
         if not force and target.exists():
-            logger.debug("Cache hit: %s", target)
-            return target
+            if expected_sha256:
+                actual = compute_hash(target, "sha256")
+                if actual == expected_sha256:
+                    logger.debug("Cache hit (hash verified): %s", target)
+                    return target
+                logger.debug("Cache stale (hash mismatch): %s", target)
+            else:
+                logger.debug("Cache hit: %s", target)
+                return target
 
         ensure_dir(target.parent)
-        self._download_with_resume(repo_id, repo_type, file_path, revision, target)
+
+        for attempt in range(DOWNLOAD_HASH_RETRY_TIMES):
+            self._download_with_resume(
+                repo_id, repo_type, file_path, revision, target,
+                file_size=file_size,
+                user_agent=user_agent,
+                progress_callbacks=progress_callbacks,
+            )
+
+            if not expected_sha256:
+                break
+
+            try:
+                self.verify_file(target, expected_sha256)
+                break
+            except FileIntegrityError:
+                if attempt < DOWNLOAD_HASH_RETRY_TIMES - 1:
+                    logger.warning(
+                        "Hash validation failed for %s, retrying (%d/%d)",
+                        file_path, attempt + 1, DOWNLOAD_HASH_RETRY_TIMES,
+                    )
+                    target.unlink(missing_ok=True)
+                else:
+                    raise
+
         return target
 
     def download_repo(
@@ -113,6 +480,9 @@ class DownloadManager:
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         max_workers: int = 4,
+        local_files_only: bool = False,
+        user_agent: dict | str | None = None,
+        progress_callbacks: list[type[ProgressCallback]] | None = None,
     ) -> Path:
         """Download an entire repository (snapshot download).
 
@@ -134,6 +504,12 @@ class DownloadManager:
             Files matching these globs will be skipped.
         max_workers:
             Number of parallel download threads.
+        local_files_only:
+            When ``True``, return the cached snapshot path without network.
+        user_agent:
+            Custom user-agent info for download headers.
+        progress_callbacks:
+            List of :class:`ProgressCallback` *classes* (not instances).
 
         Returns
         -------
@@ -146,14 +522,32 @@ class DownloadManager:
             root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
             output_dir = ensure_dir(root / "snapshots" / revision)
 
-        files = self._client.list_repo_files(
-            repo_id=repo_id,
-            repo_type=repo_type,
-            revision=revision,
-            recursive=True,
-        )
+        if local_files_only:
+            if any(output_dir.iterdir()):
+                logger.warning(
+                    "Cannot confirm the cached file is for revision: %s", revision
+                )
+                return output_dir
+            raise ValueError(
+                "Cannot find the requested files in the cached path and outgoing"
+                " traffic has been disabled. To enable look-ups and downloads"
+                " online, set 'local_files_only' to False."
+            )
 
-        file_paths: list[str] = []
+        if repo_type in ("dataset", "datasets"):
+            files = self._client.list_dataset_files_paginated(
+                repo_id=repo_id,
+                revision=revision,
+            )
+        else:
+            files = self._client.list_repo_files(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                recursive=True,
+            )
+
+        download_items: list[tuple[str, str | None, int | None]] = []
         for f in files:
             path = f.get("Path") or f.get("path") or f.get("Name") or ""
             ftype = f.get("Type") or f.get("type") or "blob"
@@ -165,42 +559,51 @@ class DownloadManager:
                 continue
             if ignore_patterns and _matches_patterns(path, ignore_patterns):
                 continue
-            file_paths.append(path)
+            sha256 = f.get("Sha256") or f.get("sha256") or None
+            raw_size = f.get("Size") or f.get("size")
+            size = int(raw_size) if raw_size else None
+            download_items.append((path, sha256, size))
 
-        if not file_paths:
+        if not download_items:
             logger.info("No files to download for %s@%s", repo_id, revision)
             return output_dir
 
-        logger.info("Downloading %d files from %s@%s", len(file_paths), repo_id, revision)
+        logger.info("Downloading %d files from %s@%s", len(download_items), repo_id, revision)
 
-        errors: list[str] = []
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    self.download_file,
-                    repo_id=repo_id,
-                    repo_type=repo_type,
-                    file_path=fp,
-                    revision=revision,
-                    cache_dir=cache_dir,
-                    local_dir=local_dir,
-                ): fp
-                for fp in file_paths
-            }
+        lock_path = self._lock_path(repo_id, repo_type, cache_dir) if _file_lock_enabled() else None
+        with _optional_file_lock(lock_path, enabled=lock_path is not None):
+            errors: list[str] = []
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(
+                        self.download_file,
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        file_path=fp,
+                        revision=revision,
+                        cache_dir=cache_dir,
+                        local_dir=local_dir,
+                        expected_sha256=sha256,
+                        file_size=size,
+                        user_agent=user_agent,
+                        progress_callbacks=progress_callbacks,
+                    ): fp
+                    for fp, sha256, size in download_items
+                }
 
-            with tqdm(total=len(file_paths), desc="Downloading", unit="file") as pbar:
-                for future in as_completed(futures):
-                    fp = futures[future]
-                    try:
-                        future.result()
-                    except Exception as exc:
-                        errors.append(f"{fp}: {exc}")
-                        logger.error("Failed to download %s: %s", fp, exc)
-                    finally:
-                        pbar.update(1)
+                with tqdm(total=len(download_items), desc="Downloading", unit="file") as pbar:
+                    for future in as_completed(futures):
+                        fp = futures[future]
+                        try:
+                            future.result()
+                        except Exception as exc:
+                            errors.append(f"{fp}: {exc}")
+                            logger.error("Failed to download %s: %s", fp, exc)
+                        finally:
+                            pbar.update(1)
 
-        if errors:
-            logger.warning("%d file(s) failed to download", len(errors))
+            if errors:
+                logger.warning("%d file(s) failed to download", len(errors))
 
         return output_dir
 
@@ -216,9 +619,19 @@ class DownloadManager:
         """Compute the cache directory for a given repo."""
         base = cache_dir or self._config.cache_dir
         segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
-        # Encode repo_id: owner/name → owner--name for filesystem safety
         safe_id = repo_id.replace("/", "--")
         return ensure_dir(base / segment / safe_id)
+
+    def _lock_path(
+        self,
+        repo_id: str,
+        repo_type: str,
+        cache_dir: Path | None = None,
+    ) -> Path:
+        """Compute the lock file path for a given repo."""
+        base = cache_dir or self._config.cache_dir
+        safe_id = repo_id.replace("/", "___")
+        return base / ".lock" / f"{repo_type}_{safe_id}.lock"
 
     def _download_with_resume(
         self,
@@ -227,63 +640,115 @@ class DownloadManager:
         file_path: str,
         revision: str,
         target: Path,
+        *,
+        file_size: int | None = None,
+        user_agent: dict | str | None = None,
+        progress_callbacks: list[type[ProgressCallback]] | None = None,
     ) -> Path:
-        """Download a file with HTTP Range resume support."""
-        # Use a temp file for partial downloads
+        """Download a file with HTTP Range resume support and retry."""
+        use_parallel = (
+            file_size is not None
+            and file_size > DOWNLOAD_PARALLEL_THRESHOLD_MB * 1_000_000
+            and DOWNLOAD_PARALLELS > 1
+        )
+
+        download_headers = self._build_download_headers(user_agent)
+
+        if use_parallel:
+            url = self._client.get_download_url(
+                repo_id, repo_type, file_path, revision,
+            )
+            cookies = None
+            if self._client.token:
+                cookies = {"m_session_id": self._client.token}
+
+            cb_instances = []
+            if progress_callbacks:
+                cb_instances = [cls(file_path, file_size) for cls in progress_callbacks]
+
+            _parallel_download(
+                url=url,
+                target=target,
+                file_size=file_size,
+                headers=download_headers,
+                cookies=cookies,
+                progress_callbacks=cb_instances,
+            )
+            return target
+
+        # Single-stream download with retry
+        cb_classes = list(progress_callbacks or [])
+        cb_instances = [cls(file_path, file_size or 0) for cls in cb_classes]
+
+        retry = Retry(
+            total=DOWNLOAD_RETRY_TIMES,
+            backoff_factor=1,
+            allowed_methods=["GET"],
+        )
         tmp_path = target.with_suffix(target.suffix + ".incomplete")
 
-        existing_size = 0
-        if tmp_path.exists():
-            existing_size = tmp_path.stat().st_size
+        while True:
+            try:
+                existing_size = 0
+                if tmp_path.exists():
+                    existing_size = tmp_path.stat().st_size
+                    for cb in cb_instances:
+                        cb.update(existing_size)
 
-        # Prepare headers for resume
-        extra_headers: dict[str, str] = {}
-        if existing_size > 0:
-            extra_headers["Range"] = f"bytes={existing_size}-"
-            logger.debug("Resuming download from byte %d", existing_size)
+                extra_headers: dict[str, str] = copy.deepcopy(download_headers)
+                extra_headers["X-Request-ID"] = uuid.uuid4().hex
+                if existing_size > 0:
+                    extra_headers["Range"] = f"bytes={existing_size}-"
+                    logger.debug("Resuming download from byte %d", existing_size)
 
-        try:
-            resp = self._client.download_stream(
-                repo_id=repo_id,
-                repo_type=repo_type,
-                file_path=file_path,
-                revision=revision,
-                headers=extra_headers if extra_headers else None,
-            )
-        except Exception as exc:
-            raise NetworkError(f"Download failed for {file_path}: {exc}") from exc
+                try:
+                    resp = self._client.download_stream(
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        file_path=file_path,
+                        revision=revision,
+                        headers=extra_headers,
+                    )
+                except Exception as exc:
+                    raise NetworkError(f"Download failed for {file_path}: {exc}") from exc
 
-        # Determine total size
-        content_length = resp.headers.get("Content-Length")
-        total_size = int(content_length) if content_length else None
-        is_resumed = resp.status_code == 206
+                content_length = resp.headers.get("Content-Length")
+                total_size = int(content_length) if content_length else None
+                is_resumed = resp.status_code == 206
 
-        if is_resumed and total_size:
-            total_size += existing_size
+                if is_resumed and total_size:
+                    total_size += existing_size
 
-        # Write to temp file
-        mode = "ab" if is_resumed else "wb"
-        if not is_resumed:
-            existing_size = 0
+                mode = "ab" if is_resumed else "wb"
+                if not is_resumed:
+                    existing_size = 0
 
-        with tqdm(
-            total=total_size,
-            initial=existing_size,
-            unit="B",
-            unit_scale=True,
-            desc=Path(file_path).name,
-            leave=False,
-        ) as pbar:
-            with open(tmp_path, mode) as fh:
-                for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
-                    if chunk:
-                        fh.write(chunk)
-                        pbar.update(len(chunk))
+                with tqdm(
+                    total=total_size,
+                    initial=existing_size,
+                    unit="B",
+                    unit_scale=True,
+                    desc=Path(file_path).name,
+                    leave=False,
+                ) as pbar:
+                    with open(tmp_path, mode) as fh:
+                        for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                            if chunk:
+                                fh.write(chunk)
+                                pbar.update(len(chunk))
+                                for cb in cb_instances:
+                                    cb.update(len(chunk))
 
-        # Move temp → final
-        tmp_path.replace(target)
-        logger.debug("Downloaded: %s", target)
-        return target
+                tmp_path.replace(target)
+                for cb in cb_instances:
+                    cb.end()
+                logger.debug("Downloaded: %s", target)
+                return target
+
+            except Exception as exc:
+                retry = retry.increment("GET", file_path, error=exc)
+                logger.warning("Download failed for %s: %s, will retry", file_path, exc)
+                retry.sleep()
 
     def verify_file(self, file_path: Path, expected_sha256: str) -> bool:
         """Verify a downloaded file's SHA256 hash.

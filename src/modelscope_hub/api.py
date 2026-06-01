@@ -755,6 +755,76 @@ class HubApi:
         except NotFoundError:
             return False
 
+    def resolve_endpoint_for_read(
+        self,
+        repo_id: str,
+        *,
+        repo_type: RepoTypeLike = "model",
+    ) -> str:
+        """Resolve the best endpoint for read operations (download, list, get).
+
+        This replicates the old SDK's ``get_endpoint_for_read()`` behavior:
+
+        1. If ``MODELSCOPE_DOMAIN`` env var is set, use it directly (error if
+           the repo is not found on that endpoint).
+        2. If ``MODELSCOPE_PREFER_AI_SITE=true``, check ``.ai`` first, then
+           fall back to ``.cn``.
+        3. Otherwise (default), check ``.cn`` first, then fall back to ``.ai``.
+
+        Returns
+        -------
+        str
+            The endpoint URL where the repo exists.
+
+        Raises
+        ------
+        NotFoundError
+            If the repo is not found on any checked endpoint.
+        """
+        import os
+
+        from .constants import (
+            DEFAULT_ENDPOINT,
+            DEFAULT_INTL_ENDPOINT,
+            ENV_MODELSCOPE_DOMAIN,
+            ENV_PREFER_AI_SITE,
+        )
+
+        domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
+        if domain:
+            endpoint = domain if domain.startswith("http") else f"https://{domain}"
+            endpoint = endpoint.rstrip("/")
+            probe = HubApi(endpoint=endpoint, token=self._config.token)
+            if not probe.repo_exists(repo_id, repo_type):
+                raise NotFoundError(
+                    f"Repo {repo_id} does not exist on {endpoint}"
+                )
+            return endpoint
+
+        prefer_ai = (
+            os.environ.get(ENV_PREFER_AI_SITE, "").strip().lower() == "true"
+        )
+        primary = DEFAULT_INTL_ENDPOINT if prefer_ai else DEFAULT_ENDPOINT
+        fallback = DEFAULT_ENDPOINT if prefer_ai else DEFAULT_INTL_ENDPOINT
+
+        primary_probe = HubApi(endpoint=primary, token=self._config.token)
+        if primary_probe.repo_exists(repo_id, repo_type):
+            return primary
+
+        fallback_probe = HubApi(endpoint=fallback, token=self._config.token)
+        if fallback_probe.repo_exists(repo_id, repo_type):
+            logger.warning(
+                "Repo %s not found on %s, using %s instead.",
+                repo_id,
+                primary,
+                fallback,
+            )
+            return fallback
+
+        raise NotFoundError(
+            f"Repo {repo_id} not found on either {primary} or {fallback}"
+        )
+
     # ==================================================================
     # Files
     # ==================================================================
@@ -922,6 +992,9 @@ class HubApi:
         cache_dir: str | Path | None = None,
         local_dir: str | Path | None = None,
         force: bool = False,
+        expected_sha256: str | None = None,
+        local_files_only: bool = False,
+        user_agent: dict | str | None = None,
     ) -> Path:
         """Download a single file from a repository.
 
@@ -945,6 +1018,14 @@ class HubApi:
             When set, download directly into this directory instead of cache.
         force : bool, optional
             Re-download even if a cached copy exists. Default is ``False``.
+        expected_sha256 : str, optional
+            When provided, verify downloaded file hash and use it for
+            cache hit validation. On mismatch, re-download up to 3 times.
+        local_files_only : bool, optional
+            When ``True``, return the cached path without network access.
+            Raises ``ValueError`` if the file is not cached.
+        user_agent : dict, str or None, optional
+            Custom user-agent info appended to the default UA string.
 
         Returns
         -------
@@ -975,6 +1056,9 @@ class HubApi:
             cache_dir=Path(cache_dir) if cache_dir else None,
             local_dir=Path(local_dir) if local_dir else None,
             force=force,
+            expected_sha256=expected_sha256,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
         )
 
     def download_repo(
@@ -988,6 +1072,8 @@ class HubApi:
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         max_workers: int = 4,
+        local_files_only: bool = False,
+        user_agent: dict | str | None = None,
     ) -> Path:
         """Download an entire repository snapshot.
 
@@ -1012,6 +1098,10 @@ class HubApi:
             Matching files are skipped.
         max_workers : int, optional
             Concurrency for parallel downloads. Default is 4.
+        local_files_only : bool, optional
+            When ``True``, return the cached snapshot path without network.
+        user_agent : dict, str or None, optional
+            Custom user-agent info for download headers.
 
         Returns
         -------
@@ -1041,6 +1131,8 @@ class HubApi:
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
         )
 
     def list_repo_files(

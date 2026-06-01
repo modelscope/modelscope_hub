@@ -23,6 +23,8 @@ def model_file_download(
     cookies: dict | None = None,
     token: str | None = None,
     endpoint: str | None = None,
+    local_files_only: bool = False,
+    user_agent: dict | str | None = None,
 ) -> str:
     """Download a single model file (legacy signature)."""
     if cookies is not None:
@@ -33,6 +35,9 @@ def model_file_download(
         )
 
     api = HubApi(token=token, endpoint=endpoint)
+    if endpoint is None and not local_files_only:
+        endpoint = api.resolve_endpoint_for_read(model_id, repo_type="model")
+        api = HubApi(token=token, endpoint=endpoint)
     result = api.download_file(
         model_id,
         repo_type=RepoType.MODEL,
@@ -40,6 +45,8 @@ def model_file_download(
         revision=revision,
         cache_dir=cache_dir,
         local_dir=local_dir,
+        local_files_only=local_files_only,
+        user_agent=user_agent,
     )
     return str(result)
 
@@ -54,6 +61,8 @@ def dataset_file_download(
     cookies: dict | None = None,
     token: str | None = None,
     endpoint: str | None = None,
+    local_files_only: bool = False,
+    user_agent: dict | str | None = None,
 ) -> str:
     """Download a single dataset file (legacy signature)."""
     if cookies is not None:
@@ -64,6 +73,9 @@ def dataset_file_download(
         )
 
     api = HubApi(token=token, endpoint=endpoint)
+    if endpoint is None and not local_files_only:
+        endpoint = api.resolve_endpoint_for_read(dataset_id, repo_type="dataset")
+        api = HubApi(token=token, endpoint=endpoint)
     result = api.download_file(
         dataset_id,
         repo_type=RepoType.DATASET,
@@ -71,5 +83,7 @@ def dataset_file_download(
         revision=revision or DEFAULT_DATASET_REVISION,
         cache_dir=cache_dir,
         local_dir=local_dir,
+        local_files_only=local_files_only,
+        user_agent=user_agent,
     )
     return str(result)

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from argparse import Action
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from ..api import HubApi
 from ..constants import RepoType
-from .base import CLICommand, add_repo_type_arg, info, make_api, success
+from .base import CLICommand, add_repo_type_arg, info, make_api, success, warn
 from .compat import (
     PatternAction,
     add_legacy_download_args,
@@ -14,6 +17,18 @@ from .compat import (
     normalize_download_args,
     normalize_patterns,
 )
+
+
+def _resolve_cli_endpoint(endpoint: str | None) -> str | None:
+    """Auto-complete bare domain names with ``https://``."""
+    if not endpoint:
+        return None
+    endpoint = endpoint.strip().rstrip("/")
+    if not endpoint:
+        return None
+    if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
+        endpoint = f"https://{endpoint}"
+    return endpoint
 
 
 class DownloadCommand(CLICommand):
@@ -38,7 +53,7 @@ class DownloadCommand(CLICommand):
         )
         add_repo_type_arg(
             p,
-            choices=[RepoType.MODEL.value, RepoType.DATASET.value],
+            choices=[RepoType.MODEL.value, RepoType.DATASET.value, RepoType.STUDIO.value],
             default=RepoType.MODEL.value,
             required=False,
         )
@@ -80,7 +95,12 @@ class DownloadCommand(CLICommand):
     def execute(self) -> None:
         normalize_download_args(self.args)
 
-        api = make_api(self.args)
+        # Handle collection download separately
+        if self.args.repo_type == "collection":
+            self._download_collection()
+            return
+
+        api = self._make_api_with_endpoint()
         cache_dir: Path | None = Path(self.args.cache_dir) if self.args.cache_dir else None
         local_dir: Path | None = Path(self.args.local_dir) if self.args.local_dir else None
 
@@ -110,3 +130,82 @@ class DownloadCommand(CLICommand):
             max_workers=self.args.max_workers,
         )
         success(f"Snapshot ready at {output}")
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+    def _make_api_with_endpoint(self) -> HubApi:
+        """Build HubApi with resolved endpoint.
+
+        Bare domains (e.g. ``modelscope.cn``) are auto-completed with
+        ``https://``.  When no endpoint is provided, auto-detection via
+        ``resolve_endpoint_for_read()`` is attempted.
+        """
+        endpoint = getattr(self.args, "endpoint", None)
+        token = getattr(self.args, "token", None)
+
+        if endpoint:
+            endpoint = _resolve_cli_endpoint(endpoint)
+            return HubApi(token=token, endpoint=endpoint)
+
+        api = make_api(self.args)
+        try:
+            resolved = api.resolve_endpoint_for_read(
+                self.args.repo_id, repo_type=self.args.repo_type,
+            )
+            return HubApi(token=token, endpoint=resolved)
+        except Exception:
+            return api
+
+    def _download_collection(self) -> None:
+        """Download all skills from a collection."""
+        api = make_api(self.args)
+        local_dir = self.args.local_dir
+        collection_id = self.args.repo_id
+
+        data = api.legacy.get_collection(collection_id)
+        elements = data.get("CollectionElements", {}).get(
+            "CollectionElementVoList", []
+        )
+        valid = [
+            e for e in elements
+            if e.get("ElementPath") and e.get("ElementName")
+        ]
+        if not valid:
+            warn(f"No valid skill elements found in collection: {collection_id}")
+            return
+
+        info(f"Found {len(valid)} skill(s) in collection, downloading…")
+
+        def _download_one(elem: dict) -> tuple[str, str | None, str | None]:
+            skill_id = f"{elem['ElementPath']}/{elem['ElementName']}"
+            try:
+                result = api.download_repo(
+                    skill_id,
+                    repo_type=RepoType.SKILL,
+                    local_dir=local_dir,
+                )
+                return skill_id, str(result), None
+            except Exception as exc:
+                return skill_id, None, str(exc)
+
+        succeeded, failed = [], []
+        with ThreadPoolExecutor(max_workers=self.args.max_workers) as executor:
+            futures = {executor.submit(_download_one, e): e for e in valid}
+            for future in as_completed(futures):
+                sid, path, error = future.result()
+                if error:
+                    failed.append((sid, error))
+                    warn(f"Failed to download skill {sid}: {error}")
+                else:
+                    succeeded.append((sid, path))
+                    success(f"skill {sid} → {path}")
+
+        info(
+            f"Download complete: {len(succeeded)} succeeded, "
+            f"{len(failed)} failed"
+        )
+        if failed:
+            for sid, err in failed:
+                warn(f"  {sid}: {err}")
+            sys.exit(1)

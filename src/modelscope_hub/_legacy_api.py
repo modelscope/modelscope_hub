@@ -16,12 +16,20 @@ from __future__ import annotations
 
 import uuid
 from typing import Any, BinaryIO, IO, Union
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-from .constants import API_MAX_RETRIES, API_TIMEOUT, LEGACY_API_PREFIX, RepoType
+from .constants import (
+    API_MAX_RETRIES,
+    API_TIMEOUT,
+    LEGACY_API_PREFIX,
+    RepoType,
+    UPLOAD_BLOB_CONNECT_TIMEOUT,
+    UPLOAD_BLOB_READ_TIMEOUT,
+    UPLOAD_RETRY_ALLOWED_METHODS,
+)
 from .errors import NetworkError, raise_for_status
 from .utils.logger import get_logger
 
@@ -77,7 +85,7 @@ class LegacyClient:
             total=max_retries,
             backoff_factor=0.5,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST", "PUT", "DELETE"],
+            allowed_methods=UPLOAD_RETRY_ALLOWED_METHODS,
         )
         adapter = HTTPAdapter(max_retries=retry)
         self._session.mount("https://", adapter)
@@ -253,6 +261,49 @@ class LegacyClient:
             return data.get("Files", data.get("files", []))
         return []
 
+    def list_dataset_files_paginated(
+        self,
+        repo_id: str,
+        revision: str = "master",
+        page_size: int = 200,
+        root_path: str = "/",
+    ) -> list[dict]:
+        """List files in a dataset repo using pagination.
+
+        Datasets can have millions of files, so this method pages through
+        ``GET /api/v1/datasets/{repo_id}/repo/files`` with
+        ``PageNumber``/``PageSize`` params.
+        """
+        all_files: list[dict] = []
+        page_number = 1
+        while True:
+            params: dict[str, Any] = {
+                "Revision": revision,
+                "Recursive": "True",
+                "PageNumber": page_number,
+                "PageSize": page_size,
+            }
+            if root_path and root_path != "/":
+                params["Root"] = root_path
+            resp = self._request(
+                "GET",
+                f"datasets/{repo_id}/repo/files",
+                params=params,
+            )
+            data = self._json_data(resp)
+            if isinstance(data, list):
+                files = data
+            elif isinstance(data, dict):
+                files = data.get("Files", data.get("files", []))
+            else:
+                files = []
+
+            all_files.extend(files)
+            if len(files) < page_size:
+                break
+            page_number += 1
+        return all_files
+
     # ------------------------------------------------------------------
     # Revisions
     # ------------------------------------------------------------------
@@ -384,7 +435,7 @@ class LegacyClient:
                 upload_url,
                 data=data,
                 headers=upload_headers,
-                timeout=timeout or max(self._timeout, 300),
+                timeout=timeout or (UPLOAD_BLOB_CONNECT_TIMEOUT, UPLOAD_BLOB_READ_TIMEOUT),
             )
         except requests.ConnectionError as exc:
             raise NetworkError(f"Blob upload connection failed: {exc}") from exc
@@ -411,9 +462,36 @@ class LegacyClient:
         segment = _resolve_segment(repo_type)
         return (
             f"{self._endpoint}{LEGACY_API_PREFIX}/{segment}/{repo_id}/repo"
-            f"?Revision={revision}&FilePath={file_path}"
+            f"?Revision={quote_plus(revision)}&FilePath={quote_plus(file_path)}"
         )
 
+    # ------------------------------------------------------------------
+    # Collections
+    # ------------------------------------------------------------------
+    def get_collection(
+        self,
+        collection_id: str,
+        *,
+        element_type: str = "skill",
+        page_number: int = 1,
+        page_size: int = 50,
+    ) -> dict:
+        """Get collection details and its elements.
+
+        GET /api/v1/collections?Fid=...&ElementType=...
+        """
+        params = {
+            "Fid": collection_id,
+            "ElementType": element_type,
+            "PageNumber": page_number,
+            "PageSize": page_size,
+        }
+        resp = self._request("GET", "collections", params=params)
+        return self._json_data(resp)
+
+    # ------------------------------------------------------------------
+    # Raw Download URL
+    # ------------------------------------------------------------------
     def download_stream(
         self,
         repo_id: str,

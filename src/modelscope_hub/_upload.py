@@ -46,6 +46,10 @@ from .constants import (
     UPLOAD_FAILED_FILE_MAX_RETRIES,
     UPLOAD_LEGACY_PROGRESS_FILE,
     UPLOAD_LFS_ENFORCE_THRESHOLD,
+    UPLOAD_MAX_FILE_COUNT,
+    UPLOAD_MAX_FILE_COUNT_IN_DIR,
+    UPLOAD_MAX_FILE_SIZE,
+    UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT,
     UPLOAD_REACT_BACKOFF_MAX_EXPONENT,
     UPLOAD_REACT_ENABLED,
     UPLOAD_REACT_MAX_DELAY,
@@ -711,6 +715,7 @@ class UploadManager:
         sorted_files = self._prepare_upload_folder(
             folder_path=folder_path,
             path_in_repo=path_in_repo,
+            repo_type=repo_type,
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
         )
@@ -1384,6 +1389,7 @@ class UploadManager:
         self,
         folder_path: str | Path,
         path_in_repo: str,
+        repo_type: str = "model",
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
     ) -> list[tuple[str, str]]:
@@ -1391,10 +1397,53 @@ class UploadManager:
         if not folder.is_dir():
             raise ValueError(f"Provided path: '{folder}' is not a directory")
 
+        all_files = sorted(
+            path for path in folder.glob("**/*") if path.is_file()
+        )
+
+        if len(all_files) > UPLOAD_MAX_FILE_COUNT:
+            raise ValueError(
+                f"Too many files ({len(all_files)}) in folder, "
+                f"max allowed: {UPLOAD_MAX_FILE_COUNT}"
+            )
+
+        # Per-directory file count check
+        dir_counts: dict[str, int] = {}
+        for path in all_files:
+            parent = str(path.parent)
+            dir_counts[parent] = dir_counts.get(parent, 0) + 1
+        for dir_path, count in dir_counts.items():
+            if count > UPLOAD_MAX_FILE_COUNT_IN_DIR:
+                raise ValueError(
+                    f"Too many files ({count}) in directory {dir_path}, "
+                    f"max allowed per directory: {UPLOAD_MAX_FILE_COUNT_IN_DIR}"
+                )
+
+        # File size checks
+        total_size = 0
+        normal_size = 0
+        for path in all_files:
+            fsize = path.stat().st_size
+            if fsize > UPLOAD_MAX_FILE_SIZE:
+                raise ValueError(
+                    f"File too large: {path} ({fsize} bytes), "
+                    f"max allowed: {UPLOAD_MAX_FILE_SIZE}"
+                )
+            total_size += fsize
+            if not _is_lfs(str(path), fsize, repo_type):
+                normal_size += fsize
+
+        if normal_size > UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT:
+            logger.warning(
+                "Total normal (non-LFS) file size %d bytes exceeds soft "
+                "limit %d bytes. Consider using LFS for large files.",
+                normal_size,
+                UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT,
+            )
+
         relpath_to_abspath = {
             path.relative_to(folder).as_posix(): str(path)
-            for path in sorted(folder.glob("**/*"))
-            if path.is_file()
+            for path in all_files
         }
 
         filtered_keys = _filter_repo_objects(

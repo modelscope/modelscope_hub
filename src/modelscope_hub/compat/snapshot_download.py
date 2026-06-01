@@ -8,7 +8,6 @@ and the old SDK can delegate to ``modelscope_hub`` without changes.
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
 from typing import Sequence
 
 from ..api import HubApi
@@ -17,22 +16,35 @@ from .constants import DEFAULT_DATASET_REVISION
 
 
 def snapshot_download(
-    model_id: str,
+    model_id: str | None = None,
     *,
     revision: str | None = None,
     cache_dir: str | None = None,
     local_dir: str | None = None,
     allow_file_pattern: Sequence[str] | str | None = None,
     ignore_file_pattern: Sequence[str] | str | None = None,
+    allow_patterns: Sequence[str] | str | None = None,
+    ignore_patterns: Sequence[str] | str | None = None,
     max_workers: int = 4,
     cookies: dict | None = None,
+    repo_id: str | None = None,
+    repo_type: str | None = None,
     token: str | None = None,
     endpoint: str | None = None,
+    local_files_only: bool = False,
+    user_agent: dict | str | None = None,
 ) -> str:
-    """Download a model snapshot (legacy signature).
+    """Download a repo snapshot (legacy signature).
 
     Parameters mirror the old ``modelscope.hub.snapshot_download.snapshot_download``.
+    ``allow_patterns``/``ignore_patterns`` take priority over the
+    ``allow_file_pattern``/``ignore_file_pattern`` aliases when both are set.
     """
+    effective_id = repo_id or model_id
+    if not effective_id:
+        raise ValueError("Please provide a valid model_id or repo_id")
+    effective_type = repo_type or "model"
+
     if cookies is not None:
         warnings.warn(
             "The 'cookies' parameter is deprecated and ignored. Use 'token' instead.",
@@ -40,16 +52,26 @@ def snapshot_download(
             stacklevel=2,
         )
 
+    include = _normalize_pattern(allow_patterns) or _normalize_pattern(allow_file_pattern)
+    exclude = _normalize_pattern(ignore_patterns) or _normalize_pattern(ignore_file_pattern)
+
     api = HubApi(token=token, endpoint=endpoint)
+    if endpoint is None and not local_files_only:
+        endpoint = api.resolve_endpoint_for_read(
+            effective_id, repo_type=effective_type,
+        )
+        api = HubApi(token=token, endpoint=endpoint)
     result = api.download_repo(
-        model_id,
-        repo_type=RepoType.MODEL,
+        effective_id,
+        repo_type=effective_type,
         revision=revision,
         cache_dir=cache_dir,
         local_dir=local_dir,
-        allow_patterns=_normalize_pattern(allow_file_pattern),
-        ignore_patterns=_normalize_pattern(ignore_file_pattern),
+        allow_patterns=include,
+        ignore_patterns=exclude,
         max_workers=max_workers,
+        local_files_only=local_files_only,
+        user_agent=user_agent,
     )
     return str(result)
 
@@ -62,10 +84,14 @@ def dataset_snapshot_download(
     local_dir: str | None = None,
     allow_file_pattern: Sequence[str] | str | None = None,
     ignore_file_pattern: Sequence[str] | str | None = None,
+    allow_patterns: Sequence[str] | str | None = None,
+    ignore_patterns: Sequence[str] | str | None = None,
     max_workers: int = 4,
     cookies: dict | None = None,
     token: str | None = None,
     endpoint: str | None = None,
+    local_files_only: bool = False,
+    user_agent: dict | str | None = None,
 ) -> str:
     """Download a dataset snapshot (legacy signature)."""
     if cookies is not None:
@@ -75,16 +101,24 @@ def dataset_snapshot_download(
             stacklevel=2,
         )
 
+    include = _normalize_pattern(allow_patterns) or _normalize_pattern(allow_file_pattern)
+    exclude = _normalize_pattern(ignore_patterns) or _normalize_pattern(ignore_file_pattern)
+
     api = HubApi(token=token, endpoint=endpoint)
+    if endpoint is None and not local_files_only:
+        endpoint = api.resolve_endpoint_for_read(dataset_id, repo_type="dataset")
+        api = HubApi(token=token, endpoint=endpoint)
     result = api.download_repo(
         dataset_id,
         repo_type=RepoType.DATASET,
         revision=revision or DEFAULT_DATASET_REVISION,
         cache_dir=cache_dir,
         local_dir=local_dir,
-        allow_patterns=_normalize_pattern(allow_file_pattern),
-        ignore_patterns=_normalize_pattern(ignore_file_pattern),
+        allow_patterns=include,
+        ignore_patterns=exclude,
         max_workers=max_workers,
+        local_files_only=local_files_only,
+        user_agent=user_agent,
     )
     return str(result)
 
