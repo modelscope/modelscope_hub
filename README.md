@@ -187,6 +187,40 @@ ms download my-org/my-data --repo-type dataset --revision v2   # dataset at tag
 | `--max-workers N` | no | Parallel download threads (default: `4`) |
 | `--force` | no | Re-download even if cached |
 
+<details>
+<summary>Advanced examples</summary>
+
+```bash
+# Download multiple specific files at once
+ms download Qwen/Qwen3-0.6B config.json tokenizer.json generation_config.json
+
+# Download only safetensors, skip GGUF and bin weights
+ms download Qwen/Qwen3-0.6B --include "*.safetensors" --exclude "*.bin" "*.gguf"
+
+# Download a dataset at a specific tag into a local directory
+ms download my-org/my-data --repo-type dataset --revision v2 --local-dir ./data
+
+# Use a custom cache directory and 8 parallel threads
+ms download Qwen/Qwen3-0.6B --cache-dir /data/hub-cache --max-workers 8
+
+# Force re-download even if already cached
+ms download Qwen/Qwen3-0.6B config.json --force
+
+# Download a Studio space
+ms download my-org/chat-demo --repo-type studio
+
+# Download all skills from a collection (legacy flag)
+ms download --collection my-org/skill-collection
+
+# Enable parallel range download for large files (env var)
+MODELSCOPE_DOWNLOAD_PARALLELS=4 ms download Qwen/Qwen3-0.6B
+
+# Use the modelscope.ai endpoint (global option, before subcommand)
+ms --endpoint https://modelscope.ai download Qwen/Qwen3-0.6B
+```
+
+</details>
+
 ### `ms upload`
 
 Upload a file or folder to a repository.
@@ -209,6 +243,45 @@ ms upload my-org/my-model . --include "*.py" --commit-message "code"  # filtered
 | `--include GLOB...` | no | Include filter for folder mode; repeatable |
 | `--exclude GLOB...` | no | Exclude filter for folder mode; repeatable |
 | `--max-workers N` | no | Parallel upload threads |
+| `--use-cache / --no-cache` | no | Enable/disable resumable upload cache (default: on) |
+| `--disable-tqdm` | no | Disable progress bars |
+
+<details>
+<summary>Advanced examples</summary>
+
+```bash
+# Upload a single file with a custom commit message
+ms upload my-org/my-model ./weights.safetensors --commit-message "add fp16 weights"
+
+# Upload a folder into a subdirectory of the repo
+ms upload my-org/my-model ./output models/ --repo-type model
+
+# Upload only Python files from the current directory
+ms upload my-org/my-model . --include "*.py" --commit-message "update code"
+
+# Upload only safetensors, skip checkpoints
+ms upload my-org/my-model ./output --include "*.safetensors" --exclude "*.ckpt" "*.bin"
+
+# Upload to a dataset repo on a specific branch
+ms upload my-org/my-data ./data --repo-type dataset --revision dev
+
+# Upload with extended commit description
+ms upload my-org/my-model ./weights.safetensors \
+  --commit-message "v2 weights" \
+  --commit-description "Retrained with extended dataset, 3 epochs, lr=2e-5"
+
+# Resumable upload: interrupted uploads resume automatically via cache
+ms upload my-org/my-model ./large-folder
+# If interrupted, just re-run the same command — already uploaded files are skipped
+
+# Disable upload cache (no resume, fresh upload every time)
+ms upload my-org/my-model ./output --no-cache
+
+# Disable progress bars (useful for CI/CD pipelines)
+ms upload my-org/my-model ./output --disable-tqdm
+```
+
+</details>
 
 ### `ms repo`
 
