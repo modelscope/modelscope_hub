@@ -25,7 +25,7 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 - **Unified repo interface** — one set of methods for models, datasets, studios, skills, and MCP servers
 - **OpenAPI-first** — built on the ModelScope OpenAPI surface with transparent legacy fallback
-- **Resumable downloads** — HTTP Range resume, parallel threads, SHA256 integrity checks
+- **Production-grade downloads** — HTTP Range resume, parallel range download for large files, per-file retry with backoff, SHA256 integrity checks, file lock for multiprocess safety, offline mode, progress callbacks, and intra-cloud acceleration
 - **Full lifecycle CLI** — download, upload, deploy, manage secrets, inspect cache — all from the terminal
 - **Deep ecosystem integration** — seamless access to 100K+ models and datasets on ModelScope Hub; works with the `modelscope` training framework, Studio deployment platform, and MCP server infrastructure
 
@@ -85,6 +85,9 @@ snapshot = api.download_repo(
     allow_patterns=["*.safetensors", "*.json"],
     max_workers=8,
 )
+
+# Offline mode — return cached path without network access
+path = api.download_file("Qwen/Qwen3-0.6B", "model", "config.json", local_files_only=True)
 ```
 
 ### Upload
@@ -362,8 +365,8 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `repo_exists(repo_id, repo_type)` | Check existence |
 | **Files** | `upload_file(repo_id, repo_type, local, remote)` | Upload a single file |
 | | `upload_folder(repo_id, repo_type, folder, ...)` | Upload a directory |
-| | `download_file(repo_id, repo_type, file, ...)` | Download a single file |
-| | `download_repo(repo_id, repo_type, ...)` | Download full snapshot |
+| | `download_file(repo_id, repo_type, file, ...)` | Download a single file (with retry, resume, offline mode) |
+| | `download_repo(repo_id, repo_type, ...)` | Download full snapshot (parallel, file lock, progress callbacks) |
 | | `list_repo_files(repo_id, repo_type)` | List files in a repo |
 | | `delete_files(repo_id, repo_type, paths)` | Remove files |
 | **Version** | `list_repo_revisions(repo_id, repo_type)` | List branches and tags |
@@ -412,7 +415,7 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 ```
 
 - **Browse & discover** — search 100K+ models and datasets via `list_repos` / `ms repo list`
-- **Download & cache** — pull model weights, tokenizer configs, or entire datasets into a managed cache or a local directory
+- **Download & cache** — pull model weights, tokenizer configs, or entire datasets into a managed cache or a local directory; supports offline mode via `local_files_only`
 - **Train & fine-tune** — use with the [modelscope](https://github.com/modelscope/modelscope) framework: train locally, then push results back
 - **Deploy** — launch a Studio space or MCP server directly from the CLI or SDK
 - **Automate** — integrate into CI/CD pipelines with environment-variable auth and `--yes` flags for non-interactive operation
@@ -421,13 +424,32 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 
 ## Configuration
 
-| Environment Variable | Purpose |
-|---------------------|---------|
-| `MODELSCOPE_API_TOKEN` | Default API token |
-| `MODELSCOPE_ENDPOINT` | API endpoint (default: `https://modelscope.cn`) |
-| `MODELSCOPE_CACHE` | Override cache directory |
+| Environment Variable | Purpose | Default |
+|---------------------|---------|---------|
+| `MODELSCOPE_API_TOKEN` | Default API token | — |
+| `MODELSCOPE_ENDPOINT` | API endpoint | `https://modelscope.cn` |
+| `MODELSCOPE_CACHE` | Override cache directory | `~/.modelscope/hub` |
+| `MODELSCOPE_DOWNLOAD_PARALLELS` | Parallel range-download parts for large files | `1` (disabled) |
+| `MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB` | File size threshold (MB) to trigger parallel range download | `500` |
+| `DOWNLOAD_RETRY_TIMES` | Per-file download retry count | `5` |
+| `DOWNLOAD_TIMEOUT` | Per-request download timeout (seconds) | `60` |
+| `MODELSCOPE_HUB_FILE_LOCK` | Enable file lock for multiprocess download safety | `true` |
+| `INTRA_CLOUD_ACCELERATION` | Enable Alibaba cloud intra-cloud download acceleration | `true` |
 
 Token is persisted locally after `ms login` and auto-loaded in subsequent sessions.
+
+---
+
+## Backward Compatibility
+
+`modelscope-hub` provides a compatibility layer for code written against the old `modelscope.hub` API surface. The old SDK can delegate directly to `modelscope_hub.compat`:
+
+```python
+from modelscope_hub.compat import snapshot_download, model_file_download
+from modelscope_hub.compat import LegacyHubApi as HubApi
+```
+
+All legacy parameter names (`allow_file_pattern`, `ignore_file_pattern`, `cookies`, etc.) are accepted and mapped to the new implementation.
 
 ---
 
