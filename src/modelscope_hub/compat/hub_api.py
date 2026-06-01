@@ -37,14 +37,12 @@ class LegacyHubApi:
         """Login with token (old style returns None)."""
         self._api.login(token)
 
-    def get_cookies(self, access_token: str) -> dict:
-        """Legacy method — returns empty dict; token-based auth is used."""
-        warnings.warn(
-            "get_cookies() is deprecated. Token-based auth is used directly.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return {}
+    def get_cookies(self, access_token: str | None = None, cookies_required: bool = False):
+        """Get cookies for legacy API authentication.
+
+        Delegates to :meth:`HubApi.get_cookies`.
+        """
+        return self._api.get_cookies(access_token=access_token, cookies_required=cookies_required)
 
     # ------------------------------------------------------------------
     # Repository operations

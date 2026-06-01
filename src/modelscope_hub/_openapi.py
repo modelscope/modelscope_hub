@@ -176,6 +176,7 @@ class OpenAPIClient:
         last_exc: BaseException | None = None
 
         for attempt in range(1, attempts + 1):
+            _logger.debug("%s %s", method_upper, url)
             try:
                 response = self._session.request(
                     method=method_upper,
@@ -194,6 +195,7 @@ class OpenAPIClient:
             except requests.RequestException as exc:  # pragma: no cover - defensive
                 last_exc = NetworkError(f"Request failed: {exc}")
             else:
+                _logger.debug("%s %s -> %s", method_upper, url, response.status_code)
                 try:
                     raise_for_status(response)
                 except _RETRYABLE_EXC as exc:  # type: ignore[misc]

@@ -125,21 +125,8 @@ class UploadManager:
         # Determine size first; sha256 is only needed on the LFS path.
         size = self._get_size(path_or_fileobj)
 
-        # OpenAPI-first: route small files (≤ UPLOAD_LFS_THRESHOLD) to
-        # ``POST /files/upload`` when an OpenAPI client is available.
-        if size <= UPLOAD_LFS_THRESHOLD and self._openapi is not None:
-            return self._openapi.upload_file(
-                file=path_or_fileobj,
-                path_in_repo=path_in_repo,
-                repo_id=repo_id,
-                repo_type=repo_type,
-                revision=revision,
-                commit_message=commit_message,
-            )
-
-        sha256 = self._get_sha256(path_or_fileobj)
         if size > UPLOAD_LFS_THRESHOLD:
-            # LFS path: validate → upload blob → commit pointer
+            sha256 = self._get_sha256(path_or_fileobj)
             return self._upload_lfs(
                 repo_id=repo_id,
                 repo_type=repo_type,
@@ -150,7 +137,6 @@ class UploadManager:
                 commit_message=commit_message,
                 revision=revision,
             )
-        # Legacy fallback for small files when no OpenAPI client is wired in.
         return self._upload_direct(
             repo_id=repo_id,
             repo_type=repo_type,
@@ -254,8 +240,12 @@ class UploadManager:
             pointer_content = self._lfs_pointer(sha256, size)
             operations.append({
                 "action": "create",
-                "file_path": repo_path,
-                "content": base64.b64encode(pointer_content.encode()).decode(),
+                "path": repo_path,
+                "type": "lfs",
+                "size": size,
+                "sha256": sha256,
+                "content": "",
+                "encoding": "",
             })
 
         # Direct file operations
@@ -263,8 +253,12 @@ class UploadManager:
             content = local_path.read_bytes()
             operations.append({
                 "action": "create",
-                "file_path": repo_path,
+                "path": repo_path,
+                "type": "normal",
+                "size": len(content),
+                "sha256": "",
                 "content": base64.b64encode(content).decode(),
+                "encoding": "base64",
             })
 
         # Batch commits
@@ -341,11 +335,14 @@ class UploadManager:
             logger.info("Blob %s... already exists, skipping upload", sha256[:8])
 
         # Step 3: Commit the LFS pointer
-        pointer_content = self._lfs_pointer(sha256, size)
         operation = {
             "action": "create",
-            "file_path": path_in_repo,
-            "content": base64.b64encode(pointer_content.encode()).decode(),
+            "path": path_in_repo,
+            "type": "lfs",
+            "size": size,
+            "sha256": sha256,
+            "content": "",
+            "encoding": "",
         }
         return self._client.create_commit(
             repo_id=repo_id,
@@ -368,8 +365,12 @@ class UploadManager:
         content = _read_as_bytes(path_or_fileobj)
         operation = {
             "action": "create",
-            "file_path": path_in_repo,
+            "path": path_in_repo,
+            "type": "normal",
+            "size": len(content),
+            "sha256": "",
             "content": base64.b64encode(content).decode(),
+            "encoding": "base64",
         }
         return self._client.create_commit(
             repo_id=repo_id,

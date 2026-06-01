@@ -2,12 +2,21 @@
 
 This module is **private** — external callers should interact through the
 public :class:`~modelscope_hub.api.HubApi` facade.
+
+Auth strategy
+-------------
+The legacy API authenticates via a session cookie (``m_session_id``) rather
+than the ``Authorization: Bearer`` header used by the OpenAPI surface. On
+first use the client sets ``m_session_id = <access_token>`` on the
+``requests.Session`` cookie jar — no round-trip to ``/api/v1/login`` is
+needed for API calls.
 """
 
 from __future__ import annotations
 
 import uuid
 from typing import Any, BinaryIO, IO, Union
+from urllib.parse import urlparse
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
@@ -61,6 +70,7 @@ class LegacyClient:
         self._token = token
         self._endpoint = endpoint.rstrip("/")
         self._timeout = timeout
+        self._session_authenticated = False
 
         self._session = requests.Session()
         retry = Retry(
@@ -87,6 +97,8 @@ class LegacyClient:
     @token.setter
     def token(self, value: str | None) -> None:
         self._token = value
+        self._session_authenticated = False
+        self._session.cookies.clear()
 
     # ------------------------------------------------------------------
     # Transport
@@ -100,11 +112,23 @@ class LegacyClient:
             "Content-Type": "application/json",
             "X-Request-ID": uuid.uuid4().hex,
         }
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
         if extra:
             headers.update(extra)
         return headers
+
+    def _ensure_session_auth(self) -> None:
+        """Set the ``m_session_id`` cookie on the session for legacy API auth.
+
+        The legacy ``/api/v1/`` surface authenticates via cookies, not the
+        ``Authorization: Bearer`` header. The ``m_session_id`` cookie value
+        is simply the access token — no login round-trip is required.
+        """
+        if self._session_authenticated or not self._token:
+            return
+        domain = urlparse(self._endpoint).hostname or ""
+        self._session.cookies.set("m_session_id", self._token, domain=domain, path="/")
+        self._session_authenticated = True
+        logger.debug("Legacy session cookie set for domain=%s", domain)
 
     def _request(
         self,
@@ -119,12 +143,14 @@ class LegacyClient:
         stream: bool = False,
     ) -> requests.Response:
         """Unified request dispatcher with auth, retry, and error handling."""
+        self._ensure_session_auth()
         url = self._build_url(path)
         merged_headers = self._headers(headers)
         # Remove Content-Type for non-json payloads
         if data is not None and json_body is None:
             merged_headers.pop("Content-Type", None)
 
+        logger.debug("%s %s", method, url)
         try:
             resp = self._session.request(
                 method=method,
@@ -141,6 +167,7 @@ class LegacyClient:
         except requests.Timeout as exc:
             raise NetworkError(f"Request timed out: {exc}") from exc
 
+        logger.debug("%s %s -> %s", method, url, resp.status_code)
         raise_for_status(resp)
         return resp
 
@@ -156,7 +183,17 @@ class LegacyClient:
         """Authenticate via access token and return user info + git token.
 
         POST /api/v1/login
+
+        Performs a full login round-trip that returns a git token and
+        server-issued session cookies. For routine API access, the
+        ``m_session_id`` cookie set by :meth:`_ensure_session_auth` is
+        sufficient — this method is only needed when the caller wants the
+        git token or the full cookie set from the server.
         """
+        self._token = access_token
+        self._session_authenticated = False
+        self._session.cookies.clear()
+        self._ensure_session_auth()
         resp = self._request("POST", "login", json_body={"AccessToken": access_token})
         return self._json_data(resp)
 
@@ -285,8 +322,12 @@ class LegacyClient:
 
         Each operation should be a dict with keys:
         - action: "create" | "update" | "delete"
-        - file_path: path in repo
-        - content: base64 content (for create/update of small files)
+        - path: path in repo
+        - type: "normal" | "lfs"
+        - size: file size in bytes
+        - sha256: hex digest (empty string for normal files)
+        - content: base64 content (for normal files)
+        - encoding: "base64" (for normal files)
         """
         segment = _resolve_segment(repo_type)
         payload = {

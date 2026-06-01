@@ -25,6 +25,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
+from urllib.parse import urlparse
+
+from requests.cookies import RequestsCookieJar
 
 from ._cache_manager import clear_cache as _clear_cache
 from ._cache_manager import scan_cache as _scan_cache
@@ -273,6 +276,60 @@ class HubApi:
     # ==================================================================
     # Authentication
     # ==================================================================
+    def get_cookies(
+        self,
+        access_token: str | None = None,
+        *,
+        cookies_required: bool = False,
+    ) -> RequestsCookieJar | None:
+        """Build a cookie jar for legacy API authentication.
+
+        The legacy ``/api/v1/`` surface authenticates via a
+        ``m_session_id`` cookie whose value is the access token. This
+        method creates a :class:`~requests.cookies.RequestsCookieJar`
+        with that cookie, scoped to the current endpoint's domain.
+
+        Parameters
+        ----------
+        access_token : str, optional
+            Explicit token override. Falls back to the token configured
+            on this instance, then to ``MODELSCOPE_API_TOKEN`` env var.
+        cookies_required : bool, optional
+            When ``True``, raise :class:`ValueError` if no token is
+            available. Default is ``False`` (return ``None``).
+
+        Returns
+        -------
+        RequestsCookieJar or None
+            Cookie jar with ``m_session_id`` set, or ``None`` when no
+            token is available and ``cookies_required`` is ``False``.
+
+        Raises
+        ------
+        ValueError
+            When ``cookies_required`` is ``True`` and no token is available.
+
+        Examples
+        --------
+        >>> cookies = api.get_cookies()
+        >>> cookies['m_session_id']
+        'ms-xxxxxxxx'
+        """
+        import os
+        token = access_token or self._config.token or os.environ.get("MODELSCOPE_API_TOKEN")
+        if not token:
+            if cookies_required:
+                raise ValueError(
+                    "No credentials found. "
+                    "Pass --token, call HubApi.login(), or set MODELSCOPE_API_TOKEN. "
+                    "Your token is available at https://modelscope.cn/my/myaccesstoken"
+                )
+            return None
+        domain = urlparse(self._config.endpoint).hostname or ""
+        jar = RequestsCookieJar()
+        jar.set("m_session_id", token, domain=domain, path="/")
+        return jar
+
     def login(self, token: str) -> UserInfo:
         """Persist ``token`` locally and return the authenticated user profile.
 

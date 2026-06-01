@@ -41,12 +41,12 @@ class Visibility(IntEnum):
     """Repository visibility levels.
 
     The integer values mirror the encoding used by the ModelScope Hub API
-    (1 = public, 3 = private, 5 = internal).
+    (1 = public, 3 = internal, 5 = private).
     """
 
     PUBLIC = 1
-    PRIVATE = 3
-    INTERNAL = 5
+    INTERNAL = 3
+    PRIVATE = 5
 
     @property
     def label(self) -> str:
