@@ -544,3 +544,16 @@ See `make help` for all available targets.
 ## License
 
 Apache 2.0 — see [LICENSE](LICENSE).
+
+---
+
+## Citation
+
+```bibtex
+@Misc{modelscope-hub,
+  title = {modelscope-hub: The official Python SDK \& CLI for ModelScope Hub.},
+  author = {The ModelScope Team},
+  howpublished = {\url{https://github.com/modelscope/modelscope_hub}},
+  year = {2025}
+}
+```
