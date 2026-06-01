@@ -494,16 +494,27 @@ class HubApi:
             license = _LICENSE_DISPLAY_TO_SPDX.get(license, license)
 
         if rt in _OPENAPI_CREATE_TYPES:
-            payload: dict[str, Any] = {
-                "owner": owner,
-                "name": name,
-            }
-            if vis is not None:
-                payload["visibility"] = vis
+            is_private = vis is not None and vis == int(Visibility.PRIVATE)
+            if rt is RepoType.STUDIO:
+                payload: dict[str, Any] = {
+                    "owner": owner,
+                    "repo_name": name,
+                }
+                if vis is not None:
+                    payload["private"] = is_private
+                if chinese_name is not None:
+                    payload["display_name"] = chinese_name
+            else:
+                payload = {
+                    "owner": owner,
+                    "skill_name": name,
+                }
+                if vis is not None:
+                    payload["private"] = is_private
+                if chinese_name is not None:
+                    payload["display_name"] = chinese_name
             if license is not None:
                 payload["license"] = license
-            if chinese_name is not None:
-                payload["chinese_name"] = chinese_name
             if description is not None:
                 payload["description"] = description
             payload.update(extra)
@@ -1233,7 +1244,7 @@ class HubApi:
         repo_id: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
         *,
-        log_type: str = "runtime",
+        log_type: str = "run",
         page_num: int = 1,
         page_size: int = 20,
         keyword: str | None = None,
@@ -1249,7 +1260,7 @@ class HubApi:
         repo_type : str or RepoType, optional
             Must be ``"studio"``. Defaults to :class:`RepoType.STUDIO`.
         log_type : str, optional
-            Either ``"runtime"`` (default) or ``"build"``.
+            Either ``"run"`` (default) or ``"build"``.
         page_num : int, optional
             1-based page index. Default is 1.
         page_size : int, optional
@@ -1273,7 +1284,7 @@ class HubApi:
         --------
         >>> logs = api.get_repo_logs(
         ...     "alice/chat-demo",
-        ...     log_type="runtime",
+        ...     log_type="run",
         ...     keyword="ERROR",
         ...     page_size=50,
         ... )
