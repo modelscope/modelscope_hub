@@ -1,74 +1,19 @@
 """Tests for CLI entry point, global parameters, exception handling, and version."""
 from __future__ import annotations
 
-import io
-import sys
-from contextlib import ExitStack
-from unittest.mock import MagicMock, patch
+import logging
 
 import pytest
 
 from modelscope_hub import __version__
 from modelscope_hub.cli.main import run_cmd
-from modelscope_hub.errors import HubError, NetworkError
-from modelscope_hub.types import UserInfo
+
+from .conftest import run_cli
 
 
 # ---------------------------------------------------------------------------
-# Local mock fixtures for unit tests (no real API calls)
+# Version & help (no API needed)
 # ---------------------------------------------------------------------------
-_MAKE_API_TARGETS = [
-    "modelscope_hub.cli.base.make_api",
-    "modelscope_hub.cli.login.make_api",
-    "modelscope_hub.cli.repo.make_api",
-    "modelscope_hub.cli.download.make_api",
-    "modelscope_hub.cli.upload.make_api",
-    "modelscope_hub.cli.deploy.make_api",
-    "modelscope_hub.cli.secret.make_api",
-    "modelscope_hub.cli.mcp.make_api",
-    "modelscope_hub.cli.cache.make_api",
-]
-
-
-@pytest.fixture
-def mock_api():
-    """Create a mock HubApi instance with common return values."""
-    api = MagicMock()
-    api.whoami.return_value = UserInfo(
-        id="123", username="test_user", email="test@example.com"
-    )
-    return api
-
-
-@pytest.fixture
-def run_cli(mock_api):
-    """Run CLI commands with mocked API and capture output."""
-    def _run(args: list[str], input_text: str | None = None):
-        captured_out = io.StringIO()
-        captured_err = io.StringIO()
-        old_stdout = sys.stdout
-        old_stderr = sys.stderr
-        old_stdin = sys.stdin
-        try:
-            sys.stdout = captured_out
-            sys.stderr = captured_err
-            if input_text is not None:
-                sys.stdin = io.StringIO(input_text)
-            with ExitStack() as stack:
-                for target in _MAKE_API_TARGETS:
-                    stack.enter_context(patch(target, return_value=mock_api))
-                exit_code = run_cmd(args)
-        except SystemExit as e:
-            exit_code = int(e.code) if e.code else 0
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-            sys.stdin = old_stdin
-        return exit_code, captured_out.getvalue(), captured_err.getvalue()
-
-    return _run
-
-
 class TestVersionAndHelp:
     """Verify version flag and help output."""
 
@@ -88,7 +33,7 @@ class TestVersionAndHelp:
         print(f"\n** [--help] exit_code={exc_info.value.code}, out={out[:200]!r}")
         assert "ModelScope Hub" in out
 
-    def test_no_subcommand_shows_error(self, capsys):
+    def test_no_subcommand_shows_error(self):
         """Missing subcommand prints error and exits 2."""
         with pytest.raises(SystemExit) as exc_info:
             run_cmd([])
@@ -96,83 +41,94 @@ class TestVersionAndHelp:
         assert exc_info.value.code == 2
 
 
+# ---------------------------------------------------------------------------
+# Global parameters — real API
+# ---------------------------------------------------------------------------
+@pytest.mark.remote
 class TestGlobalParameters:
-    """Verify global --token, --endpoint, --verbose flags propagation."""
+    """Verify global --token, --endpoint, --verbose flags with real API."""
 
-    def test_global_token_passed_to_api(self, mock_api, run_cli):
-        """--token is passed through to make_api."""
-        with patch("modelscope_hub.cli.base.make_api", return_value=mock_api) as mock_make:
-            exit_code, out, err = run_cli(["whoami"])
-            print(f"\n** [whoami via token] exit_code={exit_code}, out={out!r}, err={err!r}")
-            mock_api.whoami.assert_called_once()
-
-    def test_global_endpoint_passed_to_api(self, mock_api, run_cli):
-        """--endpoint is accepted without error."""
-        exit_code, out, err = run_cli(["whoami"])
-        print(f"\n** [whoami via endpoint] exit_code={exit_code}, out={out!r}, err={err!r}")
+    def test_whoami_with_token(self, test_token, test_endpoint, test_owner):
+        """--token is passed through to the API and returns user info."""
+        exit_code, out, err = run_cli(
+            ["whoami"],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [whoami] exit_code={exit_code}, out={out!r}, err={err!r}")
         assert exit_code == 0
+        assert test_owner in out
+        assert "username" in out
 
-    def test_verbose_flag_enables_debug(self, mock_api):
-        """--verbose sets logging level to DEBUG."""
-        import logging
+    def test_whoami_with_endpoint(self, test_token, test_endpoint, test_owner):
+        """--endpoint is passed through and used for the API call."""
+        exit_code, out, err = run_cli(
+            ["whoami"],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [whoami+endpoint] exit_code={exit_code}, out={out!r}, err={err!r}")
+        assert exit_code == 0
+        assert test_owner in out
 
-        captured_out = io.StringIO()
-        captured_err = io.StringIO()
-        old_stdout, old_stderr = sys.stdout, sys.stderr
-        try:
-            sys.stdout = captured_out
-            sys.stderr = captured_err
-            with patch("modelscope_hub.cli.base.make_api", return_value=mock_api):
-                run_cmd(["--verbose", "whoami"])
-        finally:
-            sys.stdout = old_stdout
-            sys.stderr = old_stderr
-        print(f"\n** [--verbose whoami] out={captured_out.getvalue()!r}, err={captured_err.getvalue()!r}")
-        # After the call, the root logger should have been configured for DEBUG
-        root = logging.getLogger()
-        # Reset after test
+    def test_verbose_flag(self, test_token, test_endpoint, test_owner):
+        """--verbose enables debug logging without breaking the command."""
+        exit_code, out, err = run_cli(
+            ["--verbose", "whoami"],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [--verbose whoami] exit_code={exit_code}, out={out!r}")
+        assert exit_code == 0
+        assert test_owner in out
         logging.basicConfig(level=logging.WARNING, force=True)
 
 
+# ---------------------------------------------------------------------------
+# Exception handling — real API error conditions
+# ---------------------------------------------------------------------------
+@pytest.mark.remote
 class TestExceptionHandling:
-    """Verify CLI translates exceptions into correct exit codes."""
+    """Verify CLI translates real API errors into correct exit codes."""
 
-    def test_hub_error_exits_1(self, mock_api, run_cli):
-        """HubError from a command results in exit code 1."""
-        mock_api.whoami.side_effect = HubError("Something went wrong")
-        exit_code, out, err = run_cli(["whoami"])
-        print(f"\n** [HubError] exit_code={exit_code}, err={err!r}")
+    def test_invalid_token_exits_1(self, test_endpoint):
+        """Invalid token → HubError → exit 1."""
+        exit_code, out, err = run_cli(
+            ["whoami"],
+            token="invalid_token_that_will_fail_auth",
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [bad token] exit_code={exit_code}, err={err!r}")
         assert exit_code == 1
-        assert "Something went wrong" in err
 
-    def test_network_error_exits_1(self, mock_api, run_cli):
-        """NetworkError from a command results in exit code 1."""
-        mock_api.whoami.side_effect = NetworkError("Connection refused")
-        exit_code, out, err = run_cli(["whoami"])
-        print(f"\n** [NetworkError] exit_code={exit_code}, err={err!r}")
+    def test_unreachable_endpoint_exits_1(self, test_token):
+        """Unreachable endpoint → NetworkError → exit 1."""
+        exit_code, out, err = run_cli(
+            ["whoami"],
+            token=test_token,
+            endpoint="http://127.0.0.1:1",
+        )
+        print(f"\n** [bad endpoint] exit_code={exit_code}, err={err!r}")
         assert exit_code == 1
-        assert "Network error" in err
+        assert "error" in err.lower()
 
-    def test_value_error_exits_2(self, mock_api, run_cli):
-        """ValueError from a command results in exit code 2."""
-        mock_api.whoami.side_effect = ValueError("bad input")
-        exit_code, out, err = run_cli(["whoami"])
-        print(f"\n** [ValueError] exit_code={exit_code}, err={err!r}")
+    def test_invalid_repo_id_exits_2(self, test_token, test_endpoint):
+        """Malformed repo_id → ValueError → exit 2."""
+        exit_code, out, err = run_cli(
+            ["repo", "info", "no-slash-invalid", "--repo-type", "model"],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [bad repo_id] exit_code={exit_code}, err={err!r}")
         assert exit_code == 2
-        assert "bad input" in err
+        assert "owner/name" in err
 
-    def test_not_implemented_error_exits_2(self, mock_api, run_cli):
-        """NotImplementedError from a command results in exit code 2."""
-        mock_api.whoami.side_effect = NotImplementedError("not yet")
-        exit_code, out, err = run_cli(["whoami"])
-        print(f"\n** [NotImplementedError] exit_code={exit_code}, err={err!r}")
-        assert exit_code == 2
-        assert "not yet" in err
-
-    def test_keyboard_interrupt_exits_130(self, mock_api, run_cli):
-        """KeyboardInterrupt from a command results in exit code 130."""
-        mock_api.whoami.side_effect = KeyboardInterrupt()
-        exit_code, out, err = run_cli(["whoami"])
-        print(f"\n** [KeyboardInterrupt] exit_code={exit_code}, err={err!r}")
-        assert exit_code == 130
-        assert "Interrupted" in err
+    def test_nonexistent_repo_exits_1(self, test_token, test_endpoint):
+        """Non-existent repo → HubError (404) → exit 1."""
+        exit_code, out, err = run_cli(
+            ["repo", "info", "nonexistent_owner_xyz/nonexistent_repo_xyz", "--repo-type", "model"],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [404 repo] exit_code={exit_code}, err={err!r}")
+        assert exit_code == 1

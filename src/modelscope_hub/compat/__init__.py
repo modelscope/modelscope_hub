@@ -19,6 +19,9 @@ Usage in the old SDK::
 from .constants import (
     DEFAULT_DATASET_REVISION,
     DEFAULT_MAX_WORKERS,
+    FILE_HASH,
+    MODELSCOPE_DOMAIN,
+    MODELSCOPE_PREFER_AI_SITE,
     ModelVisibility_INTERNAL,
     ModelVisibility_PRIVATE,
     ModelVisibility_PUBLIC,
@@ -26,6 +29,7 @@ from .constants import (
     REPO_TYPE_MODEL,
     REPO_TYPE_STUDIO,
     REPO_TYPE_SUPPORT,
+    TEMPORARY_FOLDER_NAME,
 )
 from .file_download import dataset_file_download, model_file_download
 from .hub_api import LegacyHubApi
@@ -39,6 +43,9 @@ __all__ = [
     "snapshot_download",
     "DEFAULT_DATASET_REVISION",
     "DEFAULT_MAX_WORKERS",
+    "FILE_HASH",
+    "MODELSCOPE_DOMAIN",
+    "MODELSCOPE_PREFER_AI_SITE",
     "ModelVisibility_INTERNAL",
     "ModelVisibility_PRIVATE",
     "ModelVisibility_PUBLIC",
@@ -46,4 +53,5 @@ __all__ = [
     "REPO_TYPE_MODEL",
     "REPO_TYPE_STUDIO",
     "REPO_TYPE_SUPPORT",
+    "TEMPORARY_FOLDER_NAME",
 ]

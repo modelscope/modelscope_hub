@@ -25,7 +25,7 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 - **Unified repo interface** — one set of methods for models, datasets, studios, skills, and MCP servers
 - **OpenAPI-first** — built on the ModelScope OpenAPI surface with transparent legacy fallback
-- **Resumable downloads** — HTTP Range resume, parallel threads, SHA256 integrity checks
+- **Production-grade downloads** — HTTP Range resume, parallel range download for large files, per-file retry with backoff, SHA256 integrity checks, file lock for multiprocess safety, offline mode, progress callbacks, and intra-cloud acceleration
 - **Full lifecycle CLI** — download, upload, deploy, manage secrets, inspect cache — all from the terminal
 - **Deep ecosystem integration** — seamless access to 100K+ models and datasets on ModelScope Hub; works with the `modelscope` training framework, Studio deployment platform, and MCP server infrastructure
 
@@ -85,6 +85,9 @@ snapshot = api.download_repo(
     allow_patterns=["*.safetensors", "*.json"],
     max_workers=8,
 )
+
+# Offline mode — return cached path without network access
+path = api.download_file("Qwen/Qwen3-0.6B", "model", "config.json", local_files_only=True)
 ```
 
 ### Upload
@@ -184,6 +187,40 @@ ms download my-org/my-data --repo-type dataset --revision v2   # dataset at tag
 | `--max-workers N` | no | Parallel download threads (default: `4`) |
 | `--force` | no | Re-download even if cached |
 
+<details>
+<summary>Advanced examples</summary>
+
+```bash
+# Download multiple specific files at once
+ms download Qwen/Qwen3-0.6B config.json tokenizer.json generation_config.json
+
+# Download only safetensors, skip GGUF and bin weights
+ms download Qwen/Qwen3-0.6B --include "*.safetensors" --exclude "*.bin" "*.gguf"
+
+# Download a dataset at a specific tag into a local directory
+ms download my-org/my-data --repo-type dataset --revision v2 --local-dir ./data
+
+# Use a custom cache directory and 8 parallel threads
+ms download Qwen/Qwen3-0.6B --cache-dir /data/hub-cache --max-workers 8
+
+# Force re-download even if already cached
+ms download Qwen/Qwen3-0.6B config.json --force
+
+# Download a Studio space
+ms download my-org/chat-demo --repo-type studio
+
+# Download all skills from a collection (legacy flag)
+ms download --collection my-org/skill-collection
+
+# Enable parallel range download for large files (env var)
+MODELSCOPE_DOWNLOAD_PARALLELS=4 ms download Qwen/Qwen3-0.6B
+
+# Use the modelscope.ai endpoint (global option, before subcommand)
+ms --endpoint https://modelscope.ai download Qwen/Qwen3-0.6B
+```
+
+</details>
+
 ### `ms upload`
 
 Upload a file or folder to a repository.
@@ -206,6 +243,45 @@ ms upload my-org/my-model . --include "*.py" --commit-message "code"  # filtered
 | `--include GLOB...` | no | Include filter for folder mode; repeatable |
 | `--exclude GLOB...` | no | Exclude filter for folder mode; repeatable |
 | `--max-workers N` | no | Parallel upload threads |
+| `--use-cache / --no-cache` | no | Enable/disable resumable upload cache (default: on) |
+| `--disable-tqdm` | no | Disable progress bars |
+
+<details>
+<summary>Advanced examples</summary>
+
+```bash
+# Upload a single file with a custom commit message
+ms upload my-org/my-model ./weights.safetensors --commit-message "add fp16 weights"
+
+# Upload a folder into a subdirectory of the repo
+ms upload my-org/my-model ./output models/ --repo-type model
+
+# Upload only Python files from the current directory
+ms upload my-org/my-model . --include "*.py" --commit-message "update code"
+
+# Upload only safetensors, skip checkpoints
+ms upload my-org/my-model ./output --include "*.safetensors" --exclude "*.ckpt" "*.bin"
+
+# Upload to a dataset repo on a specific branch
+ms upload my-org/my-data ./data --repo-type dataset --revision dev
+
+# Upload with extended commit description
+ms upload my-org/my-model ./weights.safetensors \
+  --commit-message "v2 weights" \
+  --commit-description "Retrained with extended dataset, 3 epochs, lr=2e-5"
+
+# Resumable upload: interrupted uploads resume automatically via cache
+ms upload my-org/my-model ./large-folder
+# If interrupted, just re-run the same command — already uploaded files are skipped
+
+# Disable upload cache (no resume, fresh upload every time)
+ms upload my-org/my-model ./output --no-cache
+
+# Disable progress bars (useful for CI/CD pipelines)
+ms upload my-org/my-model ./output --disable-tqdm
+```
+
+</details>
 
 ### `ms repo`
 
@@ -362,8 +438,8 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `repo_exists(repo_id, repo_type)` | Check existence |
 | **Files** | `upload_file(repo_id, repo_type, local, remote)` | Upload a single file |
 | | `upload_folder(repo_id, repo_type, folder, ...)` | Upload a directory |
-| | `download_file(repo_id, repo_type, file, ...)` | Download a single file |
-| | `download_repo(repo_id, repo_type, ...)` | Download full snapshot |
+| | `download_file(repo_id, repo_type, file, ...)` | Download a single file (with retry, resume, offline mode) |
+| | `download_repo(repo_id, repo_type, ...)` | Download full snapshot (parallel, file lock, progress callbacks) |
 | | `list_repo_files(repo_id, repo_type)` | List files in a repo |
 | | `delete_files(repo_id, repo_type, paths)` | Remove files |
 | **Version** | `list_repo_revisions(repo_id, repo_type)` | List branches and tags |
@@ -412,7 +488,7 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 ```
 
 - **Browse & discover** — search 100K+ models and datasets via `list_repos` / `ms repo list`
-- **Download & cache** — pull model weights, tokenizer configs, or entire datasets into a managed cache or a local directory
+- **Download & cache** — pull model weights, tokenizer configs, or entire datasets into a managed cache or a local directory; supports offline mode via `local_files_only`
 - **Train & fine-tune** — use with the [modelscope](https://github.com/modelscope/modelscope) framework: train locally, then push results back
 - **Deploy** — launch a Studio space or MCP server directly from the CLI or SDK
 - **Automate** — integrate into CI/CD pipelines with environment-variable auth and `--yes` flags for non-interactive operation
@@ -421,13 +497,32 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 
 ## Configuration
 
-| Environment Variable | Purpose |
-|---------------------|---------|
-| `MODELSCOPE_API_TOKEN` | Default API token |
-| `MODELSCOPE_ENDPOINT` | API endpoint (default: `https://modelscope.cn`) |
-| `MODELSCOPE_CACHE` | Override cache directory |
+| Environment Variable | Purpose | Default |
+|---------------------|---------|---------|
+| `MODELSCOPE_API_TOKEN` | Default API token | — |
+| `MODELSCOPE_ENDPOINT` | API endpoint | `https://modelscope.cn` |
+| `MODELSCOPE_CACHE` | Override cache directory | `~/.modelscope/hub` |
+| `MODELSCOPE_DOWNLOAD_PARALLELS` | Parallel range-download parts for large files | `1` (disabled) |
+| `MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB` | File size threshold (MB) to trigger parallel range download | `500` |
+| `DOWNLOAD_RETRY_TIMES` | Per-file download retry count | `5` |
+| `DOWNLOAD_TIMEOUT` | Per-request download timeout (seconds) | `60` |
+| `MODELSCOPE_HUB_FILE_LOCK` | Enable file lock for multiprocess download safety | `true` |
+| `INTRA_CLOUD_ACCELERATION` | Enable Alibaba cloud intra-cloud download acceleration | `true` |
 
 Token is persisted locally after `ms login` and auto-loaded in subsequent sessions.
+
+---
+
+## Backward Compatibility
+
+`modelscope-hub` provides a compatibility layer for code written against the old `modelscope.hub` API surface. The old SDK can delegate directly to `modelscope_hub.compat`:
+
+```python
+from modelscope_hub.compat import snapshot_download, model_file_download
+from modelscope_hub.compat import LegacyHubApi as HubApi
+```
+
+All legacy parameter names (`allow_file_pattern`, `ignore_file_pattern`, `cookies`, etc.) are accepted and mapped to the new implementation.
 
 ---
 

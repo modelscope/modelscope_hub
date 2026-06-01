@@ -63,7 +63,7 @@ class StopCommand(CLICommand):
 
 
 class LogsCommand(CLICommand):
-    """Stream paginated runtime / build logs of a Studio space."""
+    """Stream paginated run / build logs of a Studio space."""
 
     @staticmethod
     def register(subparsers: Action) -> None:
@@ -75,7 +75,7 @@ class LogsCommand(CLICommand):
             default=RepoType.STUDIO.value,
             required=False,
         )
-        p.add_argument("--log-type", dest="log_type", choices=["runtime", "build"], default="runtime")
+        p.add_argument("--log-type", dest="log_type", choices=["run", "build"], default="run")
         p.add_argument("--page", "--page-num", dest="page_num", type=int, default=1)
         p.add_argument("--page-size", dest="page_size", type=int, default=100)
         p.add_argument("--keyword", default=None)

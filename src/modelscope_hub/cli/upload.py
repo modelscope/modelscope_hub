@@ -70,6 +70,27 @@ class UploadCommand(CLICommand):
             default=None,
             help="Concurrency for folder uploads.",
         )
+        cache_group = p.add_mutually_exclusive_group()
+        cache_group.add_argument(
+            "--use-cache",
+            dest="use_cache",
+            action="store_true",
+            default=True,
+            help="Use .ms_upload_cache for resumable folder uploads (default).",
+        )
+        cache_group.add_argument(
+            "--no-cache",
+            dest="use_cache",
+            action="store_false",
+            help="Disable upload cache / resume support.",
+        )
+        p.add_argument(
+            "--disable-tqdm",
+            dest="disable_tqdm",
+            action="store_true",
+            default=False,
+            help="Disable progress bars.",
+        )
 
         # Legacy compat
         add_subcmd_token_endpoint(p)
@@ -87,8 +108,6 @@ class UploadCommand(CLICommand):
             error(f"Local path not found: {local}")
             raise SystemExit(2)
 
-        max_workers = self.args.max_workers or min(8, (os.cpu_count() or 4) + 4)
-
         if local.is_file():
             path_in_repo = path_in_repo or local.name
             info(f"Uploading file {local} → {self.args.repo_id}:{path_in_repo}")
@@ -98,25 +117,32 @@ class UploadCommand(CLICommand):
                 str(local),
                 path_in_repo,
                 commit_message=self.args.commit_message,
+                commit_description=self.args.commit_description,
                 revision=self.args.revision,
+                disable_tqdm=self.args.disable_tqdm,
             )
             success("Upload complete.")
             return
 
         path_in_repo = path_in_repo or ""
         info(f"Uploading folder {local} → {self.args.repo_id}:{path_in_repo or '/'}")
-        api.upload_folder(
+        result = api.upload_folder(
             self.args.repo_id,
             self.args.repo_type,
             str(local),
             path_in_repo=path_in_repo,
             commit_message=self.args.commit_message,
+            commit_description=self.args.commit_description,
             revision=self.args.revision,
             allow_patterns=self.args.allow_patterns,
             ignore_patterns=self.args.ignore_patterns,
-            max_workers=max_workers,
+            max_workers=self.args.max_workers,
+            use_cache=self.args.use_cache,
         )
-        success("Folder upload complete.")
+        if result is None:
+            success("All files already committed, nothing to upload.")
+        else:
+            success("Folder upload complete.")
 
     def _resolve_paths(self) -> tuple[str, str | None]:
         """Resolve local_path and path_in_repo with legacy smart defaults."""

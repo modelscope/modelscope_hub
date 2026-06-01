@@ -2,17 +2,34 @@
 
 This module is **private** — external callers should interact through the
 public :class:`~modelscope_hub.api.HubApi` facade.
+
+Auth strategy
+-------------
+The legacy API authenticates via a session cookie (``m_session_id``) rather
+than the ``Authorization: Bearer`` header used by the OpenAPI surface. On
+first use the client sets ``m_session_id = <access_token>`` on the
+``requests.Session`` cookie jar — no round-trip to ``/api/v1/login`` is
+needed for API calls.
 """
 
 from __future__ import annotations
 
 import uuid
 from typing import Any, BinaryIO, IO, Union
+from urllib.parse import quote_plus, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
 
-from .constants import API_MAX_RETRIES, API_TIMEOUT, LEGACY_API_PREFIX, RepoType
+from .constants import (
+    API_MAX_RETRIES,
+    API_TIMEOUT,
+    LEGACY_API_PREFIX,
+    RepoType,
+    UPLOAD_BLOB_CONNECT_TIMEOUT,
+    UPLOAD_BLOB_READ_TIMEOUT,
+    UPLOAD_RETRY_ALLOWED_METHODS,
+)
 from .errors import NetworkError, raise_for_status
 from .utils.logger import get_logger
 
@@ -61,13 +78,14 @@ class LegacyClient:
         self._token = token
         self._endpoint = endpoint.rstrip("/")
         self._timeout = timeout
+        self._session_authenticated = False
 
         self._session = requests.Session()
         retry = Retry(
             total=max_retries,
             backoff_factor=0.5,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET", "POST", "PUT", "DELETE"],
+            allowed_methods=UPLOAD_RETRY_ALLOWED_METHODS,
         )
         adapter = HTTPAdapter(max_retries=retry)
         self._session.mount("https://", adapter)
@@ -87,6 +105,8 @@ class LegacyClient:
     @token.setter
     def token(self, value: str | None) -> None:
         self._token = value
+        self._session_authenticated = False
+        self._session.cookies.clear()
 
     # ------------------------------------------------------------------
     # Transport
@@ -106,6 +126,21 @@ class LegacyClient:
             headers.update(extra)
         return headers
 
+    def _ensure_session_auth(self) -> None:
+        """Set the ``m_session_id`` cookie on the session for legacy API auth.
+
+        Both cookie and Bearer header are sent: older endpoints rely on
+        the ``m_session_id`` cookie, while newer endpoints accept the
+        ``Authorization: Bearer`` header. Sending both is harmless and
+        maximises compatibility.
+        """
+        if self._session_authenticated or not self._token:
+            return
+        domain = urlparse(self._endpoint).hostname or ""
+        self._session.cookies.set("m_session_id", self._token, domain=domain, path="/")
+        self._session_authenticated = True
+        logger.debug("Legacy session cookie set for domain=%s", domain)
+
     def _request(
         self,
         method: str,
@@ -119,12 +154,14 @@ class LegacyClient:
         stream: bool = False,
     ) -> requests.Response:
         """Unified request dispatcher with auth, retry, and error handling."""
+        self._ensure_session_auth()
         url = self._build_url(path)
         merged_headers = self._headers(headers)
         # Remove Content-Type for non-json payloads
         if data is not None and json_body is None:
             merged_headers.pop("Content-Type", None)
 
+        logger.debug("%s %s", method, url)
         try:
             resp = self._session.request(
                 method=method,
@@ -141,6 +178,7 @@ class LegacyClient:
         except requests.Timeout as exc:
             raise NetworkError(f"Request timed out: {exc}") from exc
 
+        logger.debug("%s %s -> %s", method, url, resp.status_code)
         raise_for_status(resp)
         return resp
 
@@ -156,40 +194,29 @@ class LegacyClient:
         """Authenticate via access token and return user info + git token.
 
         POST /api/v1/login
+
+        Performs a full login round-trip that returns a git token and
+        server-issued session cookies. For routine API access, the
+        ``m_session_id`` cookie set by :meth:`_ensure_session_auth` is
+        sufficient — this method is only needed when the caller wants the
+        git token or the full cookie set from the server.
         """
+        self._token = access_token
+        self._session_authenticated = False
+        self._session.cookies.clear()
+        self._ensure_session_auth()
         resp = self._request("POST", "login", json_body={"AccessToken": access_token})
         return self._json_data(resp)
 
     # ------------------------------------------------------------------
     # Repo CRUD (model / dataset)
     # ------------------------------------------------------------------
-    def create_repo(
-        self,
-        repo_id: str,
-        repo_type: str,
-        visibility: int = 1,
-        license: str = "Apache-2.0",
-        **kwargs: Any,
-    ) -> dict:
-        """Create a new repository.
+    def create_repo(self, repo_type: str, body: dict[str, Any]) -> dict:
+        """POST /api/v1/{type}s — create a new repository.
 
-        POST /api/v1/models  (for model)
-        POST /api/v1/datasets (for dataset)
+        ``body`` is the fully-constructed request payload (PascalCase keys).
         """
         segment = _resolve_segment(repo_type)
-        parts = repo_id.split("/", 1)
-        owner = parts[0]
-        name = parts[1] if len(parts) > 1 else parts[0]
-
-        body: dict[str, Any] = {
-            "Path": owner,
-            "Name": name,
-            "Visibility": visibility,
-            "License": license,
-        }
-        # Merge extra kwargs (ChineseName, Description, etc.)
-        body.update(kwargs)
-
         resp = self._request("POST", segment, json_body=body)
         return self._json_data(resp)
 
@@ -233,6 +260,49 @@ class LegacyClient:
         if isinstance(data, dict):
             return data.get("Files", data.get("files", []))
         return []
+
+    def list_dataset_files_paginated(
+        self,
+        repo_id: str,
+        revision: str = "master",
+        page_size: int = 200,
+        root_path: str = "/",
+    ) -> list[dict]:
+        """List files in a dataset repo using pagination.
+
+        Datasets can have millions of files, so this method pages through
+        ``GET /api/v1/datasets/{repo_id}/repo/files`` with
+        ``PageNumber``/``PageSize`` params.
+        """
+        all_files: list[dict] = []
+        page_number = 1
+        while True:
+            params: dict[str, Any] = {
+                "Revision": revision,
+                "Recursive": "True",
+                "PageNumber": page_number,
+                "PageSize": page_size,
+            }
+            if root_path and root_path != "/":
+                params["Root"] = root_path
+            resp = self._request(
+                "GET",
+                f"datasets/{repo_id}/repo/files",
+                params=params,
+            )
+            data = self._json_data(resp)
+            if isinstance(data, list):
+                files = data
+            elif isinstance(data, dict):
+                files = data.get("Files", data.get("files", []))
+            else:
+                files = []
+
+            all_files.extend(files)
+            if len(files) < page_size:
+                break
+            page_number += 1
+        return all_files
 
     # ------------------------------------------------------------------
     # Revisions
@@ -285,8 +355,12 @@ class LegacyClient:
 
         Each operation should be a dict with keys:
         - action: "create" | "update" | "delete"
-        - file_path: path in repo
-        - content: base64 content (for create/update of small files)
+        - path: path in repo
+        - type: "normal" | "lfs"
+        - size: file size in bytes
+        - sha256: hex digest (empty string for normal files)
+        - content: base64 content (for normal files)
+        - encoding: "base64" (for normal files)
         """
         segment = _resolve_segment(repo_type)
         payload = {
@@ -361,7 +435,7 @@ class LegacyClient:
                 upload_url,
                 data=data,
                 headers=upload_headers,
-                timeout=timeout or max(self._timeout, 300),
+                timeout=timeout or (UPLOAD_BLOB_CONNECT_TIMEOUT, UPLOAD_BLOB_READ_TIMEOUT),
             )
         except requests.ConnectionError as exc:
             raise NetworkError(f"Blob upload connection failed: {exc}") from exc
@@ -388,9 +462,36 @@ class LegacyClient:
         segment = _resolve_segment(repo_type)
         return (
             f"{self._endpoint}{LEGACY_API_PREFIX}/{segment}/{repo_id}/repo"
-            f"?Revision={revision}&FilePath={file_path}"
+            f"?Revision={quote_plus(revision)}&FilePath={quote_plus(file_path)}"
         )
 
+    # ------------------------------------------------------------------
+    # Collections
+    # ------------------------------------------------------------------
+    def get_collection(
+        self,
+        collection_id: str,
+        *,
+        element_type: str = "skill",
+        page_number: int = 1,
+        page_size: int = 50,
+    ) -> dict:
+        """Get collection details and its elements.
+
+        GET /api/v1/collections?Fid=...&ElementType=...
+        """
+        params = {
+            "Fid": collection_id,
+            "ElementType": element_type,
+            "PageNumber": page_number,
+            "PageSize": page_size,
+        }
+        resp = self._request("GET", "collections", params=params)
+        return self._json_data(resp)
+
+    # ------------------------------------------------------------------
+    # Raw Download URL
+    # ------------------------------------------------------------------
     def download_stream(
         self,
         repo_id: str,

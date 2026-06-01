@@ -25,6 +25,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
+from urllib.parse import urlparse
+
+from requests.cookies import RequestsCookieJar
 
 from ._cache_manager import clear_cache as _clear_cache
 from ._cache_manager import scan_cache as _scan_cache
@@ -34,7 +37,7 @@ from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .config import HubConfig, get_default_config
 from .constants import RepoType, Visibility
-from .errors import AuthenticationError, NotFoundError
+from .errors import AuthenticationError, HubError, NotFoundError
 from .types import CacheInfo, FileInfo, PagedResult, RepoInfo, UserInfo
 from .utils.logger import get_logger
 
@@ -51,8 +54,6 @@ _OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset({RepoType.STUDIO, RepoTyp
 _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
     {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
 )
-_LEGACY_DELETE_TYPES: frozenset[RepoType] = frozenset({RepoType.MODEL, RepoType.DATASET})
-
 # Mapping of common license display names to their SPDX identifiers. The Hub
 # backend rejects display names like ``"Apache License 2.0"`` — we translate
 # them transparently while passing unknown values (already SPDX) through.
@@ -169,7 +170,12 @@ class HubApi:
         ``POST /files/upload`` instead of the legacy commit endpoint.
         """
         if self._uploader is None:
-            self._uploader = UploadManager(self.legacy, self._config, self.openapi)
+            self._uploader = UploadManager(
+                self.legacy,
+                self._config,
+                self.openapi,
+                create_repo_fn=self._create_repo_exist_ok,
+            )
         return self._uploader
 
     # ==================================================================
@@ -188,6 +194,13 @@ class HubApi:
                 f"Invalid repo_id {repo_id!r}: owner and name must both be non-empty."
             )
         return owner, name
+
+    def _create_repo_exist_ok(self, repo_id: str, repo_type: str) -> None:
+        """Auto-create the repo if it doesn't exist, silently ignore if it does."""
+        try:
+            self.create_repo(repo_id, repo_type)
+        except HubError:
+            pass
 
     @staticmethod
     def _normalize_repo_type(repo_type: RepoTypeLike) -> RepoType:
@@ -273,6 +286,60 @@ class HubApi:
     # ==================================================================
     # Authentication
     # ==================================================================
+    def get_cookies(
+        self,
+        access_token: str | None = None,
+        *,
+        cookies_required: bool = False,
+    ) -> RequestsCookieJar | None:
+        """Build a cookie jar for legacy API authentication.
+
+        The legacy ``/api/v1/`` surface authenticates via a
+        ``m_session_id`` cookie whose value is the access token. This
+        method creates a :class:`~requests.cookies.RequestsCookieJar`
+        with that cookie, scoped to the current endpoint's domain.
+
+        Parameters
+        ----------
+        access_token : str, optional
+            Explicit token override. Falls back to the token configured
+            on this instance, then to ``MODELSCOPE_API_TOKEN`` env var.
+        cookies_required : bool, optional
+            When ``True``, raise :class:`ValueError` if no token is
+            available. Default is ``False`` (return ``None``).
+
+        Returns
+        -------
+        RequestsCookieJar or None
+            Cookie jar with ``m_session_id`` set, or ``None`` when no
+            token is available and ``cookies_required`` is ``False``.
+
+        Raises
+        ------
+        ValueError
+            When ``cookies_required`` is ``True`` and no token is available.
+
+        Examples
+        --------
+        >>> cookies = api.get_cookies()
+        >>> cookies['m_session_id']
+        'ms-xxxxxxxx'
+        """
+        import os
+        token = access_token or self._config.token or os.environ.get("MODELSCOPE_API_TOKEN")
+        if not token:
+            if cookies_required:
+                raise ValueError(
+                    "No credentials found. "
+                    "Pass --token, call HubApi.login(), or set MODELSCOPE_API_TOKEN. "
+                    "Your token is available at https://modelscope.cn/my/myaccesstoken"
+                )
+            return None
+        domain = urlparse(self._config.endpoint).hostname or ""
+        jar = RequestsCookieJar()
+        jar.set("m_session_id", token, domain=domain, path="/")
+        return jar
+
     def login(self, token: str) -> UserInfo:
         """Persist ``token`` locally and return the authenticated user profile.
 
@@ -439,16 +506,27 @@ class HubApi:
             license = _LICENSE_DISPLAY_TO_SPDX.get(license, license)
 
         if rt in _OPENAPI_CREATE_TYPES:
-            payload: dict[str, Any] = {
-                "owner": owner,
-                "name": name,
-            }
-            if vis is not None:
-                payload["visibility"] = vis
+            is_private = vis is not None and vis == int(Visibility.PRIVATE)
+            if rt is RepoType.STUDIO:
+                payload: dict[str, Any] = {
+                    "owner": owner,
+                    "repo_name": name,
+                }
+                if vis is not None:
+                    payload["private"] = is_private
+                if chinese_name is not None:
+                    payload["display_name"] = chinese_name
+            else:
+                payload = {
+                    "owner": owner,
+                    "skill_name": name,
+                }
+                if vis is not None:
+                    payload["private"] = is_private
+                if chinese_name is not None:
+                    payload["display_name"] = chinese_name
             if license is not None:
                 payload["license"] = license
-            if chinese_name is not None:
-                payload["chinese_name"] = chinese_name
             if description is not None:
                 payload["description"] = description
             payload.update(extra)
@@ -461,24 +539,19 @@ class HubApi:
                 data, rt, owner_hint=owner, name_hint=name
             )
 
-        legacy_kwargs: dict[str, Any] = {}
-        if vis is not None:
-            legacy_kwargs["Visibility"] = vis
-        if license is not None:
-            legacy_kwargs["License"] = license
+        body: dict[str, Any] = {
+            "Path": owner,
+            "Name": name,
+            "Visibility": vis if vis is not None else int(Visibility.PUBLIC),
+            "License": license or "Apache-2.0",
+        }
         if chinese_name is not None:
-            legacy_kwargs["ChineseName"] = chinese_name
+            body["ChineseName"] = chinese_name
         if description is not None:
-            legacy_kwargs["Description"] = description
-        legacy_kwargs.update(extra)
+            body["Description"] = description
+        body.update(extra)
 
-        data = self.legacy.create_repo(
-            repo_id=repo_id,
-            repo_type=str(rt),
-            visibility=vis if vis is not None else int(Visibility.PUBLIC),
-            license=license or "Apache-2.0",
-            **legacy_kwargs,
-        )
+        data = self.legacy.create_repo(repo_type=str(rt), body=body)
         return self._repo_info_from_payload(
             data, rt, owner_hint=owner, name_hint=name
         )
@@ -639,36 +712,29 @@ class HubApi:
     def delete_repo(self, repo_id: str, repo_type: RepoTypeLike) -> None:
         """Delete a repository.
 
-        Currently only ``model`` and ``dataset`` are deletable via the legacy
-        surface; other types raise :class:`NotImplementedError`.
+        .. deprecated::
+            Programmatic repository deletion is not currently supported by
+            the Hub API for security reasons. This method will be restored
+            in a future release once proper token-scoped authentication is
+            available. To delete a repository now, use the web console at
+            https://modelscope.cn.
 
         Parameters
         ----------
         repo_id : str
             Canonical ``owner/name`` identifier.
         repo_type : str or RepoType
-            Must be ``"model"`` or ``"dataset"``.
-
-        Raises
-        ------
-        ValueError
-            When ``repo_id`` is not in ``owner/name`` form.
-        NotImplementedError
-            When ``repo_type`` is not deletable through the SDK.
-        NotFoundError
-            When the target repository does not exist.
-        AuthenticationError
-            When the caller is not authorised to delete the repository.
-
-        Examples
-        --------
-        >>> api.delete_repo("alice/old-model", repo_type="model")
+            Repository type (``"model"``, ``"dataset"``, etc.).
         """
+        import warnings
+        warnings.warn(
+            "This function is deprecated due to security reasons, "
+            "and will be recovered in future versions with proper token authentication. "
+            "Please go to https://modelscope.cn to delete repositories via the web console.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         rt = self._normalize_repo_type(repo_type)
-        if rt not in _LEGACY_DELETE_TYPES:
-            raise NotImplementedError(
-                f"Deletion is not supported for repo_type={rt.value!r}."
-            )
         self._parse_repo_id(repo_id)
         self.legacy.delete_repo(repo_id=repo_id, repo_type=str(rt))
 
@@ -689,6 +755,76 @@ class HubApi:
         except NotFoundError:
             return False
 
+    def resolve_endpoint_for_read(
+        self,
+        repo_id: str,
+        *,
+        repo_type: RepoTypeLike = "model",
+    ) -> str:
+        """Resolve the best endpoint for read operations (download, list, get).
+
+        This replicates the old SDK's ``get_endpoint_for_read()`` behavior:
+
+        1. If ``MODELSCOPE_DOMAIN`` env var is set, use it directly (error if
+           the repo is not found on that endpoint).
+        2. If ``MODELSCOPE_PREFER_AI_SITE=true``, check ``.ai`` first, then
+           fall back to ``.cn``.
+        3. Otherwise (default), check ``.cn`` first, then fall back to ``.ai``.
+
+        Returns
+        -------
+        str
+            The endpoint URL where the repo exists.
+
+        Raises
+        ------
+        NotFoundError
+            If the repo is not found on any checked endpoint.
+        """
+        import os
+
+        from .constants import (
+            DEFAULT_ENDPOINT,
+            DEFAULT_INTL_ENDPOINT,
+            ENV_MODELSCOPE_DOMAIN,
+            ENV_PREFER_AI_SITE,
+        )
+
+        domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
+        if domain:
+            endpoint = domain if domain.startswith("http") else f"https://{domain}"
+            endpoint = endpoint.rstrip("/")
+            probe = HubApi(endpoint=endpoint, token=self._config.token)
+            if not probe.repo_exists(repo_id, repo_type):
+                raise NotFoundError(
+                    f"Repo {repo_id} does not exist on {endpoint}"
+                )
+            return endpoint
+
+        prefer_ai = (
+            os.environ.get(ENV_PREFER_AI_SITE, "").strip().lower() == "true"
+        )
+        primary = DEFAULT_INTL_ENDPOINT if prefer_ai else DEFAULT_ENDPOINT
+        fallback = DEFAULT_ENDPOINT if prefer_ai else DEFAULT_INTL_ENDPOINT
+
+        primary_probe = HubApi(endpoint=primary, token=self._config.token)
+        if primary_probe.repo_exists(repo_id, repo_type):
+            return primary
+
+        fallback_probe = HubApi(endpoint=fallback, token=self._config.token)
+        if fallback_probe.repo_exists(repo_id, repo_type):
+            logger.warning(
+                "Repo %s not found on %s, using %s instead.",
+                repo_id,
+                primary,
+                fallback,
+            )
+            return fallback
+
+        raise NotFoundError(
+            f"Repo {repo_id} not found on either {primary} or {fallback}"
+        )
+
     # ==================================================================
     # Files
     # ==================================================================
@@ -700,14 +836,15 @@ class HubApi:
         path_in_repo: str,
         *,
         commit_message: str | None = None,
+        commit_description: str | None = None,
         revision: str | None = None,
+        buffer_size_mb: int = 16,
+        disable_tqdm: bool = False,
     ) -> dict:
         """Upload a single file to a repository.
 
-        Routing to large/small upload paths is handled internally by
-        :class:`UploadManager` (small files ≤ 5 MiB use the OpenAPI
-        ``POST /files/upload`` endpoint; larger files use the legacy commit
-        flow with LFS where applicable).
+        Always uploads the blob first (even for small files), then commits.
+        LFS mode is determined by file suffix and size threshold.
 
         Parameters
         ----------
@@ -721,13 +858,19 @@ class HubApi:
             Destination path inside the repository.
         commit_message : str, optional
             Commit message. Defaults to ``"Upload file"``.
+        commit_description : str, optional
+            Extended commit description.
         revision : str, optional
             Branch to commit on. Defaults to ``"master"``.
+        buffer_size_mb : int, optional
+            Buffer size in MiB for reading file data. Default 16.
+        disable_tqdm : bool, optional
+            Disable progress bar. Default False.
 
         Returns
         -------
         dict
-            Raw upload-response payload (commit id, blob id, ...).
+            Commit info from the server.
 
         Raises
         ------
@@ -738,8 +881,6 @@ class HubApi:
 
         Examples
         --------
-        Upload a local model weight file:
-
         >>> api.upload_file(
         ...     "alice/llama-7b",
         ...     repo_type="model",
@@ -747,10 +888,6 @@ class HubApi:
         ...     path_in_repo="pytorch_model.bin",
         ...     commit_message="Add fine-tuned weights",
         ... )
-
-        Upload raw bytes to a custom path:
-
-        >>> api.upload_file("alice/my-dataset", "dataset", b"col1,col2\n1,2\n", "data/sample.csv")
         """
         rt = self._normalize_repo_type(repo_type)
         return self.uploader.upload_file(
@@ -759,7 +896,10 @@ class HubApi:
             path_or_fileobj=path_or_fileobj,
             path_in_repo=path_in_repo,
             commit_message=commit_message or "Upload file",
+            commit_description=commit_description,
             revision=revision or "master",
+            buffer_size_mb=buffer_size_mb,
+            disable_tqdm=disable_tqdm,
         )
 
     def upload_folder(
@@ -770,16 +910,18 @@ class HubApi:
         *,
         path_in_repo: str = "",
         commit_message: str | None = None,
+        commit_description: str | None = None,
         revision: str | None = None,
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
-        max_workers: int = 4,
-    ) -> dict:
-        """Upload an entire folder to a repository.
+        max_workers: int | None = None,
+        use_cache: bool = True,
+    ) -> dict | list[dict] | None:
+        """Upload an entire folder to a repository with resumable support.
 
         Files are walked recursively from ``folder_path`` and uploaded in
-        parallel. ``allow_patterns`` / ``ignore_patterns`` use ``fnmatch``
-        glob syntax to filter the file set.
+        parallel with adaptive batching, per-file retry, and ReAct progressive
+        retry fallback.
 
         Parameters
         ----------
@@ -793,6 +935,8 @@ class HubApi:
             Destination prefix inside the repository. Defaults to the repo root.
         commit_message : str, optional
             Commit message. Defaults to ``"Upload folder"``.
+        commit_description : str, optional
+            Extended commit description.
         revision : str, optional
             Branch to commit on. Defaults to ``"master"``.
         allow_patterns : list of str, optional
@@ -800,17 +944,21 @@ class HubApi:
         ignore_patterns : list of str, optional
             Files matching any pattern are skipped.
         max_workers : int, optional
-            Concurrency for parallel uploads. Default is 4.
+            Concurrency for parallel uploads. Defaults to adaptive.
+        use_cache : bool, optional
+            Use ``.ms_upload_cache`` for resumable uploads. Default True.
 
         Returns
         -------
+        None
+            If all files were already committed (nothing to do).
         dict
-            Aggregated upload result (per-file status and commit metadata).
+            If only one batch was committed.
+        list of dict
+            If multiple batches were committed.
 
         Examples
         --------
-        Upload a model checkpoint directory while ignoring optimizer state:
-
         >>> api.upload_folder(
         ...     "alice/llama-7b",
         ...     repo_type="model",
@@ -826,10 +974,12 @@ class HubApi:
             folder_path=folder_path,
             path_in_repo=path_in_repo,
             commit_message=commit_message or "Upload folder",
+            commit_description=commit_description,
             revision=revision or "master",
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,
+            use_cache=use_cache,
         )
 
     def download_file(
@@ -842,6 +992,9 @@ class HubApi:
         cache_dir: str | Path | None = None,
         local_dir: str | Path | None = None,
         force: bool = False,
+        expected_sha256: str | None = None,
+        local_files_only: bool = False,
+        user_agent: dict | str | None = None,
     ) -> Path:
         """Download a single file from a repository.
 
@@ -865,6 +1018,14 @@ class HubApi:
             When set, download directly into this directory instead of cache.
         force : bool, optional
             Re-download even if a cached copy exists. Default is ``False``.
+        expected_sha256 : str, optional
+            When provided, verify downloaded file hash and use it for
+            cache hit validation. On mismatch, re-download up to 3 times.
+        local_files_only : bool, optional
+            When ``True``, return the cached path without network access.
+            Raises ``ValueError`` if the file is not cached.
+        user_agent : dict, str or None, optional
+            Custom user-agent info appended to the default UA string.
 
         Returns
         -------
@@ -895,6 +1056,9 @@ class HubApi:
             cache_dir=Path(cache_dir) if cache_dir else None,
             local_dir=Path(local_dir) if local_dir else None,
             force=force,
+            expected_sha256=expected_sha256,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
         )
 
     def download_repo(
@@ -908,6 +1072,8 @@ class HubApi:
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         max_workers: int = 4,
+        local_files_only: bool = False,
+        user_agent: dict | str | None = None,
     ) -> Path:
         """Download an entire repository snapshot.
 
@@ -932,6 +1098,10 @@ class HubApi:
             Matching files are skipped.
         max_workers : int, optional
             Concurrency for parallel downloads. Default is 4.
+        local_files_only : bool, optional
+            When ``True``, return the cached snapshot path without network.
+        user_agent : dict, str or None, optional
+            Custom user-agent info for download headers.
 
         Returns
         -------
@@ -961,6 +1131,8 @@ class HubApi:
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
         )
 
     def list_repo_files(
@@ -1190,7 +1362,7 @@ class HubApi:
         repo_id: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
         *,
-        log_type: str = "runtime",
+        log_type: str = "run",
         page_num: int = 1,
         page_size: int = 20,
         keyword: str | None = None,
@@ -1206,7 +1378,7 @@ class HubApi:
         repo_type : str or RepoType, optional
             Must be ``"studio"``. Defaults to :class:`RepoType.STUDIO`.
         log_type : str, optional
-            Either ``"runtime"`` (default) or ``"build"``.
+            Either ``"run"`` (default) or ``"build"``.
         page_num : int, optional
             1-based page index. Default is 1.
         page_size : int, optional
@@ -1230,7 +1402,7 @@ class HubApi:
         --------
         >>> logs = api.get_repo_logs(
         ...     "alice/chat-demo",
-        ...     log_type="runtime",
+        ...     log_type="run",
         ...     keyword="ERROR",
         ...     page_size=50,
         ... )

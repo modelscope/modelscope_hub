@@ -62,6 +62,14 @@ class HubConfig:
     # Construction helpers
     # ------------------------------------------------------------------
     def __post_init__(self) -> None:
+        # MODELSCOPE_DOMAIN backward compat: if MODELSCOPE_ENDPOINT is not set
+        # but the old MODELSCOPE_DOMAIN env var is, use it as the endpoint.
+        if not os.environ.get(ENV_ENDPOINT):
+            domain = os.environ.get("MODELSCOPE_DOMAIN", "").strip()
+            if domain:
+                if not domain.startswith("http://") and not domain.startswith("https://"):
+                    domain = f"https://{domain}"
+                self.endpoint = domain
         # Strip trailing slash so URL composition stays predictable.
         self.endpoint = self.endpoint.rstrip("/")
         if self.token is None:

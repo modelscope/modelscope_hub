@@ -41,6 +41,11 @@ class APIError(HubError):
         parts.append(self.message)
         if self.request_id:
             parts.append(f"(request_id={self.request_id})")
+        if self.response_body is not None and self.message.startswith("HTTP "):
+            body_str = str(self.response_body)
+            if len(body_str) > 500:
+                body_str = body_str[:500] + "..."
+            parts.append(f"| body={body_str}")
         return " ".join(parts)
 
 
@@ -106,12 +111,15 @@ def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]
         return message, request_id, body
 
     if isinstance(body, dict):
-        for key in ("message", "msg", "error", "detail"):
+        for key in ("message", "Message", "msg", "Msg", "error", "Error", "detail", "Detail"):
             value = body.get(key)
             if isinstance(value, str) and value.strip():
                 message = value.strip()
                 break
-        request_id = body.get("request_id") or body.get("requestId") or request_id
+        request_id = (
+            body.get("request_id") or body.get("requestId")
+            or body.get("RequestId") or request_id
+        )
     return message, request_id, body
 
 

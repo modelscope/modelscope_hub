@@ -37,14 +37,12 @@ class LegacyHubApi:
         """Login with token (old style returns None)."""
         self._api.login(token)
 
-    def get_cookies(self, access_token: str) -> dict:
-        """Legacy method — returns empty dict; token-based auth is used."""
-        warnings.warn(
-            "get_cookies() is deprecated. Token-based auth is used directly.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return {}
+    def get_cookies(self, access_token: str | None = None, cookies_required: bool = False):
+        """Get cookies for legacy API authentication.
+
+        Delegates to :meth:`HubApi.get_cookies`.
+        """
+        return self._api.get_cookies(access_token=access_token, cookies_required=cookies_required)
 
     # ------------------------------------------------------------------
     # Repository operations
@@ -104,6 +102,45 @@ class LegacyHubApi:
         )
 
     # ------------------------------------------------------------------
+    # Endpoint resolution
+    # ------------------------------------------------------------------
+    def get_endpoint_for_read(
+        self,
+        repo_id: str,
+        *,
+        repo_type: str | None = None,
+        token: str | None = None,
+    ) -> str:
+        """Resolve the best endpoint for read operations.
+
+        Backward-compatible with the old SDK's ``get_endpoint_for_read()``.
+        Honors ``MODELSCOPE_DOMAIN`` and ``MODELSCOPE_PREFER_AI_SITE`` env vars.
+        """
+        return self._api.resolve_endpoint_for_read(
+            repo_id, repo_type=repo_type or "model"
+        )
+
+    def repo_exists(
+        self,
+        repo_id: str,
+        *,
+        repo_type: str | None = None,
+        endpoint: str | None = None,
+        re_raise: bool = False,
+        token: str | None = None,
+    ) -> bool:
+        """Check if a repo exists (legacy signature with endpoint override)."""
+        api = self._api
+        if endpoint is not None:
+            api = HubApi(endpoint=endpoint, token=token or self._api._config.token)
+        try:
+            return api.repo_exists(repo_id, repo_type or "model")
+        except Exception:
+            if re_raise:
+                raise
+            return False
+
+    # ------------------------------------------------------------------
     # Download operations
     # ------------------------------------------------------------------
     def download_model(
@@ -156,8 +193,8 @@ class LegacyHubApi:
     # Collection / Skills
     # ------------------------------------------------------------------
     def get_collection(self, collection_id: str, **kwargs: Any) -> dict:
-        """Fetch collection data — delegates to OpenAPI."""
-        return self._api.openapi.get_collection(collection_id)
+        """Fetch collection data — delegates to legacy API."""
+        return self._api.legacy.get_collection(collection_id)
 
     def download_skill(self, skill_id: str, local_dir: str | None = None, **kwargs: Any) -> str:
         """Download a skill to local directory."""

@@ -9,6 +9,7 @@ exported alongside it provide structured return types for type-checked code.
 
 from __future__ import annotations
 
+from ._download import ProgressCallback, TqdmCallback
 from .api import HubApi
 from .config import HubConfig, get_default_config, set_default_config
 from .constants import License, RepoType, Visibility
@@ -48,6 +49,9 @@ __all__ = [
     "License",
     "RepoType",
     "Visibility",
+    # Progress callbacks
+    "ProgressCallback",
+    "TqdmCallback",
     # Data classes
     "CacheInfo",
     "CachedRepoInfo",

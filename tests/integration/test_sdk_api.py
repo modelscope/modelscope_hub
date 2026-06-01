@@ -9,6 +9,7 @@ Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 from __future__ import annotations
 
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,9 @@ class TestRepoManagement:
 
             assert api.repo_exists(repo_id, "model") is True
         finally:
-            api.delete_repo(repo_id, "model")
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                api.delete_repo(repo_id, "model")
 
         assert api.repo_exists(repo_id, "model") is False
 
@@ -58,10 +61,12 @@ class TestFileOperations:
         self.api = api
         api.create_repo(self.repo_id, "model", visibility="private")
         yield
-        try:
-            api.delete_repo(self.repo_id, "model")
-        except Exception:
-            pass
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                api.delete_repo(self.repo_id, "model")
+            except Exception:
+                pass
 
     def test_upload_and_download_file(self, tmp_path):
         self.api.upload_file(
@@ -184,10 +189,12 @@ class TestVersioning:
             self.repo_id, "model", b"init", "init.txt", commit_message="initial",
         )
         yield
-        try:
-            api.delete_repo(self.repo_id, "model")
-        except Exception:
-            pass
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                api.delete_repo(self.repo_id, "model")
+            except Exception:
+                pass
 
     def test_list_revisions(self):
         revisions = self.api.list_repo_revisions(self.repo_id, "model")
