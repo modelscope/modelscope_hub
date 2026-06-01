@@ -551,9 +551,9 @@ Apache 2.0 — see [LICENSE](LICENSE).
 
 ```bibtex
 @Misc{modelscope-hub,
-  title = {modelscope-hub: The official Python SDK \& CLI for ModelScope Hub.},
+  title = {modelscope-hub: The official Python client to connect with ModelScope Hub.},
   author = {The ModelScope Team},
   howpublished = {\url{https://github.com/modelscope/modelscope_hub}},
-  year = {2025}
+  year = {2026}
 }
 ```
