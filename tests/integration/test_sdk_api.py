@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from modelscope_hub import HubApi, RepoType
-from modelscope_hub.errors import NotFoundError
+from modelscope_hub.errors import NotExistError
 
 
 @pytest.mark.remote

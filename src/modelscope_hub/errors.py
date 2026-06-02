@@ -1,5 +1,8 @@
 """Exception hierarchy for the ModelScope Hub SDK.
 
+Error codes follow the ModelScope global error-code specification
+(``modelscope-errorcode`` registry).  Format: ``E{severity}{seq}``.
+
 The hierarchy is intentionally shallow and protocol-agnostic so callers can
 catch broad categories (e.g. :class:`APIError`) without coupling to HTTP
 status codes.
@@ -13,12 +16,39 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from requests import Response
 
 
+# ---------------------------------------------------------------------------
+# Base
+# ---------------------------------------------------------------------------
 class HubError(Exception):
-    """Base class for every error raised by :mod:`modelscope_hub`."""
+    """Base class for every error raised by :mod:`modelscope_hub`.
+
+    Attributes
+    ----------
+    error_code : str | None
+        ModelScope global error code (e.g. ``"E1020"``).
+    retryable : bool
+        Whether the caller should retry the operation.
+    suggestion : str
+        Human-readable remediation hint.
+    """
+
+    error_code: str | None = "E9001"
+    retryable: bool = False
+    suggestion: str = "Unexpected error. Please retry or report the issue."
+
+    def __init__(self, message: str, **kwargs: Any) -> None:
+        super().__init__(message)
 
 
+# ---------------------------------------------------------------------------
+# API errors (HTTP-layer)
+# ---------------------------------------------------------------------------
 class APIError(HubError):
     """Error returned by the ModelScope Hub HTTP API."""
+
+    error_code = "E9001"
+    retryable = False
+    suggestion = "Unexpected API error. Please retry or report the issue."
 
     def __init__(
         self,
@@ -36,6 +66,8 @@ class APIError(HubError):
 
     def __str__(self) -> str:
         parts: list[str] = []
+        if self.error_code:
+            parts.append(f"[{self.error_code}]")
         if self.status_code is not None:
             parts.append(f"[{self.status_code}]")
         parts.append(self.message)
@@ -49,50 +81,140 @@ class APIError(HubError):
         return " ".join(parts)
 
 
+# -- Auth / Permission (E3001, E3002) --------------------------------------
 class AuthenticationError(APIError):
-    """Raised on HTTP 401 — missing or invalid credentials."""
+    """Raised on HTTP 401 -- missing or invalid credentials."""
+
+    error_code = "E3001"
+    retryable = False
+    suggestion = "Authentication failed. Please verify your token is valid."
 
 
-class PermissionError(APIError):  # noqa: A001 - intentional shadow of builtin
-    """Raised on HTTP 403 — authenticated but not authorised."""
+class PermissionDeniedError(APIError):
+    """Raised on HTTP 403 -- authenticated but not authorised."""
+
+    error_code = "E3002"
+    retryable = False
+    suggestion = "Permission denied. Please verify your access rights."
 
 
-class NotFoundError(APIError):
-    """Raised on HTTP 404 — target resource does not exist."""
+# -- Resource / Validation (E3020, E3021) -----------------------------------
+class NotExistError(APIError):
+    """Raised on HTTP 404 -- target resource does not exist."""
+
+    error_code = "E3020"
+    retryable = False
+    suggestion = "The requested resource does not exist or has been deleted."
 
 
-class ValidationError(APIError):
-    """Raised on HTTP 400 — malformed or invalid request payload."""
+class InvalidParameter(APIError):
+    """Raised on HTTP 400 -- malformed or invalid request payload."""
+
+    error_code = "E3021"
+    retryable = False
+    suggestion = "Invalid request parameters. Please check and retry."
 
 
+# -- Rate limiting (E1021) --------------------------------------------------
 class RateLimitError(APIError):
-    """Raised on HTTP 429 — client should back off and retry later."""
+    """Raised on HTTP 429 -- client should back off and retry later."""
+
+    error_code = "E1021"
+    retryable = True
+    suggestion = "Rate limit exceeded. Please reduce request frequency and retry."
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = 429,
+        request_id: str | None = None,
+        response_body: Any | None = None,
+        retry_after: int | float | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            status_code=status_code,
+            request_id=request_id,
+            response_body=response_body,
+        )
+        self.retry_after = retry_after
 
 
+# -- Server (E1002) ---------------------------------------------------------
 class ServerError(APIError):
-    """Raised on HTTP 5xx — upstream service failure."""
+    """Raised on HTTP 5xx -- upstream service failure."""
+
+    error_code = "E1002"
+    retryable = True
+    suggestion = "Server is currently unavailable. Please retry later."
 
 
+# ---------------------------------------------------------------------------
+# Non-HTTP errors
+# ---------------------------------------------------------------------------
 class NetworkError(HubError):
-    """Raised when the request could not reach the server."""
+    """Raised when the request could not reach the server (E1020)."""
+
+    error_code = "E1020"
+    retryable = True
+    suggestion = "Unable to connect to the server. Please check your network."
 
 
 class FileIntegrityError(HubError):
-    """Raised when a downloaded or uploaded file fails integrity validation."""
+    """Raised when a downloaded or uploaded file fails integrity validation (E2020)."""
+
+    error_code = "E2020"
+    retryable = True
+    suggestion = "File SHA256 checksum mismatch. Will retry automatically."
 
 
+# -- Cache errors (E1022) ---------------------------------------------------
 class CacheError(HubError):
-    """Raised on local cache filesystem or metadata corruption."""
+    """Base for local cache filesystem or metadata corruption."""
+
+    error_code = "E1022"
+    retryable = False
+    suggestion = "Local cache directory error. Please check disk space and permissions."
+
+
+class CacheNotFound(CacheError):
+    """Cache directory does not exist or cannot be created."""
+
+    def __init__(self, msg: str, cache_dir: str | None = None, *args: Any, **kwargs: Any) -> None:
+        super().__init__(msg, *args, **kwargs)
+        self.cache_dir = cache_dir
+
+
+class CorruptedCacheException(CacheError):
+    """Unexpected structure in the ModelScope cache-system."""
 
 
 # ---------------------------------------------------------------------------
-# Status-code → exception mapping
+# Backward-compatible aliases
+#
+# The original names are preserved so that existing callers
+# (e.g. ``except NotFoundError``) keep working.
+# ---------------------------------------------------------------------------
+NotFoundError = NotExistError
+"""Alias: use :class:`NotExistError` instead."""
+
+ValidationError = InvalidParameter
+"""Alias: use :class:`InvalidParameter` instead."""
+
+# Avoids shadowing the Python builtin ``PermissionError``.
+PermissionError = PermissionDeniedError  # noqa: A001
+"""Alias: use :class:`PermissionDeniedError` instead."""
+
+
+# ---------------------------------------------------------------------------
+# Status-code -> exception mapping
 # ---------------------------------------------------------------------------
 _STATUS_MAP: dict[int, type[APIError]] = {
-    400: ValidationError,
+    400: InvalidParameter,
     401: AuthenticationError,
-    403: PermissionError,
-    404: NotFoundError,
+    403: PermissionDeniedError,
+    404: NotExistError,
     429: RateLimitError,
 }
 
@@ -147,25 +269,51 @@ def raise_for_status(response: "Response") -> None:
     else:
         exc_cls = _STATUS_MAP.get(status, APIError)
 
-    raise exc_cls(
-        message,
+    kwargs: dict[str, Any] = dict(
         status_code=status,
         request_id=request_id,
         response_body=body,
     )
 
+    if exc_cls is RateLimitError:
+        retry_after_raw = response.headers.get("Retry-After")
+        retry_after: int | float | None = None
+        if retry_after_raw:
+            try:
+                retry_after = int(retry_after_raw)
+            except ValueError:
+                try:
+                    retry_after = float(retry_after_raw)
+                except ValueError:
+                    pass
+        kwargs["retry_after"] = retry_after
+
+    raise exc_cls(message, **kwargs)
+
 
 __all__ = [
+    # Base
     "APIError",
-    "AuthenticationError",
-    "CacheError",
-    "FileIntegrityError",
     "HubError",
-    "NetworkError",
-    "NotFoundError",
-    "PermissionError",
+    # Auth / Permission
+    "AuthenticationError",
+    "PermissionDeniedError",
+    # Resource / Validation
+    "NotExistError",
+    "InvalidParameter",
+    # Rate limiting / Server
     "RateLimitError",
     "ServerError",
+    # Non-HTTP
+    "CacheError",
+    "CacheNotFound",
+    "CorruptedCacheException",
+    "FileIntegrityError",
+    "NetworkError",
+    # Backward-compatible aliases
+    "NotFoundError",
+    "PermissionError",
     "ValidationError",
+    # Utilities
     "raise_for_status",
 ]

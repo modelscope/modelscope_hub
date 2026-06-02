@@ -37,7 +37,7 @@ from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .config import HubConfig, get_default_config
 from .constants import RepoType, Visibility
-from .errors import AuthenticationError, HubError, NotFoundError
+from .errors import AuthenticationError, HubError, NotExistError
 from .types import CacheInfo, FileInfo, PagedResult, RepoInfo, UserInfo
 from .utils.logger import get_logger
 
@@ -581,7 +581,7 @@ class HubApi:
 
         Raises
         ------
-        NotFoundError
+        NotExistError
             When the repository does not exist or is not visible to the caller.
         AuthenticationError
             When the request requires auth and the token is missing or invalid.
@@ -742,7 +742,7 @@ class HubApi:
         """Return ``True`` iff the repository exists and is visible to the caller.
 
         This is a thin wrapper around :meth:`get_repo` that converts a
-        :class:`NotFoundError` into a boolean.
+        :class:`NotExistError` into a boolean.
 
         Examples
         --------
@@ -752,7 +752,7 @@ class HubApi:
         try:
             self.get_repo(repo_id, repo_type)
             return True
-        except NotFoundError:
+        except NotExistError:
             return False
 
     def resolve_endpoint_for_read(
@@ -778,7 +778,7 @@ class HubApi:
 
         Raises
         ------
-        NotFoundError
+        NotExistError
             If the repo is not found on any checked endpoint.
         """
         import os
@@ -796,7 +796,7 @@ class HubApi:
             endpoint = endpoint.rstrip("/")
             probe = HubApi(endpoint=endpoint, token=self._config.token)
             if not probe.repo_exists(repo_id, repo_type):
-                raise NotFoundError(
+                raise NotExistError(
                     f"Repo {repo_id} does not exist on {endpoint}"
                 )
             return endpoint
@@ -821,7 +821,7 @@ class HubApi:
             )
             return fallback
 
-        raise NotFoundError(
+        raise NotExistError(
             f"Repo {repo_id} not found on either {primary} or {fallback}"
         )
 
@@ -876,7 +876,7 @@ class HubApi:
         ------
         AuthenticationError
             When the token is missing or invalid.
-        NotFoundError
+        NotExistError
             When the target repository does not exist.
 
         Examples
@@ -1034,7 +1034,7 @@ class HubApi:
 
         Raises
         ------
-        NotFoundError
+        NotExistError
             When the file or repository does not exist.
 
         Examples

@@ -62,8 +62,8 @@ from .errors import (
     AuthenticationError,
     HubError,
     NetworkError,
-    NotFoundError,
-    PermissionError,
+    NotExistError,
+    PermissionDeniedError,
     RateLimitError,
     ServerError,
 )
@@ -77,7 +77,6 @@ if TYPE_CHECKING:
 
 logger = get_logger("upload")
 
-builtins_PermissionError = _builtins.PermissionError
 
 PathOrFileObj = Union[str, Path, bytes, BinaryIO, IO[bytes]]
 
@@ -221,15 +220,15 @@ def classify_error(error: Exception) -> str:
     """Classify an exception for retry strategy using SDK error hierarchy."""
     if isinstance(error, FileNotFoundError):
         return _ErrorCategory.FILE_INVALID
-    if isinstance(error, builtins_PermissionError):
+    if isinstance(error, _builtins.PermissionError):
         return _ErrorCategory.FILE_INVALID
     if isinstance(error, RateLimitError):
         return _ErrorCategory.THROTTLED
     if isinstance(error, AuthenticationError):
         return _ErrorCategory.AUTH_FAILED
-    if isinstance(error, PermissionError):
+    if isinstance(error, PermissionDeniedError):
         return _ErrorCategory.AUTH_FAILED
-    if isinstance(error, NotFoundError):
+    if isinstance(error, NotExistError):
         return _ErrorCategory.NOT_FOUND
     if isinstance(error, ServerError):
         return _ErrorCategory.TRANSIENT_SERVER
