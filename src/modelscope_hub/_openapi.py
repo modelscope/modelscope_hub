@@ -26,7 +26,14 @@ import requests
 
 from .config import HubConfig, get_default_config
 from .constants import API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX
-from .errors import AuthenticationError, NetworkError, RateLimitError, ServerError, raise_for_status
+from .errors import (
+    AuthenticationError,
+    NetworkError,
+    RateLimitError,
+    RequestTimeoutError,
+    ServerError,
+    raise_for_status,
+)
 from .types import (
     CreateSkillPayload,
     CreateStudioPayload,
@@ -44,7 +51,9 @@ _logger = get_logger("openapi")
 _IDEMPOTENT_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 
 # Errors that warrant a transparent retry.
-_RETRYABLE_EXC: tuple[type[BaseException], ...] = (NetworkError, ServerError, RateLimitError)
+_RETRYABLE_EXC: tuple[type[BaseException], ...] = (
+    NetworkError, ServerError, RateLimitError,
+)
 
 JSON = dict[str, Any]
 QueryParams = list[tuple[str, str]]
@@ -189,7 +198,7 @@ class OpenAPIClient:
                     timeout=timeout if timeout is not None else self._timeout,
                 )
             except requests.Timeout as exc:
-                last_exc = NetworkError(f"Request timed out: {exc}")
+                last_exc = RequestTimeoutError(f"Request timed out: {exc}")
             except requests.ConnectionError as exc:
                 last_exc = NetworkError(f"Connection error: {exc}")
             except requests.RequestException as exc:  # pragma: no cover - defensive

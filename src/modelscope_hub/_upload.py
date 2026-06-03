@@ -59,13 +59,11 @@ from .constants import (
     UPLOAD_VALIDATE_BLOB_BATCH_SIZE,
 )
 from .errors import (
-    AuthenticationError,
+    FileIntegrityError,
     HubError,
+    InvalidParameter,
     NetworkError,
-    NotExistError,
-    PermissionDeniedError,
-    RateLimitError,
-    ServerError,
+    StorageError,
 )
 from .utils.file_utils import compute_hash
 from .utils.logger import get_logger
@@ -114,7 +112,7 @@ class _CountedReadStream:
 
     def verify_complete(self) -> None:
         if self._bytes_read != self._expected_size:
-            raise IOError(
+            raise FileIntegrityError(
                 f"Upload data incomplete: read {self._bytes_read} bytes, "
                 f"expected {self._expected_size} bytes. "
                 f"File may have been modified during upload."
@@ -207,58 +205,58 @@ class _ErrorCategory:
     AUTH_FAILED = "auth_failed"
     NOT_FOUND = "not_found"
     FILE_INVALID = "file_invalid"
+    PERMANENT = "permanent"
     UNKNOWN = "unknown"
 
-    _NON_RETRYABLE = {"auth_failed", "not_found", "file_invalid"}
+    _NON_RETRYABLE = {"auth_failed", "not_found", "file_invalid", "permanent"}
 
     @classmethod
     def is_retryable(cls, category: str) -> bool:
         return category not in cls._NON_RETRYABLE
 
 
+_CATEGORY_BY_ERROR_CODE: dict[str, str] = {
+    "E1001": _ErrorCategory.TRANSIENT_NETWORK,   # timeout
+    "E1002": _ErrorCategory.TRANSIENT_SERVER,     # server error
+    "E1003": _ErrorCategory.TRANSIENT_SERVER,     # storage error
+    "E1020": _ErrorCategory.TRANSIENT_NETWORK,    # network/connection error
+    "E1021": _ErrorCategory.THROTTLED,            # rate limit
+    "E1022": _ErrorCategory.FILE_INVALID,         # cache error
+    "E2020": _ErrorCategory.TRANSIENT_SERVER,     # file integrity (auto-retry)
+    "E3001": _ErrorCategory.AUTH_FAILED,          # authentication
+    "E3002": _ErrorCategory.AUTH_FAILED,          # permission
+    "E3020": _ErrorCategory.NOT_FOUND,            # not exist
+    "E3021": _ErrorCategory.FILE_INVALID,         # invalid parameter
+    "E3023": _ErrorCategory.FILE_INVALID,         # not supported
+    "E9001": _ErrorCategory.UNKNOWN,              # unknown/fallback
+}
+
+
 def classify_error(error: Exception) -> str:
-    """Classify an exception for retry strategy using SDK error hierarchy."""
+    """Classify an exception for retry strategy using the SDK error hierarchy.
+
+    For :class:`HubError` instances, classification is driven by
+    :attr:`~HubError.error_code` via a lookup table — no ``isinstance``
+    chains or string-matching heuristics needed for known error types.
+    """
+    if isinstance(error, HubError):
+        code = getattr(error, "error_code", None)
+        if code and code in _CATEGORY_BY_ERROR_CODE:
+            return _CATEGORY_BY_ERROR_CODE[code]
+        return _ErrorCategory.UNKNOWN if error.retryable else _ErrorCategory.PERMANENT
+
     if isinstance(error, FileNotFoundError):
         return _ErrorCategory.FILE_INVALID
     if isinstance(error, _builtins.PermissionError):
         return _ErrorCategory.FILE_INVALID
-    if isinstance(error, RateLimitError):
-        return _ErrorCategory.THROTTLED
-    if isinstance(error, AuthenticationError):
-        return _ErrorCategory.AUTH_FAILED
-    if isinstance(error, PermissionDeniedError):
-        return _ErrorCategory.AUTH_FAILED
-    if isinstance(error, NotExistError):
-        return _ErrorCategory.NOT_FOUND
-    if isinstance(error, ServerError):
-        return _ErrorCategory.TRANSIENT_SERVER
-    if isinstance(error, NetworkError):
-        return _ErrorCategory.TRANSIENT_NETWORK
     if isinstance(error, (ConnectionError, TimeoutError)):
         return _ErrorCategory.TRANSIENT_NETWORK
-
-    error_str = str(error).lower()
     if isinstance(error, (IOError, OSError)):
+        error_str = str(error).lower()
         if "size changed" in error_str or "no such file" in error_str:
             return _ErrorCategory.FILE_INVALID
         if "permission" in error_str or "access denied" in error_str:
             return _ErrorCategory.FILE_INVALID
-        return _ErrorCategory.TRANSIENT_NETWORK
-
-    if isinstance(error, ValueError):
-        if "429" in error_str:
-            return _ErrorCategory.THROTTLED
-        if "401" in error_str or "403" in error_str:
-            return _ErrorCategory.AUTH_FAILED
-        if "404" in error_str:
-            return _ErrorCategory.NOT_FOUND
-        if re.search(r"(?:http[/\s]*)?5\d{2}|server.*error", error_str):
-            return _ErrorCategory.TRANSIENT_SERVER
-        return _ErrorCategory.UNKNOWN
-
-    if "timeout" in error_str or "timed out" in error_str:
-        return _ErrorCategory.TRANSIENT_NETWORK
-    if "connection" in error_str:
         return _ErrorCategory.TRANSIENT_NETWORK
 
     return _ErrorCategory.UNKNOWN
@@ -601,7 +599,7 @@ class UploadManager:
     ) -> dict:
         """Upload a single file to a repository."""
         if path_or_fileobj is None:
-            raise ValueError("Path or file object cannot be None!")
+            raise InvalidParameter("Path or file object cannot be None!")
 
         if isinstance(path_or_fileobj, (str, Path)):
             path_or_fileobj = os.path.abspath(
@@ -610,7 +608,7 @@ class UploadManager:
             path_in_repo = path_in_repo or os.path.basename(path_or_fileobj)
         else:
             if not path_in_repo:
-                raise ValueError("Arg `path_in_repo` cannot be empty!")
+                raise InvalidParameter("Arg `path_in_repo` cannot be empty!")
 
         hash_info = _compute_file_hash(path_or_fileobj, buffer_size_mb)
         file_hash = hash_info["file_hash"]
@@ -675,9 +673,9 @@ class UploadManager:
         start_time = time.time()
 
         if not repo_id:
-            raise ValueError("The arg `repo_id` cannot be empty!")
+            raise InvalidParameter("The arg `repo_id` cannot be empty!")
         if folder_path is None:
-            raise ValueError("The arg `folder_path` cannot be None!")
+            raise InvalidParameter("The arg `folder_path` cannot be None!")
 
         if max_workers is None:
             max_workers = DEFAULT_MAX_WORKERS
@@ -720,7 +718,7 @@ class UploadManager:
         )
 
         if not sorted_files:
-            raise ValueError(f"No files to upload in the folder: {folder_path} !")
+            raise InvalidParameter(f"No files to upload in the folder: {folder_path} !")
 
         logger.info("Checking %d files to upload ...", len(sorted_files))
 
@@ -1007,8 +1005,8 @@ class UploadManager:
             for (path_in_repo_f, _), err in total_failed_files:
                 logger.error("  - %s: %s: %s", path_in_repo_f, type(err).__name__, err)
             succeeded = total_files - failed_count
-            raise RuntimeError(
-                f"ERROR - {failed_count} file(s) failed to upload. "
+            raise StorageError(
+                f"{failed_count} file(s) failed to upload. "
                 f"Please manually try again. Successfully uploaded "
                 f"{succeeded} file(s) will be automatically skipped "
                 f"during the retry."
@@ -1082,7 +1080,7 @@ class UploadManager:
                 if isinstance(file_path, (str, os.PathLike)):
                     current_size = os.path.getsize(str(file_path))
                     if current_size != file_size:
-                        raise IOError(
+                        raise InvalidParameter(
                             f"File size changed since hash computation: "
                             f"was {file_size}, now {current_size}. "
                             f"File may have been modified: {file_path_in_repo}"
@@ -1098,9 +1096,8 @@ class UploadManager:
                     pre_validated=pre_validated,
                 )
                 break
-            except (ConnectionError, TimeoutError, NetworkError,
-                    ServerError, IOError) as e:
-                if isinstance(e, IOError) and "size changed" in str(e).lower():
+            except (HubError, ConnectionError, TimeoutError) as e:
+                if isinstance(e, HubError) and not e.retryable:
                     raise
                 last_error = e
                 if attempt < UPLOAD_BLOB_MAX_RETRIES - 1:
@@ -1116,7 +1113,7 @@ class UploadManager:
                     )
                     time.sleep(wait)
         else:
-            raise RuntimeError(
+            raise StorageError(
                 f"Blob upload failed after {UPLOAD_BLOB_MAX_RETRIES} attempts "
                 f"for {file_path_in_repo}: {last_error}"
             ) from last_error
@@ -1260,23 +1257,14 @@ class UploadManager:
                     commit_message=commit_message,
                     revision=revision,
                 )
-            except (ConnectionError, TimeoutError, NetworkError) as e:
-                last_error = e
-            except ServerError as e:
-                last_error = e
             except HubError as e:
-                if hasattr(e, "status_code") and e.status_code and e.status_code < 500:
-                    raise
-                last_error = e
-            except ValueError as e:
-                error_str = str(e)
-                if re.search(r"HTTP 4\d{2}", error_str):
-                    retryable_patterns = [
-                        "Could not update refs",
-                        "try again",
-                    ]
+                if not e.retryable:
+                    error_str = str(e)
+                    retryable_patterns = ["Could not update refs", "try again"]
                     if not any(p in error_str for p in retryable_patterns):
                         raise
+                last_error = e
+            except (ConnectionError, TimeoutError) as e:
                 last_error = e
             except Exception as e:
                 last_error = e
@@ -1288,7 +1276,9 @@ class UploadManager:
             )
             time.sleep(wait)
 
-        raise RuntimeError(
+        if isinstance(last_error, HubError):
+            raise last_error
+        raise NetworkError(
             f"Commit failed after {max_retries} attempts: {last_error}"
         ) from last_error
 
@@ -1394,14 +1384,14 @@ class UploadManager:
     ) -> list[tuple[str, str]]:
         folder = Path(folder_path).expanduser().resolve()
         if not folder.is_dir():
-            raise ValueError(f"Provided path: '{folder}' is not a directory")
+            raise InvalidParameter(f"Provided path: '{folder}' is not a directory")
 
         all_files = sorted(
             path for path in folder.glob("**/*") if path.is_file()
         )
 
         if len(all_files) > UPLOAD_MAX_FILE_COUNT:
-            raise ValueError(
+            raise InvalidParameter(
                 f"Too many files ({len(all_files)}) in folder, "
                 f"max allowed: {UPLOAD_MAX_FILE_COUNT}"
             )
@@ -1413,7 +1403,7 @@ class UploadManager:
             dir_counts[parent] = dir_counts.get(parent, 0) + 1
         for dir_path, count in dir_counts.items():
             if count > UPLOAD_MAX_FILE_COUNT_IN_DIR:
-                raise ValueError(
+                raise InvalidParameter(
                     f"Too many files ({count}) in directory {dir_path}, "
                     f"max allowed per directory: {UPLOAD_MAX_FILE_COUNT_IN_DIR}"
                 )
@@ -1424,7 +1414,7 @@ class UploadManager:
         for path in all_files:
             fsize = path.stat().st_size
             if fsize > UPLOAD_MAX_FILE_SIZE:
-                raise ValueError(
+                raise InvalidParameter(
                     f"File too large: {path} ({fsize} bytes), "
                     f"max allowed: {UPLOAD_MAX_FILE_SIZE}"
                 )

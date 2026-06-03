@@ -25,10 +25,13 @@ from .errors import (
     NetworkError,
     NotExistError,
     NotFoundError,
+    NotSupportedError,
     PermissionDeniedError,
     PermissionError,
     RateLimitError,
+    RequestTimeoutError,
     ServerError,
+    StorageError,
     ValidationError,
 )
 from .types import (
@@ -76,9 +79,12 @@ __all__ = [
     "InvalidParameter",
     "NetworkError",
     "NotExistError",
+    "NotSupportedError",
     "PermissionDeniedError",
     "RateLimitError",
+    "RequestTimeoutError",
     "ServerError",
+    "StorageError",
     # Backward-compatible aliases
     "NotFoundError",
     "PermissionError",

@@ -20,6 +20,10 @@ logger = get_logger("git")
 class GitError(HubError):
     """Raised when a git subprocess exits with a non-zero code."""
 
+    error_code = "E1024"
+    retryable = False
+    suggestion = "Git operation failed. Please check network and repo permissions."
+
 
 class GitCommand:
     """Minimal Git CLI wrapper for repository operations.

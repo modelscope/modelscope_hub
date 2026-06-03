@@ -3,6 +3,13 @@
 Error codes follow the ModelScope global error-code specification
 (``modelscope-errorcode`` registry).  Format: ``E{severity}{seq}``.
 
+Severity layers::
+
+    1 = Infrastructure (network, storage, timeout, rate-limiting, cache)
+    2 = Data (file integrity, format, missing data)
+    3 = Invocation (auth, permission, parameter validation, resource lookup)
+    9 = Unknown / catch-all
+
 The hierarchy is intentionally shallow and protocol-agnostic so callers can
 catch broad categories (e.g. :class:`APIError`) without coupling to HTTP
 status codes.
@@ -38,6 +45,11 @@ class HubError(Exception):
 
     def __init__(self, message: str, **kwargs: Any) -> None:
         super().__init__(message)
+        self.message = message
+
+    def __str__(self) -> str:
+        prefix = f"[{self.error_code}] " if self.error_code else ""
+        return f"{prefix}{self.message}"
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +71,6 @@ class APIError(HubError):
         response_body: Any | None = None,
     ) -> None:
         super().__init__(message)
-        self.message = message
         self.status_code = status_code
         self.request_id = request_id
         self.response_body = response_body
@@ -107,8 +118,12 @@ class NotExistError(APIError):
     suggestion = "The requested resource does not exist or has been deleted."
 
 
-class InvalidParameter(APIError):
-    """Raised on HTTP 400 -- malformed or invalid request payload."""
+class InvalidParameter(APIError, ValueError):
+    """Raised on HTTP 400, or locally when caller-supplied arguments are invalid.
+
+    Inherits :class:`ValueError` so existing ``except ValueError`` handlers
+    continue to work during the transition period.
+    """
 
     error_code = "E3021"
     retryable = False
@@ -153,12 +168,39 @@ class ServerError(APIError):
 # ---------------------------------------------------------------------------
 # Non-HTTP errors
 # ---------------------------------------------------------------------------
-class NetworkError(HubError):
-    """Raised when the request could not reach the server (E1020)."""
+class NetworkError(HubError, ConnectionError):
+    """Raised when the request could not reach the server (E1020).
+
+    Also inherits :class:`ConnectionError` so existing
+    ``except ConnectionError`` handlers continue to catch SDK network errors.
+    """
 
     error_code = "E1020"
     retryable = True
     suggestion = "Unable to connect to the server. Please check your network."
+
+
+class RequestTimeoutError(NetworkError, TimeoutError):
+    """Raised when a request times out (E1001).
+
+    Inherits :class:`NetworkError` so ``except NetworkError`` catches
+    timeouts, and :class:`TimeoutError` so ``except TimeoutError`` catches
+    them as well.
+    """
+
+    error_code = "E1001"
+    retryable = True
+    suggestion = "Request timed out. Please check your network and retry."
+
+
+class StorageError(HubError):
+    """Raised when blob storage operations (upload/download) fail (E1003)."""
+
+    error_code = "E1003"
+    retryable = True
+    suggestion = (
+        "File upload/download failed (storage service error). Please retry later."
+    )
 
 
 class FileIntegrityError(HubError):
@@ -188,6 +230,15 @@ class CacheNotFound(CacheError):
 
 class CorruptedCacheException(CacheError):
     """Unexpected structure in the ModelScope cache-system."""
+
+
+# -- Operation not supported (E3023) ----------------------------------------
+class NotSupportedError(HubError):
+    """Raised when the requested operation is not supported in the current context."""
+
+    error_code = "E3023"
+    retryable = False
+    suggestion = "This operation is not supported. Please check the documentation."
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +361,10 @@ __all__ = [
     "CorruptedCacheException",
     "FileIntegrityError",
     "NetworkError",
+    "RequestTimeoutError",
+    "StorageError",
+    # Operation support
+    "NotSupportedError",
     # Backward-compatible aliases
     "NotFoundError",
     "PermissionError",

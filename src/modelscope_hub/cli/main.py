@@ -16,7 +16,7 @@ from argparse import SUPPRESS
 from typing import Sequence
 
 from .. import __version__
-from ..errors import HubError, NetworkError
+from ..errors import HubError, InvalidParameter, NetworkError, NotSupportedError
 from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
 from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
@@ -236,11 +236,15 @@ def run_cmd(argv: Sequence[str] | None = None) -> int:
         return 130
     except SystemExit as exc:  # honour explicit SystemExit from subcommands
         return int(exc.code) if isinstance(exc.code, int) else (0 if exc.code is None else 1)
-    except NetworkError as exc:
-        error(f"Network error: {exc}")
-        return 1
+    except (InvalidParameter, NotSupportedError) as exc:
+        error(str(exc))
+        if exc.suggestion:
+            info(f"Suggestion: {exc.suggestion}")
+        return 2
     except HubError as exc:
         error(str(exc))
+        if exc.suggestion and exc.error_code != "E9001":
+            info(f"Suggestion: {exc.suggestion}")
         return 1
     except ValueError as exc:
         error(str(exc))

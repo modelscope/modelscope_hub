@@ -37,7 +37,13 @@ from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .config import HubConfig, get_default_config
 from .constants import RepoType, Visibility
-from .errors import AuthenticationError, HubError, NotExistError
+from .errors import (
+    AuthenticationError,
+    HubError,
+    InvalidParameter,
+    NotExistError,
+    NotSupportedError,
+)
 from .types import CacheInfo, FileInfo, PagedResult, RepoInfo, UserInfo
 from .utils.logger import get_logger
 
@@ -185,12 +191,12 @@ class HubApi:
     def _parse_repo_id(repo_id: str) -> tuple[str, str]:
         """Split a canonical ``owner/name`` identifier into its two halves."""
         if not repo_id or "/" not in repo_id:
-            raise ValueError(
+            raise InvalidParameter(
                 f"Invalid repo_id {repo_id!r}: expected 'owner/name' format."
             )
         owner, _, name = repo_id.partition("/")
         if not owner or not name:
-            raise ValueError(
+            raise InvalidParameter(
                 f"Invalid repo_id {repo_id!r}: owner and name must both be non-empty."
             )
         return owner, name
@@ -211,7 +217,7 @@ class HubApi:
             return RepoType(str(repo_type).lower())
         except ValueError as exc:
             allowed = ", ".join(t.value for t in RepoType)
-            raise ValueError(
+            raise InvalidParameter(
                 f"Unknown repo_type {repo_type!r}. Expected one of: {allowed}."
             ) from exc
 
@@ -305,7 +311,7 @@ class HubApi:
             Explicit token override. Falls back to the token configured
             on this instance, then to ``MODELSCOPE_API_TOKEN`` env var.
         cookies_required : bool, optional
-            When ``True``, raise :class:`ValueError` if no token is
+            When ``True``, raise :class:`AuthenticationError` if no token is
             available. Default is ``False`` (return ``None``).
 
         Returns
@@ -316,7 +322,7 @@ class HubApi:
 
         Raises
         ------
-        ValueError
+        AuthenticationError
             When ``cookies_required`` is ``True`` and no token is available.
 
         Examples
@@ -329,7 +335,7 @@ class HubApi:
         token = access_token or self._config.token or os.environ.get("MODELSCOPE_API_TOKEN")
         if not token:
             if cookies_required:
-                raise ValueError(
+                raise AuthenticationError(
                     "No credentials found. "
                     "Pass --token, call HubApi.login(), or set MODELSCOPE_API_TOKEN. "
                     "Your token is available at https://modelscope.cn/my/myaccesstoken"
@@ -359,7 +365,7 @@ class HubApi:
 
         Raises
         ------
-        ValueError
+        InvalidParameter
             When ``token`` is empty or whitespace-only.
         AuthenticationError
             When the server rejects the token. The bad token is cleared
@@ -373,7 +379,7 @@ class HubApi:
         'alice'
         """
         if not token or not token.strip():
-            raise ValueError("token must be a non-empty string")
+            raise InvalidParameter("token must be a non-empty string")
 
         token = token.strip()
         self._config.save_token(token)
@@ -476,7 +482,7 @@ class HubApi:
 
         Raises
         ------
-        ValueError
+        InvalidParameter
             When ``repo_id`` does not have the ``owner/name`` shape.
         AuthenticationError
             When the token is missing or invalid.
@@ -608,7 +614,7 @@ class HubApi:
         elif rt is RepoType.MCP:
             data = self.openapi.get_mcp_server(f"{owner}/{name}")
         else:  # pragma: no cover - defensive
-            raise NotImplementedError(f"get_repo not supported for {rt}")
+            raise NotSupportedError(f"get_repo not supported for {rt}")
 
         return self._repo_info_from_payload(
             data, rt, owner_hint=owner, name_hint=name
@@ -631,7 +637,7 @@ class HubApi:
         ----------
         repo_type : str or RepoType
             One of ``"model"``, ``"dataset"``, ``"skill"``, ``"mcp"``.
-            ``"studio"`` raises :class:`NotImplementedError` (no list endpoint).
+            ``"studio"`` raises :class:`NotSupportedError` (no list endpoint).
         owner : str, optional
             Restrict results to repositories owned by this user/org.
         search : str, optional
@@ -652,7 +658,7 @@ class HubApi:
 
         Raises
         ------
-        NotImplementedError
+        NotSupportedError
             When ``repo_type`` is ``"studio"`` (no list endpoint yet).
 
         Examples
@@ -699,11 +705,11 @@ class HubApi:
                 extra=clean_filters or None,
             )
         elif rt is RepoType.STUDIO:
-            raise NotImplementedError(
+            raise NotSupportedError(
                 "Listing studios is not supported by the OpenAPI surface yet."
             )
         else:  # pragma: no cover - defensive
-            raise NotImplementedError(f"list_repos not supported for {rt}")
+            raise NotSupportedError(f"list_repos not supported for {rt}")
 
         items, total, page, size = self._extract_paged(payload)
         infos = [self._repo_info_from_payload(item, rt) for item in items]
@@ -1023,7 +1029,7 @@ class HubApi:
             cache hit validation. On mismatch, re-download up to 3 times.
         local_files_only : bool, optional
             When ``True``, return the cached path without network access.
-            Raises ``ValueError`` if the file is not cached.
+            Raises :class:`CacheNotFound` if the file is not cached.
         user_agent : dict, str or None, optional
             Custom user-agent info appended to the default UA string.
 
@@ -1218,7 +1224,7 @@ class HubApi:
 
         Raises
         ------
-        ValueError
+        InvalidParameter
             When ``file_paths`` resolves to an empty operation list.
 
         Examples
@@ -1235,7 +1241,7 @@ class HubApi:
             {"action": "delete", "file_path": p} for p in file_paths if p
         ]
         if not operations:
-            raise ValueError("file_paths must contain at least one non-empty path.")
+            raise InvalidParameter("file_paths must contain at least one non-empty path.")
         return self.legacy.create_commit(
             repo_id=repo_id,
             repo_type=str(rt),
@@ -1313,7 +1319,7 @@ class HubApi:
 
         Raises
         ------
-        NotImplementedError
+        NotSupportedError
             When ``repo_type`` is neither ``"studio"`` nor ``"mcp"``.
 
         Examples
@@ -1332,7 +1338,7 @@ class HubApi:
             return self.openapi.deploy_studio(owner, name, payload)
         if rt is RepoType.MCP:
             return self.openapi.deploy_mcp_server(repo_id, payload)
-        raise NotImplementedError(
+        raise NotSupportedError(
             f"deploy_repo is not supported for repo_type={rt.value!r}."
         )
 
@@ -1353,7 +1359,7 @@ class HubApi:
             return self.openapi.stop_studio(owner, name)
         if rt is RepoType.MCP:
             return self.openapi.undeploy_mcp_server(repo_id)
-        raise NotImplementedError(
+        raise NotSupportedError(
             f"stop_repo is not supported for repo_type={rt.value!r}."
         )
 
@@ -1395,7 +1401,7 @@ class HubApi:
 
         Raises
         ------
-        NotImplementedError
+        NotSupportedError
             When ``repo_type`` is not ``"studio"``.
 
         Examples
@@ -1409,7 +1415,7 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotImplementedError(
+            raise NotSupportedError(
                 f"get_repo_logs is currently only supported for studio (got {rt.value!r})."
             )
         owner, name = self._parse_repo_id(repo_id)
@@ -1443,7 +1449,7 @@ class HubApi:
 
         Raises
         ------
-        NotImplementedError
+        NotSupportedError
             When ``repo_type`` is neither studio nor skill.
 
         Examples
@@ -1461,7 +1467,7 @@ class HubApi:
             return self.openapi.update_studio_settings(owner, name, settings)
         if rt is RepoType.SKILL:
             return self.openapi.update_skill_settings(owner, name, settings)
-        raise NotImplementedError(
+        raise NotSupportedError(
             f"update_repo_settings is not supported for repo_type={rt.value!r}."
         )
 
@@ -1480,7 +1486,7 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotImplementedError(
+            raise NotSupportedError(
                 f"Secret management is only supported for studio (got {rt.value!r})."
             )
         owner, name = self._parse_repo_id(repo_id)
@@ -1508,7 +1514,7 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotImplementedError("Only studio secrets are supported.")
+            raise NotSupportedError("Only studio secrets are supported.")
         owner, name = self._parse_repo_id(repo_id)
         return self.openapi.add_studio_secret(owner, name, key, value)
 
@@ -1527,7 +1533,7 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotImplementedError("Only studio secrets are supported.")
+            raise NotSupportedError("Only studio secrets are supported.")
         owner, name = self._parse_repo_id(repo_id)
         return self.openapi.update_studio_secret(owner, name, key, value)
 
@@ -1545,7 +1551,7 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotImplementedError("Only studio secrets are supported.")
+            raise NotSupportedError("Only studio secrets are supported.")
         owner, name = self._parse_repo_id(repo_id)
         return self.openapi.delete_studio_secret(owner, name, key)
 
