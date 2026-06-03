@@ -266,6 +266,7 @@ _STATUS_MAP: dict[int, type[APIError]] = {
     401: AuthenticationError,
     403: PermissionDeniedError,
     404: NotExistError,
+    405: InvalidParameter,
     429: RateLimitError,
 }
 
@@ -274,7 +275,14 @@ def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]
     """Best-effort extraction of (message, request_id, body) from a response."""
     request_id = response.headers.get("x-request-id") or response.headers.get("X-Request-Id")
     body: Any | None = None
-    message = f"HTTP {response.status_code}"
+
+    # Build a contextual fallback message that includes request method/path
+    req = response.request
+    if req and req.method and req.path_url:
+        message = f"HTTP {response.status_code} on {req.method} {req.path_url}"
+    else:
+        message = f"HTTP {response.status_code}"
+
     try:
         body = response.json()
     except ValueError:

@@ -242,7 +242,8 @@ class LegacyClient:
     ) -> list[dict]:
         """List files in a repository.
 
-        GET /api/v1/{type}s/{repo_id}/repo/files?Revision=&Recursive=&Root=
+        Models/studios/etc: GET /api/v1/{type}s/{repo_id}/repo/files
+        Datasets: GET /api/v1/datasets/{repo_id}/repo/tree
         """
         segment = _resolve_segment(repo_type)
         params: dict[str, Any] = {
@@ -252,7 +253,8 @@ class LegacyClient:
         if root:
             params["Root"] = root
 
-        resp = self._request("GET", f"{segment}/{repo_id}/repo/files", params=params)
+        suffix = "repo/tree" if repo_type in ("dataset", "datasets") else "repo/files"
+        resp = self._request("GET", f"{segment}/{repo_id}/{suffix}", params=params)
         data = self._json_data(resp)
         if isinstance(data, list):
             return data
@@ -271,7 +273,7 @@ class LegacyClient:
         """List files in a dataset repo using pagination.
 
         Datasets can have millions of files, so this method pages through
-        ``GET /api/v1/datasets/{repo_id}/repo/files`` with
+        ``GET /api/v1/datasets/{repo_id}/repo/tree`` with
         ``PageNumber``/``PageSize`` params.
         """
         all_files: list[dict] = []
@@ -287,7 +289,7 @@ class LegacyClient:
                 params["Root"] = root_path
             resp = self._request(
                 "GET",
-                f"datasets/{repo_id}/repo/files",
+                f"datasets/{repo_id}/repo/tree",
                 params=params,
             )
             data = self._json_data(resp)
