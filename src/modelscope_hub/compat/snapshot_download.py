@@ -42,7 +42,8 @@ def snapshot_download(
     """
     effective_id = repo_id or model_id
     if not effective_id:
-        raise ValueError("Please provide a valid model_id or repo_id")
+        from ..errors import InvalidParameter
+        raise InvalidParameter("Please provide a valid model_id or repo_id")
     effective_type = repo_type or "model"
 
     if cookies is not None:

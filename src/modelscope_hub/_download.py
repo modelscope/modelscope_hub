@@ -46,7 +46,7 @@ from .constants import (
     ENV_INTRA_CLOUD_ACCELERATION,
     ENV_INTRA_CLOUD_REGION,
 )
-from .errors import FileIntegrityError, NetworkError
+from .errors import CacheNotFound, FileIntegrityError, NetworkError, RequestTimeoutError
 from .utils.file_utils import compute_hash, ensure_dir
 from .utils.logger import get_logger
 
@@ -425,10 +425,11 @@ class DownloadManager:
         if local_files_only:
             if target.exists():
                 return target
-            raise ValueError(
+            raise CacheNotFound(
                 "Cannot find the requested files in the cached path and outgoing"
                 " traffic has been disabled. To enable look-ups and downloads"
-                " online, set 'local_files_only' to False."
+                " online, set 'local_files_only' to False.",
+                cache_dir=str(target.parent),
             )
 
         if not force and target.exists():
@@ -528,10 +529,11 @@ class DownloadManager:
                     "Cannot confirm the cached file is for revision: %s", revision
                 )
                 return output_dir
-            raise ValueError(
+            raise CacheNotFound(
                 "Cannot find the requested files in the cached path and outgoing"
                 " traffic has been disabled. To enable look-ups and downloads"
-                " online, set 'local_files_only' to False."
+                " online, set 'local_files_only' to False.",
+                cache_dir=str(output_dir),
             )
 
         if repo_type in ("dataset", "datasets"):
@@ -709,7 +711,11 @@ class DownloadManager:
                         revision=revision,
                         headers=extra_headers,
                     )
-                except Exception as exc:
+                except requests.Timeout as exc:
+                    raise RequestTimeoutError(f"Download timed out for {file_path}: {exc}") from exc
+                except requests.ConnectionError as exc:
+                    raise NetworkError(f"Download connection failed for {file_path}: {exc}") from exc
+                except requests.RequestException as exc:
                     raise NetworkError(f"Download failed for {file_path}: {exc}") from exc
 
                 content_length = resp.headers.get("Content-Length")

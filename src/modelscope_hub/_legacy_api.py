@@ -30,7 +30,7 @@ from .constants import (
     UPLOAD_BLOB_READ_TIMEOUT,
     UPLOAD_RETRY_ALLOWED_METHODS,
 )
-from .errors import NetworkError, raise_for_status
+from .errors import NetworkError, RequestTimeoutError, raise_for_status
 from .utils.logger import get_logger
 
 logger = get_logger("legacy_api")
@@ -176,7 +176,7 @@ class LegacyClient:
         except requests.ConnectionError as exc:
             raise NetworkError(f"Connection failed: {exc}") from exc
         except requests.Timeout as exc:
-            raise NetworkError(f"Request timed out: {exc}") from exc
+            raise RequestTimeoutError(f"Request timed out: {exc}") from exc
 
         logger.debug("%s %s -> %s", method, url, resp.status_code)
         raise_for_status(resp)
@@ -440,7 +440,7 @@ class LegacyClient:
         except requests.ConnectionError as exc:
             raise NetworkError(f"Blob upload connection failed: {exc}") from exc
         except requests.Timeout as exc:
-            raise NetworkError(f"Blob upload timed out: {exc}") from exc
+            raise RequestTimeoutError(f"Blob upload timed out: {exc}") from exc
 
         raise_for_status(resp)
         return resp

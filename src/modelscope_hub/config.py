@@ -24,7 +24,7 @@ from .constants import (
     DEFAULT_ENDPOINT,
     TOKEN_FILE_NAME,
 )
-from .errors import CacheError
+from .errors import CacheError, InvalidParameter
 
 # Environment variable names — kept module-level for discoverability.
 ENV_ENDPOINT = "MODELSCOPE_ENDPOINT"
@@ -96,7 +96,7 @@ class HubConfig:
     def save_token(self, token: str) -> None:
         """Persist ``token`` to ``~/.modelscope/token`` with restrictive perms."""
         if not token or not token.strip():
-            raise ValueError("token must be a non-empty string")
+            raise InvalidParameter("token must be a non-empty string")
 
         self.ensure_dirs()
         path = self.token_path
