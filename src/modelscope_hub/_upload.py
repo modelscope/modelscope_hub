@@ -205,9 +205,10 @@ class _ErrorCategory:
     AUTH_FAILED = "auth_failed"
     NOT_FOUND = "not_found"
     FILE_INVALID = "file_invalid"
+    PERMANENT = "permanent"
     UNKNOWN = "unknown"
 
-    _NON_RETRYABLE = {"auth_failed", "not_found", "file_invalid"}
+    _NON_RETRYABLE = {"auth_failed", "not_found", "file_invalid", "permanent"}
 
     @classmethod
     def is_retryable(cls, category: str) -> bool:
@@ -242,7 +243,7 @@ def classify_error(error: Exception) -> str:
         code = getattr(error, "error_code", None)
         if code and code in _CATEGORY_BY_ERROR_CODE:
             return _CATEGORY_BY_ERROR_CODE[code]
-        return _ErrorCategory.UNKNOWN
+        return _ErrorCategory.UNKNOWN if error.retryable else _ErrorCategory.PERMANENT
 
     if isinstance(error, FileNotFoundError):
         return _ErrorCategory.FILE_INVALID
@@ -1095,8 +1096,8 @@ class UploadManager:
                     pre_validated=pre_validated,
                 )
                 break
-            except HubError as e:
-                if not e.retryable:
+            except (HubError, ConnectionError, TimeoutError) as e:
+                if isinstance(e, HubError) and not e.retryable:
                     raise
                 last_error = e
                 if attempt < UPLOAD_BLOB_MAX_RETRIES - 1:
