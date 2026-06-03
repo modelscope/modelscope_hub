@@ -1,4 +1,4 @@
-"""Tests for ``ms repo`` group — real API lifecycle: create → info → list → delete."""
+"""Tests for repo commands (ms create/info/list/delete) — real API lifecycle."""
 from __future__ import annotations
 
 import warnings
@@ -29,7 +29,7 @@ class TestRepoLifecycle:
     def test_01_create_repo(self, test_token, test_endpoint):
         """Create a private model repo."""
         exit_code, out, err = run_cli(
-            ["repo", "create", self.repo_id, "--repo-type", "model", "--visibility", "private"],
+            ["create", self.repo_id, "--repo-type", "model", "--visibility", "private"],
             token=test_token,
             endpoint=test_endpoint,
         )
@@ -41,7 +41,7 @@ class TestRepoLifecycle:
     def test_02_repo_info(self, test_token, test_endpoint):
         """Get repo info shows metadata."""
         exit_code, out, err = run_cli(
-            ["repo", "info", self.repo_id, "--repo-type", "model"],
+            ["info", self.repo_id, "--repo-type", "model"],
             token=test_token,
             endpoint=test_endpoint,
         )
@@ -53,7 +53,7 @@ class TestRepoLifecycle:
     def test_03_repo_list(self, test_token, test_endpoint, test_owner):
         """List repos for the test owner."""
         exit_code, out, err = run_cli(
-            ["repo", "list", "--repo-type", "model", "--owner", test_owner],
+            ["list", "--repo-type", "model", "--owner", test_owner],
             token=test_token,
             endpoint=test_endpoint,
         )
@@ -64,7 +64,7 @@ class TestRepoLifecycle:
     def test_04_delete_repo(self, test_token, test_endpoint):
         """Delete the created repo (currently deprecated — expected to fail)."""
         exit_code, out, err = run_cli(
-            ["repo", "delete", self.repo_id, "--repo-type", "model", "--yes"],
+            ["delete", self.repo_id, "--repo-type", "model", "--yes"],
             token=test_token,
             endpoint=test_endpoint,
         )

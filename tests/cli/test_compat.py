@@ -266,14 +266,21 @@ class TestVersionFlag:
 # Repo create --exist-ok
 # ---------------------------------------------------------------------------
 class TestRepoCreateExistOk:
-    def test_exist_ok_in_repo_create(self, parser):
+    def test_exist_ok_in_create(self, parser):
         args = parser.parse_args([
-            "repo", "create", "owner/repo", "--repo-type", "model", "--exist-ok"
+            "create", "owner/repo", "--repo-type", "model", "--exist-ok"
         ])
         assert args.exist_ok is True
 
     def test_exist_ok_underscore(self, parser):
         args = parser.parse_args([
-            "repo", "create", "owner/repo", "--repo-type", "model", "--exist_ok"
+            "create", "owner/repo", "--repo-type", "model", "--exist_ok"
+        ])
+        assert args.exist_ok is True
+
+    def test_repo_create_compat(self, parser):
+        """``ms repo create`` still works as backward compat."""
+        args = parser.parse_args([
+            "repo", "create", "owner/repo", "--repo-type", "model", "--exist-ok"
         ])
         assert args.exist_ok is True

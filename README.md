@@ -105,7 +105,7 @@ api.upload_folder("my-org/my-model", "model", "./output", path_in_repo="")
 ### Create a Repository
 
 ```bash
-ms repo create my-org/my-model --repo-type model --visibility private
+ms create my-org/my-model --repo-type model --visibility private
 ```
 
 ```python
@@ -283,25 +283,25 @@ ms upload my-org/my-model ./output --disable-tqdm
 
 </details>
 
-### `ms repo`
+### `ms create` / `ms info` / `ms list` / `ms delete`
 
-Repository management (create, info, list, delete).
+Repository management.
 
 ```bash
-ms repo create my-org/my-model --repo-type model --visibility private
-ms repo create my-org/demo --repo-type studio --sdk-type gradio
-ms repo info my-org/my-model --repo-type model
-ms repo list --repo-type model --owner my-org --page-size 20
-ms repo delete my-org/my-model --repo-type model --yes
+ms create my-org/my-model --repo-type model --visibility private
+ms create my-org/demo --repo-type studio --sdk-type gradio
+ms info my-org/my-model --repo-type model
+ms list --repo-type model --owner my-org --page-size 20
+ms delete my-org/my-model --repo-type model --yes
 ```
 
 <details>
-<summary><code>ms repo create</code> options</summary>
+<summary><code>ms create</code> options</summary>
 
 | Argument / Option | Required | Description |
 |-------------------|----------|-------------|
 | `repo_id` | yes | Repository identifier |
-| `--repo-type` | yes | `model`, `dataset`, `studio`, `skill`, or `mcp` |
+| `--repo-type` | yes | `model`, `dataset`, `studio`, or `skill` |
 | `--visibility` | no | `public`, `private`, or `internal` |
 | `--license` | no | SPDX license identifier (e.g. `apache-2.0`) |
 | `--chinese-name` | no | Display name in Chinese |

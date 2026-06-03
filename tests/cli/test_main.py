@@ -115,7 +115,7 @@ class TestExceptionHandling:
     def test_invalid_repo_id_exits_2(self, test_token, test_endpoint):
         """Malformed repo_id → ValueError → exit 2."""
         exit_code, out, err = run_cli(
-            ["repo", "info", "no-slash-invalid", "--repo-type", "model"],
+            ["info", "no-slash-invalid", "--repo-type", "model"],
             token=test_token,
             endpoint=test_endpoint,
         )
@@ -126,7 +126,7 @@ class TestExceptionHandling:
     def test_nonexistent_repo_exits_1(self, test_token, test_endpoint):
         """Non-existent repo → HubError (404) → exit 1."""
         exit_code, out, err = run_cli(
-            ["repo", "info", "nonexistent_owner_xyz/nonexistent_repo_xyz", "--repo-type", "model"],
+            ["info", "nonexistent_owner_xyz/nonexistent_repo_xyz", "--repo-type", "model"],
             token=test_token,
             endpoint=test_endpoint,
         )
