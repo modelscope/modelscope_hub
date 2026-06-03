@@ -70,7 +70,7 @@ class _RepoCreate(CLICommand):
     def register(subparsers: Action) -> None:
         p = subparsers.add_parser("create", help="Create a new repository.")
         p.add_argument("repo_id", help="Canonical 'owner/name' identifier.")
-        add_repo_type_arg(p)
+        add_repo_type_arg(p, choices=["model", "dataset", "studio", "skill"])
         p.add_argument("--visibility", choices=["public", "private", "internal"], default=None)
         p.add_argument("--license", dest="license", default=None)
         p.add_argument("--chinese-name", "--chinese_name", dest="chinese_name", default=None)

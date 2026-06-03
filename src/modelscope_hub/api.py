@@ -56,6 +56,9 @@ RepoTypeLike = "str | RepoType"
 
 # Routing tables — declarative dispatch keeps :class:`HubApi` free of long
 # if/elif chains and makes adding new repo types a one-line change.
+_CREATABLE_TYPES: frozenset[RepoType] = frozenset(
+    {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
+)
 _OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset({RepoType.STUDIO, RepoType.SKILL})
 _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
     {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
@@ -506,6 +509,12 @@ class HubApi:
         >>> api.create_repo("alice/chat-demo", repo_type="studio", visibility="public")
         """
         rt = self._normalize_repo_type(repo_type)
+        if rt not in _CREATABLE_TYPES:
+            supported = ", ".join(sorted(t.value for t in _CREATABLE_TYPES))
+            raise NotSupportedError(
+                f"create_repo does not support repo_type={rt.value!r}. "
+                f"Supported types: {supported}."
+            )
         owner, name = self._parse_repo_id(repo_id)
         vis = self._normalize_visibility(visibility)
         if license is not None:
