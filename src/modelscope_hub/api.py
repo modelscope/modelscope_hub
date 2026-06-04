@@ -1085,6 +1085,12 @@ class HubApi:
         '{\n  "architectures": [\n    "Ll'
         """
         rt = self._normalize_repo_type(repo_type)
+        if rt is RepoType.STUDIO:
+            raise NotSupportedError(
+                "File download is not supported for studio repositories. "
+                "Studios are application containers without a file listing API. "
+                f"To access studio source code, use: git clone https://modelscope.cn/studios/{repo_id}.git"
+            )
         return self.downloader.download_file(
             repo_id=repo_id,
             repo_type=str(rt),
@@ -1159,6 +1165,12 @@ class HubApi:
         ['config.json', 'tokenizer.json', 'tokenizer_config.json']
         """
         rt = self._normalize_repo_type(repo_type)
+        if rt is RepoType.STUDIO:
+            raise NotSupportedError(
+                "File download is not supported for studio repositories. "
+                "Studios are application containers without a file listing API. "
+                f"To access studio source code, use: git clone https://modelscope.cn/studios/{repo_id}.git"
+            )
         return self.downloader.download_repo(
             repo_id=repo_id,
             repo_type=str(rt),
