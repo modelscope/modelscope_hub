@@ -209,6 +209,62 @@ class TestUploadExecute:
             UploadCommand(args).execute()
         assert mock_api.upload_file.call_args.args[1] == "dataset"
 
+    def test_path_in_repo_forwarded(self, parser, mock_api, tmp_path, capsys):
+        test_file = tmp_path / "f.bin"
+        test_file.write_text("data")
+        args = parser.parse_args(["upload", "o/r", str(test_file), "models/"])
+        with patch("modelscope_hub.cli.upload.make_api", return_value=mock_api):
+            UploadCommand(args).execute()
+        assert mock_api.upload_file.call_args.args[3] == "models/"
+
+    def test_include_exclude_forwarded(self, parser, mock_api, tmp_path, capsys):
+        upload_dir = tmp_path / "src"
+        upload_dir.mkdir()
+        (upload_dir / "a.py").write_text("x")
+        args = parser.parse_args([
+            "upload", "o/r", str(upload_dir),
+            "--include", "*.py", "--exclude", "*.pyc",
+        ])
+        with patch("modelscope_hub.cli.upload.make_api", return_value=mock_api):
+            UploadCommand(args).execute()
+        kw = mock_api.upload_folder.call_args.kwargs
+        assert kw["allow_patterns"] == ["*.py"]
+        assert kw["ignore_patterns"] == ["*.pyc"]
+
+    def test_revision_forwarded(self, parser, mock_api, tmp_path, capsys):
+        test_file = tmp_path / "f.bin"
+        test_file.write_text("data")
+        args = parser.parse_args(["upload", "o/r", str(test_file), "--revision", "dev"])
+        with patch("modelscope_hub.cli.upload.make_api", return_value=mock_api):
+            UploadCommand(args).execute()
+        assert mock_api.upload_file.call_args.kwargs["revision"] == "dev"
+
+    def test_max_workers_forwarded(self, parser, mock_api, tmp_path, capsys):
+        upload_dir = tmp_path / "dir"
+        upload_dir.mkdir()
+        (upload_dir / "f.txt").write_text("x")
+        args = parser.parse_args(["upload", "o/r", str(upload_dir), "--max-workers", "4"])
+        with patch("modelscope_hub.cli.upload.make_api", return_value=mock_api):
+            UploadCommand(args).execute()
+        assert mock_api.upload_folder.call_args.kwargs["max_workers"] == 4
+
+    def test_disable_tqdm_forwarded(self, parser, mock_api, tmp_path, capsys):
+        test_file = tmp_path / "f.bin"
+        test_file.write_text("data")
+        args = parser.parse_args(["upload", "o/r", str(test_file), "--disable-tqdm"])
+        with patch("modelscope_hub.cli.upload.make_api", return_value=mock_api):
+            UploadCommand(args).execute()
+        assert mock_api.upload_file.call_args.kwargs["disable_tqdm"] is True
+
+    def test_resolve_paths_no_local_path(self, parser, mock_api, tmp_path, capsys):
+        args = parser.parse_args(["upload", "o/nonexistent"])
+        cmd = UploadCommand(args)
+        with patch("os.path.isfile", return_value=False), \
+             patch("os.path.isdir", return_value=False):
+            local, pir = cmd._resolve_paths()
+        assert local == "."
+        assert pir is None
+
 
 # ===================================================================
 # Remote integration tests (existing)

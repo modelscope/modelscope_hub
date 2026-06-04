@@ -46,6 +46,12 @@ class TestSecretAddParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["secret", "add", "o/r"])
 
+    def test_explicit_repo_type(self, parser):
+        args = parser.parse_args([
+            "secret", "add", "o/r", "K", "V", "--repo-type", "studio",
+        ])
+        assert args.repo_type == "studio"
+
 
 class TestSecretListParser:
     """``ms secret list`` argument parsing."""

@@ -126,6 +126,14 @@ class TestLogsParser:
         assert args.page_size == 50
         assert args.keyword == "Exception"
 
+    def test_invalid_repo_type_rejected(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["logs", "o/r", "--repo-type", "model"])
+
+    def test_page_num_alias(self, parser):
+        args = parser.parse_args(["logs", "o/r", "--page-num", "5"])
+        assert args.page_num == 5
+
 
 class TestSettingsParser:
     """``ms settings`` argument parsing."""
@@ -151,6 +159,10 @@ class TestSettingsParser:
     def test_invalid_repo_type_rejected(self, parser):
         with pytest.raises(SystemExit):
             parser.parse_args(["settings", "o/r", "x=1", "--repo-type", "model"])
+
+    def test_missing_settings_args_exits(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["settings", "o/r"])
 
 
 # ===================================================================
@@ -219,6 +231,14 @@ class TestLogsExecute:
             LogsCommand(args).execute()
         assert mock_api.get_repo_logs.call_args.kwargs["log_type"] == "build"
 
+    def test_logs_page_and_size_forwarded(self, parser, mock_api, capsys):
+        args = parser.parse_args(["logs", "org/demo", "--page", "3", "--page-size", "50"])
+        with patch("modelscope_hub.cli.deploy.make_api", return_value=mock_api):
+            LogsCommand(args).execute()
+        kw = mock_api.get_repo_logs.call_args.kwargs
+        assert kw["page_num"] == 3
+        assert kw["page_size"] == 50
+
     def test_logs_empty_payload(self, parser, mock_api, capsys):
         mock_api.get_repo_logs.return_value = {"logs": []}
         args = parser.parse_args(["logs", "org/demo"])
@@ -256,6 +276,12 @@ class TestSettingsExecute:
         with patch("modelscope_hub.cli.deploy.make_api", return_value=mock_api):
             SettingsCommand(args).execute()
         assert mock_api.update_repo_settings.call_args.args[1] == "skill"
+
+    def test_settings_invalid_kv_raises(self, parser, mock_api):
+        args = parser.parse_args(["settings", "org/demo", "bad"])
+        with patch("modelscope_hub.cli.deploy.make_api", return_value=mock_api):
+            with pytest.raises(ValueError, match="key=value"):
+                SettingsCommand(args).execute()
 
 
 # ===================================================================

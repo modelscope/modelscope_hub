@@ -204,6 +204,14 @@ class TestCacheClearExecute:
         assert kw["repo_type"] == "model"
         assert kw["repo_id"] == "owner/repo"
 
+    def test_clear_cache_dir_forwarded(self, parser, mock_api, capsys):
+        args = parser.parse_args([
+            "cache", "clear", "--cache-dir", "/data", "--yes",
+        ])
+        with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
+            _CacheClear(args).execute()
+        assert mock_api.clear_cache.call_args.kwargs["cache_dir"] == "/data"
+
 
 # ===================================================================
 # Remote integration tests (existing)

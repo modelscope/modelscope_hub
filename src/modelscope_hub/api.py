@@ -554,12 +554,20 @@ class HubApi:
                 data, rt, owner_hint=owner, name_hint=name
             )
 
-        body: dict[str, Any] = {
-            "Path": owner,
-            "Name": name,
-            "Visibility": vis if vis is not None else int(Visibility.PUBLIC),
-            "License": license or "Apache-2.0",
-        }
+        if rt is RepoType.DATASET:
+            body: dict[str, Any] = {
+                "Owner": owner,
+                "Name": name,
+                "Visibility": vis if vis is not None else int(Visibility.PUBLIC),
+                "License": license or "Apache-2.0",
+            }
+        else:
+            body = {
+                "Path": owner,
+                "Name": name,
+                "Visibility": vis if vis is not None else int(Visibility.PUBLIC),
+                "License": license or "Apache-2.0",
+            }
         if chinese_name is not None:
             body["ChineseName"] = chinese_name
         if description is not None:

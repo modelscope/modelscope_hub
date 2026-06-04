@@ -84,12 +84,36 @@ class APIError(HubError):
         parts.append(self.message)
         if self.request_id:
             parts.append(f"(request_id={self.request_id})")
-        if self.response_body is not None and self.message.startswith("HTTP "):
+        detail = self._format_body_detail()
+        if detail:
+            parts.append(f"| {detail}")
+        return " ".join(parts)
+
+    def _format_body_detail(self) -> str | None:
+        """Extract additional detail from response_body not already in message."""
+        if self.response_body is None:
+            return None
+        if isinstance(self.response_body, dict):
+            extras: list[str] = []
+            code = self.response_body.get("Code") or self.response_body.get("code")
+            if code is not None:
+                extras.append(f"code={code}")
+            for key in ("Data", "data", "detail", "Detail", "errors"):
+                val = self.response_body.get(key)
+                if val is not None:
+                    val_str = str(val)
+                    if len(val_str) > 300:
+                        val_str = val_str[:300] + "..."
+                    extras.append(f"{key}={val_str}")
+            if extras:
+                return ", ".join(extras)
+            return None
+        if self.message.startswith("HTTP "):
             body_str = str(self.response_body)
             if len(body_str) > 500:
                 body_str = body_str[:500] + "..."
-            parts.append(f"| body={body_str}")
-        return " ".join(parts)
+            return f"body={body_str}"
+        return None
 
 
 # -- Auth / Permission (E3001, E3002) --------------------------------------

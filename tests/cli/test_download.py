@@ -14,6 +14,8 @@ import pytest
 
 from modelscope_hub.cli.download import DownloadCommand
 
+from pathlib import Path
+
 from .conftest import run_cli
 
 
@@ -240,6 +242,55 @@ class TestDownloadExecute:
         with p1, p2:
             DownloadCommand(args).execute()
         assert mock_api.download_repo.call_args.args[1] == "dataset"
+
+    def test_local_dir_forwarded(self, parser, mock_api, capsys):
+        args = parser.parse_args(["download", "o/r", "--local-dir", "./out"])
+        p1, p2 = self._patch_download_api(mock_api)
+        with p1, p2:
+            DownloadCommand(args).execute()
+        assert mock_api.download_repo.call_args.kwargs["local_dir"] == Path("./out")
+
+    def test_cache_dir_forwarded(self, parser, mock_api, capsys):
+        args = parser.parse_args(["download", "o/r", "--cache-dir", "/cache"])
+        p1, p2 = self._patch_download_api(mock_api)
+        with p1, p2:
+            DownloadCommand(args).execute()
+        assert mock_api.download_repo.call_args.kwargs["cache_dir"] == Path("/cache")
+
+    def test_revision_forwarded(self, parser, mock_api, capsys):
+        args = parser.parse_args(["download", "o/r", "--revision", "v2"])
+        p1, p2 = self._patch_download_api(mock_api)
+        with p1, p2:
+            DownloadCommand(args).execute()
+        assert mock_api.download_repo.call_args.kwargs["revision"] == "v2"
+
+    def test_max_workers_forwarded(self, parser, mock_api, capsys):
+        args = parser.parse_args(["download", "o/r", "--max-workers", "16"])
+        p1, p2 = self._patch_download_api(mock_api)
+        with p1, p2:
+            DownloadCommand(args).execute()
+        assert mock_api.download_repo.call_args.kwargs["max_workers"] == 16
+
+    def test_studio_repo_type(self, parser, mock_api, capsys):
+        args = parser.parse_args(["download", "o/r", "--repo-type", "studio"])
+        p1, p2 = self._patch_download_api(mock_api)
+        with p1, p2:
+            DownloadCommand(args).execute()
+        assert mock_api.download_repo.call_args.args[1] == "studio"
+
+    def test_collection_download(self, parser, mock_api, capsys):
+        args = parser.parse_args(["download", "--collection", "my-col"])
+        mock_api.legacy.get_collection.return_value = {
+            "CollectionElements": {
+                "CollectionElementVoList": [
+                    {"ElementPath": "org", "ElementName": "skill1"},
+                ],
+            },
+        }
+        with patch("modelscope_hub.cli.download.make_api", return_value=mock_api):
+            DownloadCommand(args).execute()
+        mock_api.legacy.get_collection.assert_called_once_with("my-col")
+        assert mock_api.download_repo.call_count == 1
 
 
 # ===================================================================

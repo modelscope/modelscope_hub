@@ -96,6 +96,10 @@ class TestCreateParser:
         args = parser.parse_args(["create", "o/r", "--repo-type", "model"])
         assert args.exist_ok is False
 
+    def test_missing_repo_type_exits(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["create", "o/r"])
+
     @pytest.mark.parametrize("sdk", ["gradio", "streamlit", "docker", "static"])
     def test_studio_sdk_type(self, parser, sdk):
         args = parser.parse_args(
@@ -204,6 +208,10 @@ class TestListParser:
         assert args.page_number == 1
         assert args.page_size == 10
 
+    def test_missing_repo_type_exits(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["list"])
+
 
 class TestDeleteParser:
     """``ms delete`` argument parsing."""
@@ -296,6 +304,28 @@ class TestCreateExecute:
         with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
             with pytest.raises(Exception, match="already exists"):
                 CreateCommand(args).execute()
+
+    def test_chinese_name_and_description_forwarded(self, parser, mock_api, capsys):
+        args = parser.parse_args([
+            "create", "owner/repo", "--repo-type", "model",
+            "--chinese-name", "测试模型", "--description", "A test model",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        call_kwargs = mock_api.create_repo.call_args
+        assert call_kwargs.kwargs["chinese_name"] == "测试模型"
+        assert call_kwargs.kwargs["description"] == "A test model"
+
+    def test_base_image_and_cover_image_forwarded(self, parser, mock_api, capsys):
+        args = parser.parse_args([
+            "create", "owner/studio1", "--repo-type", "studio",
+            "--base-image", "python:3.11", "--cover-image", "https://img.png",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        call_kwargs = mock_api.create_repo.call_args
+        assert call_kwargs.kwargs["base_image"] == "python:3.11"
+        assert call_kwargs.kwargs["cover_image"] == "https://img.png"
 
 
 class TestInfoExecute:

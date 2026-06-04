@@ -23,7 +23,6 @@ def main() -> int:
     cmd = [
         sys.executable, "-m", "pytest",
         str(_TESTS_DIR),
-        "-k", "not remote",
         "-v",
         "--tb=short",
     ]

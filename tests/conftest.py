@@ -36,12 +36,15 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip remote tests when credentials are not configured."""
+    """Auto-skip remote tests unless explicitly enabled with credentials."""
+    run_remote = os.environ.get("MODELSCOPE_RUN_REMOTE_TESTS", "").lower() in ("true", "1", "yes")
     token = os.environ.get("MODELSCOPE_TEST_TOKEN")
     owner = os.environ.get("MODELSCOPE_TEST_OWNER")
-    if token and owner and token != "your_token_here":
+    if run_remote and token and owner and token != "your_token_here":
         return
-    skip = pytest.mark.skip(reason="MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER not set")
+    skip = pytest.mark.skip(
+        reason="Remote tests disabled (set MODELSCOPE_RUN_REMOTE_TESTS=true with valid credentials)"
+    )
     for item in items:
         if "remote" in item.keywords:
             item.add_marker(skip)

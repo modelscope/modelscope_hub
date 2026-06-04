@@ -116,13 +116,13 @@ api.create_repo("my-org/my-model", "model", visibility="private", license="apach
 
 ```bash
 ms deploy my-org/chat-demo --repo-type studio
-ms logs my-org/chat-demo --log-type runtime
+ms logs my-org/chat-demo --log-type run
 ms stop my-org/chat-demo --repo-type studio
 ```
 
 ```python
 api.deploy_repo("my-org/chat-demo", "studio")
-api.get_repo_logs("my-org/chat-demo", log_type="runtime")
+api.get_repo_logs("my-org/chat-demo", log_type="run")
 api.stop_repo("my-org/chat-demo", "studio")
 ```
 
@@ -321,7 +321,7 @@ Manage Studio and MCP deployments.
 
 ```bash
 ms deploy my-org/chat-demo --repo-type studio
-ms logs my-org/chat-demo --log-type runtime --keyword ERROR --page-size 50
+ms logs my-org/chat-demo --log-type run --keyword ERROR --page-size 50
 ms settings my-org/chat-demo cpu=4 memory=8192
 ms stop my-org/chat-demo --repo-type studio
 ```
@@ -333,7 +333,7 @@ ms stop my-org/chat-demo --repo-type studio
 |---------|-------------|
 | `ms deploy <repo_id>` | `--repo-type {studio,mcp}` |
 | `ms stop <repo_id>` | `--repo-type {studio,mcp}` |
-| `ms logs <repo_id>` | `--log-type {runtime,build}`, `--keyword`, `--page`, `--page-size` |
+| `ms logs <repo_id>` | `--log-type {run,build}`, `--keyword`, `--page`, `--page-size` |
 | `ms settings <repo_id> key=val...` | Key-value pairs passed to backend |
 
 </details>
