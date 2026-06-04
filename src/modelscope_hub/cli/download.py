@@ -53,7 +53,7 @@ class DownloadCommand(CLICommand):
         )
         add_repo_type_arg(
             p,
-            choices=[RepoType.MODEL.value, RepoType.DATASET.value, RepoType.STUDIO.value],
+            choices=[RepoType.MODEL.value, RepoType.DATASET.value],
             default=RepoType.MODEL.value,
             required=False,
         )

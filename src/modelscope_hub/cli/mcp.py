@@ -6,6 +6,7 @@ import json
 from argparse import Action
 
 from .base import CLICommand, info, make_api, render_table, success
+from .compat import add_subcmd_token_endpoint
 
 
 class McpCommand(CLICommand):
@@ -38,6 +39,7 @@ class _McpList(CLICommand):
         p.add_argument("--search", default=None)
         p.add_argument("--page", dest="page_number", type=int, default=1)
         p.add_argument("--page-size", dest="page_size", type=int, default=20)
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=McpCommand, _mcp_leaf=_McpList)
 
     def execute(self) -> None:
@@ -68,6 +70,7 @@ class _McpInfo(CLICommand):
     def register(subparsers: Action) -> None:
         p = subparsers.add_parser("info", help="Show details of an MCP server.")
         p.add_argument("server_id")
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=McpCommand, _mcp_leaf=_McpInfo)
 
     def execute(self) -> None:
@@ -81,6 +84,7 @@ class _McpDeploy(CLICommand):
     def register(subparsers: Action) -> None:
         p = subparsers.add_parser("deploy", help="Deploy an MCP server.")
         p.add_argument("server_id")
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=McpCommand, _mcp_leaf=_McpDeploy)
 
     def execute(self) -> None:
@@ -94,6 +98,7 @@ class _McpUndeploy(CLICommand):
     def register(subparsers: Action) -> None:
         p = subparsers.add_parser("undeploy", help="Undeploy an MCP server.")
         p.add_argument("server_id")
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=McpCommand, _mcp_leaf=_McpUndeploy)
 
     def execute(self) -> None:

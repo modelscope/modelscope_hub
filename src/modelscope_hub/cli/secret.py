@@ -6,6 +6,7 @@ from argparse import Action
 
 from ..constants import RepoType
 from .base import CLICommand, add_repo_type_arg, info, make_api, render_table, success
+from .compat import add_subcmd_token_endpoint
 
 
 class SecretCommand(CLICommand):
@@ -46,6 +47,7 @@ class _SecretList(CLICommand):
         p = subparsers.add_parser("list", help="List secrets of a studio space.")
         p.add_argument("repo_id")
         _add_studio_repo_type(p)
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=SecretCommand, _secret_leaf=_SecretList)
 
     def execute(self) -> None:
@@ -73,6 +75,7 @@ class _SecretAdd(CLICommand):
         p.add_argument("key")
         p.add_argument("value")
         _add_studio_repo_type(p)
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=SecretCommand, _secret_leaf=_SecretAdd)
 
     def execute(self) -> None:
@@ -89,6 +92,7 @@ class _SecretUpdate(CLICommand):
         p.add_argument("key")
         p.add_argument("value")
         _add_studio_repo_type(p)
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=SecretCommand, _secret_leaf=_SecretUpdate)
 
     def execute(self) -> None:
@@ -105,6 +109,7 @@ class _SecretDelete(CLICommand):
         p.add_argument("key")
         _add_studio_repo_type(p)
         p.add_argument("--yes", "-y", action="store_true")
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=SecretCommand, _secret_leaf=_SecretDelete)
 
     def execute(self) -> None:

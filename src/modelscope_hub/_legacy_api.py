@@ -149,6 +149,7 @@ class LegacyClient:
         params: dict[str, Any] | None = None,
         json_body: Any | None = None,
         data: Any | None = None,
+        files: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
         stream: bool = False,
@@ -157,8 +158,9 @@ class LegacyClient:
         self._ensure_session_auth()
         url = self._build_url(path)
         merged_headers = self._headers(headers)
-        # Remove Content-Type for non-json payloads
-        if data is not None and json_body is None:
+        # Remove Content-Type for non-json payloads so requests can set
+        # the correct boundary for multipart or the right encoding for data.
+        if (data is not None or files is not None) and json_body is None:
             merged_headers.pop("Content-Type", None)
 
         logger.debug("%s %s", method, url)
@@ -169,6 +171,7 @@ class LegacyClient:
                 params=params,
                 json=json_body,
                 data=data,
+                files=files,
                 headers=merged_headers,
                 timeout=timeout or self._timeout,
                 stream=stream,
@@ -179,6 +182,15 @@ class LegacyClient:
             raise RequestTimeoutError(f"Request timed out: {exc}") from exc
 
         logger.debug("%s %s -> %s", method, url, resp.status_code)
+        if resp.status_code >= 400:
+            logger.debug(
+                "Request failed: %s %s params=%s status=%s body=%s",
+                method,
+                url,
+                params,
+                resp.status_code,
+                resp.text[:500] if resp.text else "",
+            )
         raise_for_status(resp)
         return resp
 
@@ -215,9 +227,16 @@ class LegacyClient:
         """POST /api/v1/{type}s — create a new repository.
 
         ``body`` is the fully-constructed request payload (PascalCase keys).
+
+        The dataset endpoint requires multipart form data (matching the
+        upstream server implementation), while model uses JSON.
         """
         segment = _resolve_segment(repo_type)
-        resp = self._request("POST", segment, json_body=body)
+        if repo_type in (RepoType.DATASET, "dataset"):
+            files = {k: (None, str(v)) for k, v in body.items() if v is not None}
+            resp = self._request("POST", segment, files=files)
+        else:
+            resp = self._request("POST", segment, json_body=body)
         return self._json_data(resp)
 
     def delete_repo(self, repo_id: str, repo_type: str) -> None:
@@ -242,7 +261,8 @@ class LegacyClient:
     ) -> list[dict]:
         """List files in a repository.
 
-        GET /api/v1/{type}s/{repo_id}/repo/files?Revision=&Recursive=&Root=
+        Models/studios/etc: GET /api/v1/{type}s/{repo_id}/repo/files
+        Datasets: GET /api/v1/datasets/{repo_id}/repo/tree
         """
         segment = _resolve_segment(repo_type)
         params: dict[str, Any] = {
@@ -252,7 +272,8 @@ class LegacyClient:
         if root:
             params["Root"] = root
 
-        resp = self._request("GET", f"{segment}/{repo_id}/repo/files", params=params)
+        suffix = "repo/tree" if repo_type in (RepoType.DATASET, "dataset", "datasets") else "repo/files"
+        resp = self._request("GET", f"{segment}/{repo_id}/{suffix}", params=params)
         data = self._json_data(resp)
         if isinstance(data, list):
             return data
@@ -271,7 +292,7 @@ class LegacyClient:
         """List files in a dataset repo using pagination.
 
         Datasets can have millions of files, so this method pages through
-        ``GET /api/v1/datasets/{repo_id}/repo/files`` with
+        ``GET /api/v1/datasets/{repo_id}/repo/tree`` with
         ``PageNumber``/``PageSize`` params.
         """
         all_files: list[dict] = []
@@ -287,7 +308,7 @@ class LegacyClient:
                 params["Root"] = root_path
             resp = self._request(
                 "GET",
-                f"datasets/{repo_id}/repo/files",
+                f"datasets/{repo_id}/repo/tree",
                 params=params,
             )
             data = self._json_data(resp)

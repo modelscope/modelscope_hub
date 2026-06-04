@@ -69,11 +69,15 @@ class APIError(HubError):
         status_code: int | None = None,
         request_id: str | None = None,
         response_body: Any | None = None,
+        url: str | None = None,
+        method: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.request_id = request_id
         self.response_body = response_body
+        self.url = url
+        self.method = method
 
     def __str__(self) -> str:
         parts: list[str] = []
@@ -84,12 +88,48 @@ class APIError(HubError):
         parts.append(self.message)
         if self.request_id:
             parts.append(f"(request_id={self.request_id})")
-        if self.response_body is not None and self.message.startswith("HTTP "):
+        detail = self._format_body_detail()
+        if detail:
+            parts.append(f"| {detail}")
+        # Append debug context on separate lines
+        headline = " ".join(parts)
+        debug_lines: list[str] = []
+        if self.url:
+            debug_lines.append(f"  Request: {self.method or 'GET'} {self.url}")
+        if self.response_body is not None:
             body_str = str(self.response_body)
             if len(body_str) > 500:
                 body_str = body_str[:500] + "..."
-            parts.append(f"| body={body_str}")
-        return " ".join(parts)
+            debug_lines.append(f"  Response: {body_str}")
+        if debug_lines:
+            return headline + "\n" + "\n".join(debug_lines)
+        return headline
+
+    def _format_body_detail(self) -> str | None:
+        """Extract additional detail from response_body not already in message."""
+        if self.response_body is None:
+            return None
+        if isinstance(self.response_body, dict):
+            extras: list[str] = []
+            code = self.response_body.get("Code") or self.response_body.get("code")
+            if code is not None:
+                extras.append(f"code={code}")
+            for key in ("Data", "data", "detail", "Detail", "errors"):
+                val = self.response_body.get(key)
+                if val is not None:
+                    val_str = str(val)
+                    if len(val_str) > 300:
+                        val_str = val_str[:300] + "..."
+                    extras.append(f"{key}={val_str}")
+            if extras:
+                return ", ".join(extras)
+            return None
+        if self.message.startswith("HTTP "):
+            body_str = str(self.response_body)
+            if len(body_str) > 500:
+                body_str = body_str[:500] + "..."
+            return f"body={body_str}"
+        return None
 
 
 # -- Auth / Permission (E3001, E3002) --------------------------------------
@@ -115,7 +155,10 @@ class NotExistError(APIError):
 
     error_code = "E3020"
     retryable = False
-    suggestion = "The requested resource does not exist or has been deleted."
+    suggestion = (
+        "The requested resource does not exist, or it is private and requires "
+        "authentication. Use `ms login` or pass --token to authenticate."
+    )
 
 
 class InvalidParameter(APIError, ValueError):
@@ -145,6 +188,8 @@ class RateLimitError(APIError):
         status_code: int | None = 429,
         request_id: str | None = None,
         response_body: Any | None = None,
+        url: str | None = None,
+        method: str | None = None,
         retry_after: int | float | None = None,
     ) -> None:
         super().__init__(
@@ -152,6 +197,8 @@ class RateLimitError(APIError):
             status_code=status_code,
             request_id=request_id,
             response_body=response_body,
+            url=url,
+            method=method,
         )
         self.retry_after = retry_after
 
@@ -266,6 +313,7 @@ _STATUS_MAP: dict[int, type[APIError]] = {
     401: AuthenticationError,
     403: PermissionDeniedError,
     404: NotExistError,
+    405: InvalidParameter,
     429: RateLimitError,
 }
 
@@ -274,7 +322,14 @@ def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]
     """Best-effort extraction of (message, request_id, body) from a response."""
     request_id = response.headers.get("x-request-id") or response.headers.get("X-Request-Id")
     body: Any | None = None
-    message = f"HTTP {response.status_code}"
+
+    # Build a contextual fallback message that includes request method/path
+    req = response.request
+    if req and req.method and req.path_url:
+        message = f"HTTP {response.status_code} on {req.method} {req.path_url}"
+    else:
+        message = f"HTTP {response.status_code}"
+
     try:
         body = response.json()
     except ValueError:
@@ -315,6 +370,11 @@ def raise_for_status(response: "Response") -> None:
 
     message, request_id, body = _extract_payload(response)
 
+    # Extract request URL and method for debug context
+    req = response.request
+    url: str | None = response.url or (req.url if req else None)
+    method: str | None = req.method if req else None
+
     if status >= 500:
         exc_cls: type[APIError] = ServerError
     else:
@@ -324,6 +384,8 @@ def raise_for_status(response: "Response") -> None:
         status_code=status,
         request_id=request_id,
         response_body=body,
+        url=url,
+        method=method,
     )
 
     if exc_cls is RateLimitError:
