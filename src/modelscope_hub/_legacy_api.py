@@ -239,6 +239,16 @@ class LegacyClient:
             resp = self._request("POST", segment, json_body=body)
         return self._json_data(resp)
 
+    def get_repo_info(self, repo_id: str, repo_type: str) -> dict:
+        """GET /api/v1/{type}s/{repo_id} — fetch repository metadata.
+
+        Uses cookie-based session auth which supports private repositories
+        (unlike the OpenAPI Bearer-only endpoint).
+        """
+        segment = _resolve_segment(repo_type)
+        resp = self._request("GET", f"{segment}/{repo_id}")
+        return self._json_data(resp)
+
     def delete_repo(self, repo_id: str, repo_type: str) -> None:
         """Delete a repository.
 

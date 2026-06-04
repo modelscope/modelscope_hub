@@ -643,9 +643,15 @@ class HubApi:
         owner, name = self._parse_repo_id(repo_id)
 
         if rt is RepoType.MODEL:
-            data = self.openapi.get_model(owner, name)
+            try:
+                data = self.openapi.get_model(owner, name)
+            except NotExistError:
+                data = self.legacy.get_repo_info(repo_id, str(rt))
         elif rt is RepoType.DATASET:
-            data = self.openapi.get_dataset(owner, name)
+            try:
+                data = self.openapi.get_dataset(owner, name)
+            except NotExistError:
+                data = self.legacy.get_repo_info(repo_id, str(rt))
         elif rt is RepoType.STUDIO:
             data = self.openapi.get_studio(owner, name)
         elif rt is RepoType.SKILL:
