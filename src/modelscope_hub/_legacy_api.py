@@ -272,7 +272,7 @@ class LegacyClient:
         if root:
             params["Root"] = root
 
-        suffix = "repo/tree" if repo_type in ("dataset", "datasets") else "repo/files"
+        suffix = "repo/tree" if repo_type in (RepoType.DATASET, "dataset", "datasets") else "repo/files"
         resp = self._request("GET", f"{segment}/{repo_id}/{suffix}", params=params)
         data = self._json_data(resp)
         if isinstance(data, list):
