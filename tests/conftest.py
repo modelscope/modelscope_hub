@@ -29,22 +29,58 @@ _load_dotenv(Path(__file__).parent / ".env")
 
 
 # ---------------------------------------------------------------------------
+# Remote mode detection
+# ---------------------------------------------------------------------------
+def is_remote_enabled() -> bool:
+    """Check if remote tests should run.
+
+    Returns True (run real API tests) unless MODELSCOPE_RUN_REMOTE_TESTS=false.
+    When the flag is unset, we auto-detect based on valid credentials.
+    """
+    flag = os.environ.get("MODELSCOPE_RUN_REMOTE_TESTS", "").lower()
+    if flag == "false":
+        return False
+    # Explicit opt-in
+    if flag in ("true", "1", "yes"):
+        token = os.environ.get("MODELSCOPE_TEST_TOKEN", "")
+        return bool(token and token != "your_token_here")
+    # Auto-detect: has valid credentials → remote enabled
+    token = os.environ.get("MODELSCOPE_TEST_TOKEN", "")
+    return bool(token and token != "your_token_here")
+
+
+# ---------------------------------------------------------------------------
 # Pytest hooks
 # ---------------------------------------------------------------------------
 def pytest_configure(config):
     config.addinivalue_line("markers", "remote: tests requiring remote API access")
+    config.addinivalue_line("markers", "mock_only: tests using mock API (only run when MODELSCOPE_RUN_REMOTE_TESTS=false)")
 
 
 def pytest_collection_modifyitems(config, items):
-    """Auto-skip remote tests when credentials are not configured."""
-    token = os.environ.get("MODELSCOPE_TEST_TOKEN")
-    owner = os.environ.get("MODELSCOPE_TEST_OWNER")
-    if token and owner and token != "your_token_here":
-        return
-    skip = pytest.mark.skip(reason="MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER not set")
-    for item in items:
-        if "remote" in item.keywords:
-            item.add_marker(skip)
+    """Conditionally skip tests based on remote mode.
+
+    - remote_enabled=True  → skip mock_only tests, run remote tests
+    - remote_enabled=False → skip remote tests, run mock_only tests
+    """
+    remote_enabled = is_remote_enabled()
+
+    if remote_enabled:
+        # Skip mock-only tests when real API is available
+        skip_mock = pytest.mark.skip(
+            reason="Mock-only tests skipped (remote mode active)"
+        )
+        for item in items:
+            if "mock_only" in item.keywords:
+                item.add_marker(skip_mock)
+    else:
+        # Skip remote tests when in mock/local mode
+        skip_remote = pytest.mark.skip(
+            reason="Remote tests disabled (set MODELSCOPE_RUN_REMOTE_TESTS=true with valid credentials)"
+        )
+        for item in items:
+            if "remote" in item.keywords:
+                item.add_marker(skip_remote)
 
 
 # ---------------------------------------------------------------------------

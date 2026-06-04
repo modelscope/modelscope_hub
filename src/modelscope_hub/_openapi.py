@@ -205,6 +205,15 @@ class OpenAPIClient:
                 last_exc = NetworkError(f"Request failed: {exc}")
             else:
                 _logger.debug("%s %s -> %s", method_upper, url, response.status_code)
+                if response.status_code >= 400:
+                    _logger.debug(
+                        "Request failed: %s %s params=%s status=%s body=%s",
+                        method_upper,
+                        url,
+                        params,
+                        response.status_code,
+                        response.text[:500] if response.text else "",
+                    )
                 try:
                     raise_for_status(response)
                 except _RETRYABLE_EXC as exc:  # type: ignore[misc]

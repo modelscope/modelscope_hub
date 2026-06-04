@@ -232,7 +232,7 @@ class CreateStudioPayload(TypedDict, total=False):
     license: str
     private: bool
     description: str
-    cover_image: str
+    coverImage: str
     sdk_type: str
     sdk_version: str
     base_image: str
@@ -246,7 +246,7 @@ class UpdateStudioSettingsPayload(TypedDict, total=False):
     license: str
     private: bool
     description: str
-    cover_image: str
+    coverImage: str
     sdk_type: str
     sdk_version: str
     base_image: str

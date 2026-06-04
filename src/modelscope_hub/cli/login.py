@@ -11,6 +11,7 @@ import getpass
 from argparse import Action, SUPPRESS
 
 from .base import CLICommand, error, info, make_api, success
+from .compat import add_subcmd_token_endpoint
 
 
 class LoginCommand(CLICommand):
@@ -65,6 +66,7 @@ class WhoamiCommand(CLICommand):
             "whoami",
             help="Show the user identified by the active token.",
         )
+        add_subcmd_token_endpoint(parser)
         parser.set_defaults(_command=WhoamiCommand)
 
     def execute(self) -> None:

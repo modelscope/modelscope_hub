@@ -44,7 +44,18 @@ class CLICommand(ABC):
 # Shared helpers
 # ---------------------------------------------------------------------------
 def make_api(args: Namespace) -> HubApi:
-    """Construct a :class:`HubApi` honouring global ``--token`` / ``--endpoint``."""
+    """Construct a :class:`HubApi` honouring global and subcommand ``--token`` / ``--endpoint``.
+
+    Automatically merges subcommand-level ``subcmd_token``/``subcmd_endpoint``
+    into the namespace (subcommand values take precedence over global values).
+    """
+    subcmd_token = getattr(args, "subcmd_token", None)
+    if subcmd_token:
+        args.token = subcmd_token
+    subcmd_endpoint = getattr(args, "subcmd_endpoint", None)
+    if subcmd_endpoint:
+        args.endpoint = subcmd_endpoint
+
     return HubApi(
         token=getattr(args, "token", None),
         endpoint=getattr(args, "endpoint", None),

@@ -105,7 +105,7 @@ api.upload_folder("my-org/my-model", "model", "./output", path_in_repo="")
 ### Create a Repository
 
 ```bash
-ms repo create my-org/my-model --repo-type model --visibility private
+ms create my-org/my-model --repo-type model --visibility private
 ```
 
 ```python
@@ -116,13 +116,13 @@ api.create_repo("my-org/my-model", "model", visibility="private", license="apach
 
 ```bash
 ms deploy my-org/chat-demo --repo-type studio
-ms logs my-org/chat-demo --log-type runtime
+ms logs my-org/chat-demo --log-type run
 ms stop my-org/chat-demo --repo-type studio
 ```
 
 ```python
 api.deploy_repo("my-org/chat-demo", "studio")
-api.get_repo_logs("my-org/chat-demo", log_type="runtime")
+api.get_repo_logs("my-org/chat-demo", log_type="run")
 api.stop_repo("my-org/chat-demo", "studio")
 ```
 
@@ -132,14 +132,17 @@ api.stop_repo("my-org/chat-demo", "studio")
 
 The CLI is available as both `ms` and `modelscope`.
 
-**Global options** (placed before the subcommand):
+**Global options** (placed before or after the subcommand):
 
 | Option | Description |
 |--------|-------------|
 | `--token TOKEN` | API token (overrides env and persisted token) |
 | `--endpoint URL` | API endpoint (default: `https://modelscope.cn`) |
-| `-v, --verbose` | Enable DEBUG logging |
-| `-V, --version` | Print version and exit |
+| `-v, --verbose` | Enable DEBUG logging (global only) |
+| `-V, --version` | Print version and exit (global only) |
+
+> `--token` and `--endpoint` can be placed either before or after the subcommand:
+> `ms --token xxx download ...` and `ms download ... --token xxx` are equivalent.
 
 ### `ms login`
 
@@ -160,6 +163,7 @@ Show the user associated with the current token.
 
 ```bash
 ms whoami
+ms whoami --token $MY_TOKEN   # check a specific token without logging in
 ```
 
 ### `ms download`
@@ -205,9 +209,6 @@ ms download Qwen/Qwen3-0.6B --cache-dir /data/hub-cache --max-workers 8
 
 # Force re-download even if already cached
 ms download Qwen/Qwen3-0.6B config.json --force
-
-# Download a Studio space
-ms download my-org/chat-demo --repo-type studio
 
 # Download all skills from a collection (legacy flag)
 ms download --collection my-org/skill-collection
@@ -283,25 +284,25 @@ ms upload my-org/my-model ./output --disable-tqdm
 
 </details>
 
-### `ms repo`
+### `ms create` / `ms info` / `ms list` / `ms delete`
 
-Repository management (create, info, list, delete).
+Repository management.
 
 ```bash
-ms repo create my-org/my-model --repo-type model --visibility private
-ms repo create my-org/demo --repo-type studio --sdk-type gradio
-ms repo info my-org/my-model --repo-type model
-ms repo list --repo-type model --owner my-org --page-size 20
-ms repo delete my-org/my-model --repo-type model --yes
+ms create my-org/my-model --repo-type model --visibility private
+ms create my-org/demo --repo-type studio --sdk-type gradio
+ms info my-org/my-model --repo-type model
+ms list --repo-type model --owner my-org --page-size 20
+ms delete my-org/my-model --repo-type model --yes
 ```
 
 <details>
-<summary><code>ms repo create</code> options</summary>
+<summary><code>ms create</code> options</summary>
 
 | Argument / Option | Required | Description |
 |-------------------|----------|-------------|
 | `repo_id` | yes | Repository identifier |
-| `--repo-type` | yes | `model`, `dataset`, `studio`, `skill`, or `mcp` |
+| `--repo-type` | yes | `model`, `dataset`, `studio`, or `skill` |
 | `--visibility` | no | `public`, `private`, or `internal` |
 | `--license` | no | SPDX license identifier (e.g. `apache-2.0`) |
 | `--chinese-name` | no | Display name in Chinese |
@@ -321,7 +322,7 @@ Manage Studio and MCP deployments.
 
 ```bash
 ms deploy my-org/chat-demo --repo-type studio
-ms logs my-org/chat-demo --log-type runtime --keyword ERROR --page-size 50
+ms logs my-org/chat-demo --log-type run --keyword ERROR --page-size 50
 ms settings my-org/chat-demo cpu=4 memory=8192
 ms stop my-org/chat-demo --repo-type studio
 ```
@@ -329,12 +330,15 @@ ms stop my-org/chat-demo --repo-type studio
 <details>
 <summary>Options</summary>
 
-| Command | Key Options |
-|---------|-------------|
-| `ms deploy <repo_id>` | `--repo-type {studio,mcp}` |
-| `ms stop <repo_id>` | `--repo-type {studio,mcp}` |
-| `ms logs <repo_id>` | `--log-type {runtime,build}`, `--keyword`, `--page`, `--page-size` |
-| `ms settings <repo_id> key=val...` | Key-value pairs passed to backend |
+| Command | `--repo-type` | Key Options |
+|---------|---------------|-------------|
+| `ms deploy <repo_id>` | `{studio,mcp}` (default: `studio`) | — |
+| `ms stop <repo_id>` | `{studio,mcp}` (default: `studio`) | — |
+| `ms logs <repo_id>` | `{studio}` only | `--log-type {run,build}`, `--keyword`, `--page`, `--page-size` |
+| `ms settings <repo_id> key=val...` | `{studio,skill}` (default: `studio`) | Key-value pairs passed to backend |
+
+> **Note:** `ms logs` only supports Studio spaces. MCP server logs are not available via this command.
+> `ms settings` supports Studio and Skill repos; for MCP servers use `ms mcp deploy` with configuration payload.
 
 </details>
 

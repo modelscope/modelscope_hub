@@ -18,6 +18,7 @@ from .base import (
     parse_kv_pairs,
     success,
 )
+from .compat import add_subcmd_token_endpoint
 
 
 class DeployCommand(CLICommand):
@@ -33,6 +34,7 @@ class DeployCommand(CLICommand):
             default=RepoType.STUDIO.value,
             required=False,
         )
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=DeployCommand)
 
     def execute(self) -> None:
@@ -54,6 +56,7 @@ class StopCommand(CLICommand):
             default=RepoType.STUDIO.value,
             required=False,
         )
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=StopCommand)
 
     def execute(self) -> None:
@@ -79,6 +82,7 @@ class LogsCommand(CLICommand):
         p.add_argument("--page", "--page-num", dest="page_num", type=int, default=1)
         p.add_argument("--page-size", dest="page_size", type=int, default=100)
         p.add_argument("--keyword", default=None)
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=LogsCommand)
 
     def execute(self) -> None:
@@ -117,6 +121,7 @@ class SettingsCommand(CLICommand):
             required=False,
         )
         p.add_argument("settings", nargs="+", help="One or more key=value pairs.")
+        add_subcmd_token_endpoint(p)
         p.set_defaults(_command=SettingsCommand)
 
     def execute(self) -> None:

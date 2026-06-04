@@ -23,7 +23,7 @@ from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
 from .download import DownloadCommand
 from .login import LoginCommand, WhoamiCommand
 from .mcp import McpCommand
-from .repo import RepoCommand, _RepoCreate
+from .repo import CreateCommand, DeleteCommand, InfoCommand, ListCommand, RepoCommand
 from .secret import SecretCommand
 from .upload import UploadCommand
 
@@ -32,7 +32,10 @@ from .upload import UploadCommand
 _COMMANDS = [
     LoginCommand,
     WhoamiCommand,
-    RepoCommand,
+    CreateCommand,
+    InfoCommand,
+    ListCommand,
+    DeleteCommand,
     DownloadCommand,
     UploadCommand,
     DeployCommand,
@@ -95,27 +98,9 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 def _register_aliases(subparsers) -> None:
     """Register top-level command aliases for legacy CLI compatibility."""
-    _register_create_alias(subparsers)
+    RepoCommand.register(subparsers)
     _register_scan_cache_alias(subparsers)
     _register_clear_cache_alias(subparsers)
-
-
-def _register_create_alias(subparsers) -> None:
-    """``ms create`` → alias for ``ms repo create``."""
-    from ..constants import RepoType
-
-    p = subparsers.add_parser("create", help="[Alias] Create a new repository.")
-    p.add_argument("repo_id", help="Canonical 'owner/name' identifier.")
-    add_repo_type_arg(p)
-    p.add_argument("--visibility", choices=["public", "private", "internal"], default=None)
-    p.add_argument("--license", dest="license", default=None)
-    p.add_argument("--chinese-name", "--chinese_name", dest="chinese_name", default=None)
-    p.add_argument("--description", dest="description", default=None)
-    p.add_argument("--exist-ok", "--exist_ok", dest="exist_ok", action="store_true", default=False)
-    # Legacy hidden
-    p.add_argument("--token", dest="subcmd_token", default=None, help=SUPPRESS)
-    p.add_argument("--endpoint", dest="subcmd_endpoint", default=None, help=SUPPRESS)
-    p.set_defaults(_command=_CreateAlias)
 
 
 def _register_scan_cache_alias(subparsers) -> None:
@@ -137,19 +122,6 @@ def _register_clear_cache_alias(subparsers) -> None:
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
     p.set_defaults(_command=_ClearCacheAlias)
 
-
-class _CreateAlias(CLICommand):
-    """Adapter: top-level ``create`` → ``repo create``."""
-
-    @staticmethod
-    def register(subparsers) -> None:
-        pass  # registration handled by _register_create_alias
-
-    def execute(self) -> None:
-        from .compat import _merge_subcmd_auth
-        _merge_subcmd_auth(self.args, warn=False)
-        self.args.exist_ok = getattr(self.args, "exist_ok", False)
-        _RepoCreate(self.args).execute()
 
 
 class _ScanCacheAlias(CLICommand):

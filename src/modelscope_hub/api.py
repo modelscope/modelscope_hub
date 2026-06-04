@@ -56,6 +56,9 @@ RepoTypeLike = "str | RepoType"
 
 # Routing tables — declarative dispatch keeps :class:`HubApi` free of long
 # if/elif chains and makes adding new repo types a one-line change.
+_CREATABLE_TYPES: frozenset[RepoType] = frozenset(
+    {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
+)
 _OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset({RepoType.STUDIO, RepoType.SKILL})
 _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
     {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
@@ -79,6 +82,11 @@ _LICENSE_DISPLAY_TO_SPDX: dict[str, str] = {
     "CC-BY-NC-4.0": "cc-by-nc-4.0",
     "CC0-1.0": "cc0-1.0",
     "Unlicense": "unlicense",
+}
+
+
+_STUDIO_FIELD_RENAMES: dict[str, str] = {
+    "cover_image": "coverImage",
 }
 
 
@@ -283,6 +291,20 @@ class HubApi:
         }
         for key, value in data.items():
             normalised[aliases.get(key, key)] = value
+
+        # The OpenAPI surface encodes visibility as a ``private`` bool (with an
+        # optional ``gated`` flag) instead of the legacy ``Visibility`` integer.
+        # Translate it so downstream code sees a uniform ``Visibility`` enum.
+        if normalised.get("visibility") is None:
+            private_flag = normalised.pop("private", None)
+            gated_flag = normalised.pop("gated", None)
+            if isinstance(private_flag, bool):
+                if private_flag:
+                    normalised["visibility"] = Visibility.PRIVATE
+                elif gated_flag:
+                    normalised["visibility"] = Visibility.INTERNAL
+                else:
+                    normalised["visibility"] = Visibility.PUBLIC
 
         normalised.setdefault("owner", owner_hint)
         normalised.setdefault("name", name_hint)
@@ -506,6 +528,12 @@ class HubApi:
         >>> api.create_repo("alice/chat-demo", repo_type="studio", visibility="public")
         """
         rt = self._normalize_repo_type(repo_type)
+        if rt not in _CREATABLE_TYPES:
+            supported = ", ".join(sorted(t.value for t in _CREATABLE_TYPES))
+            raise NotSupportedError(
+                f"create_repo does not support repo_type={rt.value!r}. "
+                f"Supported types: {supported}."
+            )
         owner, name = self._parse_repo_id(repo_id)
         vis = self._normalize_visibility(visibility)
         if license is not None:
@@ -535,6 +563,9 @@ class HubApi:
                 payload["license"] = license
             if description is not None:
                 payload["description"] = description
+            for old_key, new_key in _STUDIO_FIELD_RENAMES.items():
+                if old_key in extra:
+                    extra[new_key] = extra.pop(old_key)
             payload.update(extra)
             data = (
                 self.openapi.create_studio(payload)
@@ -545,12 +576,20 @@ class HubApi:
                 data, rt, owner_hint=owner, name_hint=name
             )
 
-        body: dict[str, Any] = {
-            "Path": owner,
-            "Name": name,
-            "Visibility": vis if vis is not None else int(Visibility.PUBLIC),
-            "License": license or "Apache-2.0",
-        }
+        if rt is RepoType.DATASET:
+            body: dict[str, Any] = {
+                "Owner": owner,
+                "Name": name,
+                "Visibility": vis if vis is not None else int(Visibility.PUBLIC),
+                "License": license or "Apache-2.0",
+            }
+        else:
+            body = {
+                "Path": owner,
+                "Name": name,
+                "Visibility": vis if vis is not None else int(Visibility.PUBLIC),
+                "License": license or "Apache-2.0",
+            }
         if chinese_name is not None:
             body["ChineseName"] = chinese_name
         if description is not None:
@@ -1054,6 +1093,12 @@ class HubApi:
         '{\n  "architectures": [\n    "Ll'
         """
         rt = self._normalize_repo_type(repo_type)
+        if rt is RepoType.STUDIO:
+            raise NotSupportedError(
+                "File download is not supported for studio repositories. "
+                "Studios are application containers without a file listing API. "
+                f"To access studio source code, use: git clone https://modelscope.cn/studios/{repo_id}.git"
+            )
         return self.downloader.download_file(
             repo_id=repo_id,
             repo_type=str(rt),
@@ -1128,6 +1173,12 @@ class HubApi:
         ['config.json', 'tokenizer.json', 'tokenizer_config.json']
         """
         rt = self._normalize_repo_type(repo_type)
+        if rt is RepoType.STUDIO:
+            raise NotSupportedError(
+                "File download is not supported for studio repositories. "
+                "Studios are application containers without a file listing API. "
+                f"To access studio source code, use: git clone https://modelscope.cn/studios/{repo_id}.git"
+            )
         return self.downloader.download_repo(
             repo_id=repo_id,
             repo_type=str(rt),
@@ -1463,6 +1514,9 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
+        for old_key, new_key in _STUDIO_FIELD_RENAMES.items():
+            if old_key in settings:
+                settings[new_key] = settings.pop(old_key)
         if rt is RepoType.STUDIO:
             return self.openapi.update_studio_settings(owner, name, settings)
         if rt is RepoType.SKILL:
