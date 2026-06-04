@@ -318,6 +318,30 @@ _STATUS_MAP: dict[int, type[APIError]] = {
 }
 
 
+_CN_TO_EN: dict[str, str] = {
+    "该名称已被注册使用，请重新命名": "Repository name already exists. Please choose a different name.",
+    "用户未登录": "User not logged in.",
+    "user not logged in": "User not logged in.",
+    "更新模型失败": "Failed to update model.",
+    "参数错误：版本名称不能为空": "Invalid parameter: tag name cannot be empty.",
+    "模型不存在": "Model does not exist.",
+    "数据集不存在": "Dataset does not exist.",
+    "创建空间失败": "Failed to create studio.",
+    "the current token no longer supports deletion operations. Please go to the site page : https://www.modelscope.cn to delete":
+        "Deletion is restricted to web console. Visit https://modelscope.cn to delete.",
+}
+
+
+def _translate_message(msg: str) -> str:
+    """Translate known Chinese server messages to English."""
+    if not msg:
+        return msg
+    for cn, en in _CN_TO_EN.items():
+        if cn in msg:
+            return en
+    return msg
+
+
 def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]:
     """Best-effort extraction of (message, request_id, body) from a response."""
     request_id = response.headers.get("x-request-id") or response.headers.get("X-Request-Id")
@@ -336,7 +360,7 @@ def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]
         body = response.text or None
         if isinstance(body, str) and body.strip():
             message = body.strip().splitlines()[0][:500]
-        return message, request_id, body
+        return _translate_message(message), request_id, body
 
     if isinstance(body, dict):
         for key in ("message", "Message", "msg", "Msg", "error", "Error", "detail", "Detail"):
@@ -348,7 +372,7 @@ def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]
             body.get("request_id") or body.get("requestId")
             or body.get("RequestId") or request_id
         )
-    return message, request_id, body
+    return _translate_message(message), request_id, body
 
 
 def raise_for_status(response: "Response") -> None:
