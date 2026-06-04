@@ -12,6 +12,18 @@ from typing import Any
 from ..api import HubApi
 from ..constants import RepoType
 
+_ALREADY_EXISTS_CODES = {10020101001, 10010101001}
+
+
+def _is_repo_exists_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    if "exist" in msg or "已被注册" in msg or "已存在" in msg:
+        return True
+    body = getattr(exc, "response_body", None)
+    if isinstance(body, dict) and body.get("Code") in _ALREADY_EXISTS_CODES:
+        return True
+    return False
+
 
 class LegacyHubApi:
     """Drop-in replacement for the old ``modelscope.hub.api.HubApi``.
@@ -85,7 +97,7 @@ class LegacyHubApi:
                 **kwargs,
             )
         except Exception as exc:
-            if exist_ok and "exist" in str(exc).lower():
+            if exist_ok and _is_repo_exists_error(exc):
                 return
             raise
 

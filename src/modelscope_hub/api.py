@@ -167,6 +167,8 @@ class HubApi:
                 token=self._config.token,
                 endpoint=self._config.endpoint,
             )
+        elif self._legacy.token != self._config.token and self._config.token:
+            self._legacy.token = self._config.token
         return self._legacy
 
     @property
@@ -385,7 +387,6 @@ class HubApi:
         Calls ``POST /api/v1/login`` to obtain server-issued session cookies
         and a git access token, then saves them to
         ``~/.modelscope/credentials/`` (compatible with the old modelscope SDK).
-        The API token is also saved to ``~/.modelscope/token``.
 
         Parameters
         ----------
@@ -417,6 +418,7 @@ class HubApi:
 
         token = token.strip()
         self._config.token = token
+        self._config._logged_out = False
         self._openapi = None
         if self._legacy is not None:
             self._legacy.token = token
@@ -434,7 +436,6 @@ class HubApi:
         username = data.get("Username", "")
         email = data.get("Email", "")
 
-        self._config.save_token(token)
         self._config.save_cookies(cookies)
         if git_token:
             self._config.save_git_token(git_token)
@@ -1284,7 +1285,12 @@ class HubApi:
         commit_message: str | None = None,
         revision: str | None = None,
     ) -> dict:
-        """Delete one or more files via a legacy commit operation.
+        """Delete one or more files from a repository.
+
+        .. note::
+           File deletion is restricted by the server to cookie-based session
+           auth (interactive login). API tokens (``ms-...``) may receive a 401
+           "token no longer supports deletion operations" error.
 
         Parameters
         ----------
@@ -1295,19 +1301,19 @@ class HubApi:
         file_paths : iterable of str
             Paths of files to remove. Empty entries are ignored.
         commit_message : str, optional
-            Commit message. Defaults to ``"Delete N file(s)"``.
+            Unused (kept for API compatibility).
         revision : str, optional
-            Branch to commit on. Defaults to ``"master"``.
+            Branch to delete from. Defaults to ``"master"``.
 
         Returns
         -------
         dict
-            Commit response payload.
+            Summary with ``deleted_files`` and ``failed_files`` lists.
 
         Raises
         ------
         InvalidParameter
-            When ``file_paths`` resolves to an empty operation list.
+            When ``file_paths`` resolves to an empty list.
 
         Examples
         --------
@@ -1315,22 +1321,27 @@ class HubApi:
         ...     "alice/llama-7b",
         ...     "model",
         ...     ["old_weights.bin", "deprecated/config.json"],
-        ...     commit_message="Remove deprecated artifacts",
         ... )
         """
         rt = self._normalize_repo_type(repo_type)
-        operations = [
-            {"action": "delete", "file_path": p} for p in file_paths if p
-        ]
-        if not operations:
+        paths = [p for p in file_paths if p]
+        if not paths:
             raise InvalidParameter("file_paths must contain at least one non-empty path.")
-        return self.legacy.create_commit(
-            repo_id=repo_id,
-            repo_type=str(rt),
-            operations=operations,
-            commit_message=commit_message or f"Delete {len(operations)} file(s)",
-            revision=revision or "master",
-        )
+
+        deleted, failed = [], []
+        for p in paths:
+            try:
+                self.legacy.delete_file(
+                    repo_id=repo_id,
+                    repo_type=str(rt),
+                    file_path=p,
+                    revision=revision or "master",
+                )
+                deleted.append(p)
+            except Exception:
+                failed.append(p)
+
+        return {"deleted_files": deleted, "failed_files": failed, "total_files": len(paths)}
 
     # ==================================================================
     # Versioning

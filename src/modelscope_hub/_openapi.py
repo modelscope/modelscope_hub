@@ -119,6 +119,10 @@ class OpenAPIClient:
     def _auth_headers(self, *, require_token: bool = False) -> dict[str, str]:
         token = self._config.token
         if not token:
+            token = self._config.load_token()
+            if token:
+                self._config.token = token
+        if not token:
             if require_token:
                 raise AuthenticationError(
                     "Missing API token. Call HubApi.login(...) or set MODELSCOPE_API_TOKEN."

@@ -17,6 +17,20 @@ from .compat import add_subcmd_token_endpoint
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+_ALREADY_EXISTS_CODES = {10020101001, 10010101001}
+
+
+def _is_already_exists(exc: BaseException) -> bool:
+    """Detect "repo already exists" regardless of locale."""
+    msg = str(exc).lower()
+    if "exist" in msg or "已被注册" in msg or "已存在" in msg:
+        return True
+    body = getattr(exc, "response_body", None)
+    if isinstance(body, dict) and body.get("Code") in _ALREADY_EXISTS_CODES:
+        return True
+    return False
+
+
 def _format_visibility(value: object) -> str:
     if value is None:
         return "-"
@@ -92,7 +106,7 @@ class CreateCommand(CLICommand):
             )
             success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
         except Exception as exc:
-            if getattr(self.args, "exist_ok", False) and "exist" in str(exc).lower():
+            if getattr(self.args, "exist_ok", False) and _is_already_exists(exc):
                 info(f"Repository already exists: {self.args.repo_id}")
                 return
             raise

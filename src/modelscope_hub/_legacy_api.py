@@ -365,8 +365,40 @@ class LegacyClient:
         POST /api/v1/{type}s/{repo_id}/repo/tag
         """
         segment = _resolve_segment(repo_type)
-        body = {"Tag": tag, "Revision": revision}
+        body = {"TagName": tag, "Ref": revision}
         resp = self._request("POST", f"{segment}/{repo_id}/repo/tag", json_body=body)
+        return self._json_data(resp)
+
+    # ------------------------------------------------------------------
+    # File deletion
+    # ------------------------------------------------------------------
+    def delete_file(
+        self,
+        repo_id: str,
+        repo_type: str,
+        file_path: str,
+        revision: str = "master",
+    ) -> dict:
+        """Delete a single file from the repository.
+
+        DELETE /api/v1/{type}s/{owner}/{name}/file?FilePath=...&Revision=...
+        (for models)
+        DELETE /api/v1/datasets/{owner}/{name}/repo?FilePath=...
+        (for datasets)
+        """
+        segment = _resolve_segment(repo_type)
+        if repo_type == RepoType.DATASET:
+            resp = self._request(
+                "DELETE",
+                f"{segment}/{repo_id}/repo",
+                params={"FilePath": file_path},
+            )
+        else:
+            resp = self._request(
+                "DELETE",
+                f"{segment}/{repo_id}/file",
+                params={"FilePath": file_path, "Revision": revision},
+            )
         return self._json_data(resp)
 
     # ------------------------------------------------------------------
