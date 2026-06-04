@@ -212,9 +212,7 @@ class RepoCommand(CLICommand):
     @staticmethod
     def register(subparsers: Action) -> None:
         parser = subparsers.add_parser("repo")
-        # Hide from help output. _choices_actions is not public API but is the
-        # only reliable way to suppress a subparser from --help across Python
-        # versions (help=SUPPRESS renders as ==SUPPRESS== in 3.13+).
+
         try:
             subparsers._choices_actions = [
                 a for a in subparsers._choices_actions if a.dest != "repo"
