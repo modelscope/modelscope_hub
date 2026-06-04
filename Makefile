@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint typecheck test test-all test-remote clean build publish
+.PHONY: help install lint typecheck test test-cli test-all test-remote clean build publish
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-15s\033[0m %s\n", $$1, $$2}'
@@ -21,6 +21,9 @@ typecheck: ## Run mypy type checking
 
 test: ## Run unit tests only (no remote API calls)
 	pytest tests/ -k "not remote" --ignore=tests/integration
+
+test-cli: ## Run CLI unit tests only (no remote API calls)
+	python tests/cli/run_all.py
 
 test-all: ## Run all tests including integration (needs tests/.env)
 	pytest tests/
