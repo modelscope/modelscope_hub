@@ -330,12 +330,15 @@ ms stop my-org/chat-demo --repo-type studio
 <details>
 <summary>Options</summary>
 
-| Command | Key Options |
-|---------|-------------|
-| `ms deploy <repo_id>` | `--repo-type {studio,mcp}` |
-| `ms stop <repo_id>` | `--repo-type {studio,mcp}` |
-| `ms logs <repo_id>` | `--log-type {run,build}`, `--keyword`, `--page`, `--page-size` |
-| `ms settings <repo_id> key=val...` | Key-value pairs passed to backend |
+| Command | `--repo-type` | Key Options |
+|---------|---------------|-------------|
+| `ms deploy <repo_id>` | `{studio,mcp}` (default: `studio`) | — |
+| `ms stop <repo_id>` | `{studio,mcp}` (default: `studio`) | — |
+| `ms logs <repo_id>` | `{studio}` only | `--log-type {run,build}`, `--keyword`, `--page`, `--page-size` |
+| `ms settings <repo_id> key=val...` | `{studio,skill}` (default: `studio`) | Key-value pairs passed to backend |
+
+> **Note:** `ms logs` only supports Studio spaces. MCP server logs are not available via this command.
+> `ms settings` supports Studio and Skill repos; for MCP servers use `ms mcp deploy` with configuration payload.
 
 </details>
 

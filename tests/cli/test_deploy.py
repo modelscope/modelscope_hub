@@ -137,9 +137,10 @@ class TestLogsParser:
         assert args.page_size == 50
         assert args.keyword == "Exception"
 
-    def test_invalid_repo_type_rejected(self, parser):
+    @pytest.mark.parametrize("repo_type", ["model", "dataset", "mcp", "skill"])
+    def test_invalid_repo_type_rejected(self, parser, repo_type):
         with pytest.raises(SystemExit):
-            parser.parse_args(["logs", "o/r", "--repo-type", "model"])
+            parser.parse_args(["logs", "o/r", "--repo-type", repo_type])
 
     def test_page_num_alias(self, parser):
         args = parser.parse_args(["logs", "o/r", "--page-num", "5"])
@@ -171,9 +172,10 @@ class TestSettingsParser:
         args = parser.parse_args(["settings", "o/r", "x=1", "--repo-type", repo_type])
         assert args.repo_type == repo_type
 
-    def test_invalid_repo_type_rejected(self, parser):
+    @pytest.mark.parametrize("repo_type", ["model", "dataset", "mcp"])
+    def test_invalid_repo_type_rejected(self, parser, repo_type):
         with pytest.raises(SystemExit):
-            parser.parse_args(["settings", "o/r", "x=1", "--repo-type", "model"])
+            parser.parse_args(["settings", "o/r", "x=1", "--repo-type", repo_type])
 
     def test_missing_settings_args_exits(self, parser):
         with pytest.raises(SystemExit):
