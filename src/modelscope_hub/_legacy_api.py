@@ -182,6 +182,15 @@ class LegacyClient:
             raise RequestTimeoutError(f"Request timed out: {exc}") from exc
 
         logger.debug("%s %s -> %s", method, url, resp.status_code)
+        if resp.status_code >= 400:
+            logger.debug(
+                "Request failed: %s %s params=%s status=%s body=%s",
+                method,
+                url,
+                params,
+                resp.status_code,
+                resp.text[:500] if resp.text else "",
+            )
         raise_for_status(resp)
         return resp
 

@@ -69,11 +69,15 @@ class APIError(HubError):
         status_code: int | None = None,
         request_id: str | None = None,
         response_body: Any | None = None,
+        url: str | None = None,
+        method: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.request_id = request_id
         self.response_body = response_body
+        self.url = url
+        self.method = method
 
     def __str__(self) -> str:
         parts: list[str] = []
@@ -87,7 +91,19 @@ class APIError(HubError):
         detail = self._format_body_detail()
         if detail:
             parts.append(f"| {detail}")
-        return " ".join(parts)
+        # Append debug context on separate lines
+        headline = " ".join(parts)
+        debug_lines: list[str] = []
+        if self.url:
+            debug_lines.append(f"  Request: {self.method or 'GET'} {self.url}")
+        if self.response_body is not None:
+            body_str = str(self.response_body)
+            if len(body_str) > 500:
+                body_str = body_str[:500] + "..."
+            debug_lines.append(f"  Response: {body_str}")
+        if debug_lines:
+            return headline + "\n" + "\n".join(debug_lines)
+        return headline
 
     def _format_body_detail(self) -> str | None:
         """Extract additional detail from response_body not already in message."""
@@ -169,6 +185,8 @@ class RateLimitError(APIError):
         status_code: int | None = 429,
         request_id: str | None = None,
         response_body: Any | None = None,
+        url: str | None = None,
+        method: str | None = None,
         retry_after: int | float | None = None,
     ) -> None:
         super().__init__(
@@ -176,6 +194,8 @@ class RateLimitError(APIError):
             status_code=status_code,
             request_id=request_id,
             response_body=response_body,
+            url=url,
+            method=method,
         )
         self.retry_after = retry_after
 
@@ -347,6 +367,11 @@ def raise_for_status(response: "Response") -> None:
 
     message, request_id, body = _extract_payload(response)
 
+    # Extract request URL and method for debug context
+    req = response.request
+    url: str | None = response.url or (req.url if req else None)
+    method: str | None = req.method if req else None
+
     if status >= 500:
         exc_cls: type[APIError] = ServerError
     else:
@@ -356,6 +381,8 @@ def raise_for_status(response: "Response") -> None:
         status_code=status,
         request_id=request_id,
         response_body=body,
+        url=url,
+        method=method,
     )
 
     if exc_cls is RateLimitError:
