@@ -85,12 +85,13 @@ class CreateCommand(CLICommand):
         p.add_argument("--base-image", dest="base_image", default=None, help="Studio base image.")
         p.add_argument("--cover-image", dest="cover_image", default=None, help="Studio cover image URL.")
         p.add_argument("--hardware", dest="hardware", default=None, help="Studio hardware spec.")
+        p.add_argument("--category", dest="category", default=None, help="Skill category (required for skill repos).")
         add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
         api = make_api(self.args)
         extra: dict[str, object] = {}
-        for key in ("sdk_type", "sdk_version", "base_image", "cover_image", "hardware"):
+        for key in ("sdk_type", "sdk_version", "base_image", "cover_image", "hardware", "category"):
             value = getattr(self.args, key, None)
             if value is not None:
                 extra[key] = value

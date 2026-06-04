@@ -189,7 +189,7 @@ def _discover_plugins(subparsers) -> None:
 # ---------------------------------------------------------------------------
 def run_cmd(argv: Sequence[str] | None = None) -> int:
     """Console-script entry point referenced by ``[project.scripts]``."""
-    print(MODELSCOPE_ASCII)
+    print(MODELSCOPE_ASCII, file=sys.stderr)
     parser = _build_parser()
     args = parser.parse_args(argv)
 
