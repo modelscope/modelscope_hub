@@ -202,8 +202,8 @@ class LegacyClient:
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
-    def login(self, access_token: str) -> dict:
-        """Authenticate via access token and return user info + git token.
+    def login(self, access_token: str) -> tuple[dict, "requests.cookies.RequestsCookieJar"]:
+        """Authenticate via access token and return (user_data, cookies).
 
         POST /api/v1/login
 
@@ -218,7 +218,7 @@ class LegacyClient:
         self._session.cookies.clear()
         self._ensure_session_auth()
         resp = self._request("POST", "login", json_body={"AccessToken": access_token})
-        return self._json_data(resp)
+        return self._json_data(resp), resp.cookies
 
     # ------------------------------------------------------------------
     # Repo CRUD (model / dataset)

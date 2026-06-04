@@ -20,9 +20,13 @@ from pathlib import Path
 
 from .constants import (
     CONFIG_DIR_NAME,
+    COOKIES_FILE_NAME,
+    CREDENTIALS_DIR_NAME,
     DEFAULT_CACHE_DIR_NAME,
     DEFAULT_ENDPOINT,
+    GIT_TOKEN_FILE_NAME,
     TOKEN_FILE_NAME,
+    USER_INFO_FILE_NAME,
 )
 from .errors import CacheError, InvalidParameter
 
@@ -82,11 +86,16 @@ class HubConfig:
     def token_path(self) -> Path:
         return self.config_dir / TOKEN_FILE_NAME
 
+    @property
+    def credentials_dir(self) -> Path:
+        return self.config_dir / CREDENTIALS_DIR_NAME
+
     def ensure_dirs(self) -> None:
         """Create the config and cache directories if they do not exist."""
         try:
             self.config_dir.mkdir(parents=True, exist_ok=True)
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self.credentials_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:  # pragma: no cover - filesystem dependent
             raise CacheError(f"Failed to create SDK directories: {exc}") from exc
 
@@ -108,15 +117,27 @@ class HubConfig:
         self.token = token.strip()
 
     def load_token(self) -> str | None:
-        """Return the token persisted on disk, or ``None`` if absent."""
+        """Return the token persisted on disk, or ``None`` if absent.
+
+        Resolution order:
+        1. ``~/.modelscope/token`` (new SDK path)
+        2. ``m_session_id`` from ``~/.modelscope/credentials/cookies`` (old SDK compat)
+        """
         path = self.token_path
-        if not path.is_file():
-            return None
-        try:
-            value = path.read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-        return value or None
+        if path.is_file():
+            try:
+                value = path.read_text(encoding="utf-8").strip()
+            except OSError:
+                value = None
+            if value:
+                return value
+
+        cookies = self.load_cookies()
+        if cookies:
+            for cookie in cookies:
+                if cookie.name == "m_session_id":
+                    return cookie.value
+        return None
 
     def clear_token(self) -> None:
         """Remove any persisted token from disk and from this config."""
@@ -126,6 +147,49 @@ class HubConfig:
             path.unlink(missing_ok=True)
         except OSError as exc:  # pragma: no cover - filesystem dependent
             raise CacheError(f"Failed to remove token file {path}: {exc}") from exc
+
+    # ------------------------------------------------------------------
+    # Credentials persistence (compat with old modelscope SDK)
+    # ------------------------------------------------------------------
+    def save_cookies(self, cookies: object) -> None:
+        """Pickle cookies to ``~/.modelscope/credentials/cookies``."""
+        import pickle
+
+        self.ensure_dirs()
+        path = self.credentials_dir / COOKIES_FILE_NAME
+        with open(path, "wb") as f:
+            pickle.dump(cookies, f)
+
+    def load_cookies(self) -> object | None:
+        """Load saved cookies, returning None if absent or expired."""
+        import pickle
+
+        path = self.credentials_dir / COOKIES_FILE_NAME
+        if not path.is_file():
+            return None
+        try:
+            with open(path, "rb") as f:
+                cookies = pickle.load(f)
+        except (OSError, pickle.UnpicklingError):
+            return None
+        if not cookies:
+            return None
+        for cookie in cookies:
+            if cookie.name == "m_session_id" and cookie.is_expired():
+                return None
+        return cookies
+
+    def save_user_info(self, username: str, email: str) -> None:
+        """Save ``username:email`` to ``~/.modelscope/credentials/user``."""
+        self.ensure_dirs()
+        path = self.credentials_dir / USER_INFO_FILE_NAME
+        path.write_text(f"{username}:{email}", encoding="utf-8")
+
+    def save_git_token(self, git_token: str) -> None:
+        """Save git token to ``~/.modelscope/credentials/git_token``."""
+        self.ensure_dirs()
+        path = self.credentials_dir / GIT_TOKEN_FILE_NAME
+        path.write_text(git_token, encoding="utf-8")
 
 
 # Singleton-style accessor — kept as a function so tests can monkeypatch it.

@@ -286,6 +286,10 @@ DEFAULT_IGNORE_PATTERNS: list[str] = [
 DEFAULT_CACHE_DIR_NAME: str = "modelscope"
 TOKEN_FILE_NAME: str = "token"
 CONFIG_DIR_NAME: str = ".modelscope"
+CREDENTIALS_DIR_NAME: str = "credentials"
+COOKIES_FILE_NAME: str = "cookies"
+GIT_TOKEN_FILE_NAME: str = "git_token"
+USER_INFO_FILE_NAME: str = "user"
 
 
 __all__ = [

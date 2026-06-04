@@ -320,32 +320,37 @@ class HubApi:
         *,
         cookies_required: bool = False,
     ) -> RequestsCookieJar | None:
-        """Build a cookie jar for legacy API authentication.
+        """Get cookies for authentication from token or local cache.
 
-        The legacy ``/api/v1/`` surface authenticates via a
-        ``m_session_id`` cookie whose value is the access token. This
-        method creates a :class:`~requests.cookies.RequestsCookieJar`
-        with that cookie, scoped to the current endpoint's domain.
+        Resolution order:
+        1. Explicit ``access_token`` argument
+        2. Token configured on this instance
+        3. ``MODELSCOPE_API_TOKEN`` environment variable
+        4. Saved cookies from ``~/.modelscope/credentials/cookies``
+
+        When a token is available (steps 1-3), a fresh
+        :class:`~requests.cookies.RequestsCookieJar` with ``m_session_id``
+        is built. Otherwise the locally cached cookies from a prior
+        ``login()`` call are loaded.
 
         Parameters
         ----------
         access_token : str, optional
-            Explicit token override. Falls back to the token configured
-            on this instance, then to ``MODELSCOPE_API_TOKEN`` env var.
+            Explicit token override.
         cookies_required : bool, optional
-            When ``True``, raise :class:`AuthenticationError` if no token is
-            available. Default is ``False`` (return ``None``).
+            When ``True``, raise :class:`AuthenticationError` if no
+            credentials are available. Default is ``False``.
 
         Returns
         -------
         RequestsCookieJar or None
-            Cookie jar with ``m_session_id`` set, or ``None`` when no
-            token is available and ``cookies_required`` is ``False``.
+            Cookie jar for authentication, or ``None`` when no
+            credentials are available and ``cookies_required`` is ``False``.
 
         Raises
         ------
         AuthenticationError
-            When ``cookies_required`` is ``True`` and no token is available.
+            When ``cookies_required`` is ``True`` and no credentials found.
 
         Examples
         --------
@@ -354,26 +359,33 @@ class HubApi:
         'ms-xxxxxxxx'
         """
         import os
+
         token = access_token or self._config.token or os.environ.get("MODELSCOPE_API_TOKEN")
-        if not token:
-            if cookies_required:
-                raise AuthenticationError(
-                    "No credentials found. "
-                    "Pass --token, call HubApi.login(), or set MODELSCOPE_API_TOKEN. "
-                    "Your token is available at https://modelscope.cn/my/myaccesstoken"
-                )
-            return None
-        domain = urlparse(self._config.endpoint).hostname or ""
-        jar = RequestsCookieJar()
-        jar.set("m_session_id", token, domain=domain, path="/")
-        return jar
+        if token:
+            domain = urlparse(self._config.endpoint).hostname or ""
+            jar = RequestsCookieJar()
+            jar.set("m_session_id", token, domain=domain, path="/")
+            return jar
+
+        cookies = self._config.load_cookies()
+        if cookies is not None:
+            return cookies
+
+        if cookies_required:
+            raise AuthenticationError(
+                "No credentials found. "
+                "Pass --token, call HubApi.login(), or set MODELSCOPE_API_TOKEN. "
+                "Your token is available at https://modelscope.cn/my/myaccesstoken"
+            )
+        return None
 
     def login(self, token: str) -> UserInfo:
-        """Persist ``token`` locally and return the authenticated user profile.
+        """Authenticate and persist credentials locally.
 
-        The token is saved to the local config file so subsequent sessions
-        pick it up automatically. ``GET /users/me`` is then called to verify
-        the credential.
+        Calls ``POST /api/v1/login`` to obtain server-issued session cookies
+        and a git access token, then saves them to
+        ``~/.modelscope/credentials/`` (compatible with the old modelscope SDK).
+        The API token is also saved to ``~/.modelscope/token``.
 
         Parameters
         ----------
@@ -404,19 +416,32 @@ class HubApi:
             raise InvalidParameter("token must be a non-empty string")
 
         token = token.strip()
-        self._config.save_token(token)
+        self._config.token = token
         self._openapi = None
         if self._legacy is not None:
             self._legacy.token = token
 
         try:
-            return self.whoami()
-        except AuthenticationError as exc:
+            data, cookies = self.legacy.login(token)
+        except (AuthenticationError, HubError) as exc:
             self._config.clear_token()
             raise AuthenticationError(
                 "Login failed: the provided token was rejected by the server.",
                 status_code=getattr(exc, "status_code", None),
             ) from exc
+
+        git_token = data.get("AccessToken", "")
+        username = data.get("Username", "")
+        email = data.get("Email", "")
+
+        self._config.save_token(token)
+        self._config.save_cookies(cookies)
+        if git_token:
+            self._config.save_git_token(git_token)
+        if username:
+            self._config.save_user_info(username, email or "")
+
+        return self.whoami()
 
     def logout(self) -> None:
         """Clear the locally persisted token.
