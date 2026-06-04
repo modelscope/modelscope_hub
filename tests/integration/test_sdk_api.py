@@ -43,6 +43,31 @@ class TestRepoManagement:
     def test_repo_exists_returns_false_for_nonexistent(self, api, test_owner):
         assert api.repo_exists(f"{test_owner}/nonexistent_repo_xyz_999", "model") is False
 
+    def test_create_get_delete_dataset(self, api, test_owner, unique_repo_name):
+        """Test dataset CRUD via SDK: create → get → exists → delete."""
+        repo_id = f"{test_owner}/{unique_repo_name}_ds"
+        try:
+            info = api.create_repo(
+                repo_id, "dataset",
+                visibility="private",
+                license="cc-by-4.0",
+            )
+            assert info is not None
+
+            # Verify exists
+            assert api.repo_exists(repo_id, "dataset") is True
+
+            # Get info
+            repo = api.get_repo(repo_id, "dataset")
+            assert repo.owner == test_owner
+        finally:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                try:
+                    api.delete_repo(repo_id, "dataset")
+                except Exception:
+                    pass
+
     def test_list_repos_returns_paged_result(self, api, test_owner):
         result = api.list_repos("model", owner=test_owner, page_size=3)
         assert hasattr(result, "items")

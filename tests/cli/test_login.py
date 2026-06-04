@@ -47,6 +47,7 @@ class TestWhoamiParser:
 # ===================================================================
 # Execution tests — mock HubApi
 # ===================================================================
+@pytest.mark.mock_only
 class TestLoginExecute:
     """LoginCommand.execute() logic."""
 
@@ -123,6 +124,7 @@ class TestLoginExecute:
         assert args.endpoint == "https://custom.cn"
 
 
+@pytest.mark.mock_only
 class TestWhoamiExecute:
     """WhoamiCommand.execute() logic."""
 

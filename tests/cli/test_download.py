@@ -171,6 +171,7 @@ class TestDownloadLegacyParser:
 # ===================================================================
 # Execution tests — mock HubApi
 # ===================================================================
+@pytest.mark.mock_only
 class TestDownloadExecute:
     """DownloadCommand.execute() logic with mocked API."""
 

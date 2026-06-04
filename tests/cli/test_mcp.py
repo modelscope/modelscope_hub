@@ -99,6 +99,7 @@ class TestMcpUndeployParser:
 # ===================================================================
 # Execution tests — mock HubApi
 # ===================================================================
+@pytest.mark.mock_only
 class TestMcpListExecute:
     def test_list_with_results(self, parser, mock_api, capsys):
         args = parser.parse_args(["mcp", "list"])
@@ -135,6 +136,7 @@ class TestMcpListExecute:
         assert kw["page_size"] == 5
 
 
+@pytest.mark.mock_only
 class TestMcpInfoExecute:
     def test_info_prints_json(self, parser, mock_api, capsys):
         args = parser.parse_args(["mcp", "info", "org/weather-mcp"])
@@ -145,6 +147,7 @@ class TestMcpInfoExecute:
         assert "weather" in out
 
 
+@pytest.mark.mock_only
 class TestMcpDeployExecute:
     def test_deploy(self, parser, mock_api, capsys):
         args = parser.parse_args(["mcp", "deploy", "org/weather-mcp"])
@@ -155,6 +158,7 @@ class TestMcpDeployExecute:
         assert "Deploy requested" in out
 
 
+@pytest.mark.mock_only
 class TestMcpUndeployExecute:
     def test_undeploy(self, parser, mock_api, capsys):
         args = parser.parse_args(["mcp", "undeploy", "org/weather-mcp"])

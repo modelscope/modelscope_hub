@@ -246,6 +246,7 @@ class TestDeleteParser:
 # ===================================================================
 # Execution tests — mock HubApi, verify command logic
 # ===================================================================
+@pytest.mark.mock_only
 class TestCreateExecute:
     """CreateCommand.execute() logic."""
 
@@ -327,7 +328,53 @@ class TestCreateExecute:
         assert call_kwargs.kwargs["base_image"] == "python:3.11"
         assert call_kwargs.kwargs["cover_image"] == "https://img.png"
 
+    def test_create_dataset(self, parser, mock_api, capsys):
+        """Create a dataset repo via CLI."""
+        args = parser.parse_args([
+            "create", "owner/my-dataset", "--repo-type", "dataset",
+            "--visibility", "private", "--license", "cc-by-4.0",
+            "--description", "Test dataset",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        mock_api.create_repo.assert_called_once_with(
+            "owner/my-dataset", "dataset",
+            visibility="private", license="cc-by-4.0",
+            chinese_name=None, description="Test dataset",
+        )
+        out = capsys.readouterr().out
+        assert "Created" in out
 
+    def test_create_dataset_public_with_license(self, parser, mock_api, capsys):
+        """Create a public dataset with specific license."""
+        args = parser.parse_args([
+            "create", "owner/public-ds", "--repo-type", "dataset",
+            "--visibility", "public", "--license", "mit",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        call_kwargs = mock_api.create_repo.call_args
+        assert call_kwargs[0][1] == "dataset"  # repo_type positional arg
+        assert call_kwargs.kwargs["visibility"] == "public"
+        assert call_kwargs.kwargs["license"] == "mit"
+
+    def test_create_dataset_with_chinese_name(self, parser, mock_api, capsys):
+        """Create a dataset with chinese name and description."""
+        args = parser.parse_args([
+            "create", "owner/cn-dataset", "--repo-type", "dataset",
+            "--chinese-name", "测试数据集",
+            "--description", "这是一个测试数据集",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        mock_api.create_repo.assert_called_once_with(
+            "owner/cn-dataset", "dataset",
+            visibility=None, license=None,
+            chinese_name="测试数据集", description="这是一个测试数据集",
+        )
+
+
+@pytest.mark.mock_only
 class TestInfoExecute:
     """InfoCommand.execute() logic."""
 
@@ -341,6 +388,7 @@ class TestInfoExecute:
         assert "license" in out
 
 
+@pytest.mark.mock_only
 class TestListExecute:
     """ListCommand.execute() logic."""
 
@@ -377,6 +425,7 @@ class TestListExecute:
         )
 
 
+@pytest.mark.mock_only
 class TestDeleteExecute:
     """DeleteCommand.execute() logic."""
 
@@ -439,7 +488,7 @@ class TestRepoCompat:
 
 
 # ===================================================================
-# Remote integration tests (existing — require API credentials)
+# Remote integration tests (require API credentials)
 # ===================================================================
 @pytest.mark.remote
 class TestRepoLifecycle:
@@ -504,5 +553,72 @@ class TestRepoLifecycle:
         print(f"\n** [repo delete] repo_id={self.repo_id}")
         print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         # delete_repo is deprecated; hub rejects token-based deletion for now
+        if exit_code != 0:
+            pytest.skip("delete_repo not yet supported via SDK token — clean up via web console")
+
+
+@pytest.mark.remote
+class TestDatasetRepoLifecycle:
+    """Test dataset repo CRUD via CLI with real API."""
+
+    @pytest.fixture(autouse=True, scope="class")
+    def setup_repo(self, api, test_owner, repo_name):
+        """Store dataset repo metadata for tests; cleanup at end."""
+        cls = type(self)
+        cls.repo_id = f"{test_owner}/{repo_name}_ds"
+        cls.api = api
+        cls.test_owner = test_owner
+        yield
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            try:
+                api.delete_repo(cls.repo_id, "dataset")
+            except Exception:
+                pass
+
+    def test_01_create_dataset(self, test_token, test_endpoint):
+        """Create a private dataset repo via CLI."""
+        exit_code, out, err = run_cli(
+            ["create", self.repo_id, "--repo-type", "dataset", "--visibility", "private"],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [dataset create] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
+        assert exit_code == 0
+        assert "Created" in out
+
+    def test_02_info_dataset(self, test_token, test_endpoint):
+        """Get dataset info."""
+        exit_code, out, err = run_cli(
+            ["info", self.repo_id, "--repo-type", "dataset"],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [dataset info] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
+        assert exit_code == 0
+        assert "repo_id" in out or self.repo_id in out
+
+    def test_03_list_datasets(self, test_token, test_endpoint):
+        """List datasets should include created one."""
+        exit_code, out, err = run_cli(
+            ["list", "--repo-type", "dataset", "--owner", self.test_owner],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [dataset list] owner={self.test_owner}")
+        print(f"** exit_code={exit_code}, out={out[:200]!r}, err={err!r}")
+        assert exit_code == 0
+
+    def test_04_delete_dataset(self, test_token, test_endpoint):
+        """Delete the dataset repo."""
+        exit_code, out, err = run_cli(
+            ["delete", self.repo_id, "--repo-type", "dataset", "--yes"],
+            token=test_token,
+            endpoint=test_endpoint,
+        )
+        print(f"\n** [dataset delete] repo_id={self.repo_id}")
+        print(f"** exit_code={exit_code}, out={out!r}, err={err!r}")
         if exit_code != 0:
             pytest.skip("delete_repo not yet supported via SDK token — clean up via web console")

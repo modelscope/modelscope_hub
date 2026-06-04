@@ -131,6 +131,7 @@ class TestUploadParser:
 # ===================================================================
 # Execution tests — mock HubApi
 # ===================================================================
+@pytest.mark.mock_only
 class TestUploadExecute:
     """UploadCommand.execute() logic with mocked API."""
 

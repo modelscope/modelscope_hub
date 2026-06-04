@@ -168,6 +168,7 @@ class TestSettingsParser:
 # ===================================================================
 # Execution tests — mock HubApi
 # ===================================================================
+@pytest.mark.mock_only
 class TestDeployExecute:
     """DeployCommand.execute() logic."""
 
@@ -186,6 +187,7 @@ class TestDeployExecute:
         mock_api.deploy_repo.assert_called_once_with("org/mcp-server", "mcp")
 
 
+@pytest.mark.mock_only
 class TestStopExecute:
     """StopCommand.execute() logic."""
 
@@ -204,6 +206,7 @@ class TestStopExecute:
         mock_api.stop_repo.assert_called_once_with("org/mcp-server", "mcp")
 
 
+@pytest.mark.mock_only
 class TestLogsExecute:
     """LogsCommand.execute() logic."""
 
@@ -246,6 +249,7 @@ class TestLogsExecute:
             LogsCommand(args).execute()
 
 
+@pytest.mark.mock_only
 class TestSettingsExecute:
     """SettingsCommand.execute() logic."""
 

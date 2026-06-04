@@ -99,6 +99,7 @@ class TestSecretDeleteParser:
 # ===================================================================
 # Execution tests — mock HubApi
 # ===================================================================
+@pytest.mark.mock_only
 class TestSecretAddExecute:
     def test_add_secret(self, parser, mock_api, capsys):
         args = parser.parse_args(["secret", "add", "org/demo", "API_KEY", "sk-xxx"])
@@ -110,6 +111,7 @@ class TestSecretAddExecute:
         assert "API_KEY" in out
 
 
+@pytest.mark.mock_only
 class TestSecretListExecute:
     def test_list_with_secrets(self, parser, mock_api, capsys):
         args = parser.parse_args(["secret", "list", "org/demo"])
@@ -128,6 +130,7 @@ class TestSecretListExecute:
         assert "no secrets" in out
 
 
+@pytest.mark.mock_only
 class TestSecretUpdateExecute:
     def test_update_secret(self, parser, mock_api, capsys):
         args = parser.parse_args(["secret", "update", "org/demo", "KEY", "new_val"])
@@ -138,6 +141,7 @@ class TestSecretUpdateExecute:
         assert "Updated" in out
 
 
+@pytest.mark.mock_only
 class TestSecretDeleteExecute:
     def test_delete_with_yes(self, parser, mock_api, capsys):
         args = parser.parse_args(["secret", "delete", "org/demo", "KEY", "--yes"])

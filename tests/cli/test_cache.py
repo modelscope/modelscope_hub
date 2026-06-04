@@ -123,6 +123,7 @@ class TestCacheLegacyAliases:
 # ===================================================================
 # Execution tests — mock HubApi
 # ===================================================================
+@pytest.mark.mock_only
 class TestCacheScanExecute:
     """_CacheScan.execute() logic."""
 
@@ -152,6 +153,7 @@ class TestCacheScanExecute:
         assert "0 repo(s)" in out
 
 
+@pytest.mark.mock_only
 class TestCacheClearExecute:
     """_CacheClear.execute() logic."""
 

@@ -81,6 +81,7 @@ class TestGlobalParameterParsing:
 # ---------------------------------------------------------------------------
 # Exception handling (unit tests with mocks — no API needed)
 # ---------------------------------------------------------------------------
+@pytest.mark.mock_only
 class TestExceptionHandlingUnit:
     """Verify run_cmd translates exceptions into correct exit codes."""
 
