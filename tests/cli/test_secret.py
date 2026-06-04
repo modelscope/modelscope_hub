@@ -52,6 +52,12 @@ class TestSecretAddParser:
         ])
         assert args.repo_type == "studio"
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "secret", "add", "o/r", "K", "V", "--token", "tk",
+        ])
+        assert args.subcmd_token == "tk"
+
 
 class TestSecretListParser:
     """``ms secret list`` argument parsing."""

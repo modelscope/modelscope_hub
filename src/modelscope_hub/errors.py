@@ -155,7 +155,10 @@ class NotExistError(APIError):
 
     error_code = "E3020"
     retryable = False
-    suggestion = "The requested resource does not exist or has been deleted."
+    suggestion = (
+        "The requested resource does not exist, or it is private and requires "
+        "authentication. Use `ms login` or pass --token to authenticate."
+    )
 
 
 class InvalidParameter(APIError, ValueError):

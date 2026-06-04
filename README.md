@@ -132,14 +132,17 @@ api.stop_repo("my-org/chat-demo", "studio")
 
 The CLI is available as both `ms` and `modelscope`.
 
-**Global options** (placed before the subcommand):
+**Global options** (placed before or after the subcommand):
 
 | Option | Description |
 |--------|-------------|
 | `--token TOKEN` | API token (overrides env and persisted token) |
 | `--endpoint URL` | API endpoint (default: `https://modelscope.cn`) |
-| `-v, --verbose` | Enable DEBUG logging |
-| `-V, --version` | Print version and exit |
+| `-v, --verbose` | Enable DEBUG logging (global only) |
+| `-V, --version` | Print version and exit (global only) |
+
+> `--token` and `--endpoint` can be placed either before or after the subcommand:
+> `ms --token xxx download ...` and `ms download ... --token xxx` are equivalent.
 
 ### `ms login`
 
@@ -160,6 +163,7 @@ Show the user associated with the current token.
 
 ```bash
 ms whoami
+ms whoami --token $MY_TOKEN   # check a specific token without logging in
 ```
 
 ### `ms download`
@@ -205,9 +209,6 @@ ms download Qwen/Qwen3-0.6B --cache-dir /data/hub-cache --max-workers 8
 
 # Force re-download even if already cached
 ms download Qwen/Qwen3-0.6B config.json --force
-
-# Download a Studio space
-ms download my-org/chat-demo --repo-type studio
 
 # Download all skills from a collection (legacy flag)
 ms download --collection my-org/skill-collection

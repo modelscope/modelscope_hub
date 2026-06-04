@@ -27,6 +27,13 @@ class TestMcpListParser:
         args = parser.parse_args(["mcp", "list"])
         assert hasattr(args, "_mcp_leaf")
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "mcp", "list", "--token", "tk", "--endpoint", "https://x.cn",
+        ])
+        assert args.subcmd_token == "tk"
+        assert args.subcmd_endpoint == "https://x.cn"
+
     def test_search(self, parser):
         args = parser.parse_args(["mcp", "list", "--search", "weather"])
         assert args.search == "weather"
@@ -71,6 +78,13 @@ class TestMcpInfoParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["mcp", "info"])
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "mcp", "info", "org/srv", "--token", "tk", "--endpoint", "https://x.cn",
+        ])
+        assert args.subcmd_token == "tk"
+        assert args.subcmd_endpoint == "https://x.cn"
+
 
 class TestMcpDeployParser:
     """``ms mcp deploy`` argument parsing."""
@@ -83,6 +97,12 @@ class TestMcpDeployParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["mcp", "deploy"])
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "mcp", "deploy", "org/srv", "--token", "tk", "--endpoint", "https://x.cn",
+        ])
+        assert args.subcmd_token == "tk"
+
 
 class TestMcpUndeployParser:
     """``ms mcp undeploy`` argument parsing."""
@@ -94,6 +114,12 @@ class TestMcpUndeployParser:
     def test_missing_server_id_exits(self, parser):
         with pytest.raises(SystemExit):
             parser.parse_args(["mcp", "undeploy"])
+
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "mcp", "undeploy", "org/srv", "--token", "tk", "--endpoint", "https://x.cn",
+        ])
+        assert args.subcmd_token == "tk"
 
 
 # ===================================================================

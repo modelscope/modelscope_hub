@@ -8,7 +8,7 @@ from pathlib import Path
 
 from ..constants import RepoType
 from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
-from .compat import PatternAction, add_subcmd_token_endpoint, _merge_subcmd_auth
+from .compat import PatternAction, add_subcmd_token_endpoint
 
 
 class UploadCommand(CLICommand):
@@ -98,7 +98,6 @@ class UploadCommand(CLICommand):
         p.set_defaults(_command=UploadCommand)
 
     def execute(self) -> None:
-        _merge_subcmd_auth(self.args)
         api = make_api(self.args)
 
         local_path, path_in_repo = self._resolve_paths()

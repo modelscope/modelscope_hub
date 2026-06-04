@@ -36,6 +36,13 @@ class TestDeployParser:
         args = parser.parse_args(["deploy", "o/r"])
         assert args.repo_type == "studio"
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "deploy", "o/r", "--token", "tk", "--endpoint", "https://x.cn",
+        ])
+        assert args.subcmd_token == "tk"
+        assert args.subcmd_endpoint == "https://x.cn"
+
     @pytest.mark.parametrize("repo_type", ["studio", "mcp"])
     def test_repo_type_choices(self, parser, repo_type):
         args = parser.parse_args(["deploy", "o/r", "--repo-type", repo_type])
@@ -56,6 +63,10 @@ class TestStopParser:
     def test_repo_type_default_studio(self, parser):
         args = parser.parse_args(["stop", "o/r"])
         assert args.repo_type == "studio"
+
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args(["stop", "o/r", "--token", "tk"])
+        assert args.subcmd_token == "tk"
 
     @pytest.mark.parametrize("repo_type", ["studio", "mcp"])
     def test_repo_type_choices(self, parser, repo_type):
@@ -134,6 +145,10 @@ class TestLogsParser:
         args = parser.parse_args(["logs", "o/r", "--page-num", "5"])
         assert args.page_num == 5
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args(["logs", "o/r", "--token", "tk"])
+        assert args.subcmd_token == "tk"
+
 
 class TestSettingsParser:
     """``ms settings`` argument parsing."""
@@ -163,6 +178,10 @@ class TestSettingsParser:
     def test_missing_settings_args_exits(self, parser):
         with pytest.raises(SystemExit):
             parser.parse_args(["settings", "o/r"])
+
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args(["settings", "o/r", "k=v", "--token", "tk"])
+        assert args.subcmd_token == "tk"
 
 
 # ===================================================================

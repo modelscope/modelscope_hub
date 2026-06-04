@@ -11,6 +11,7 @@ from argparse import Action
 from ..constants import RepoType
 from ..types import RepoInfo
 from .base import CLICommand, add_repo_type_arg, info, make_api, render_table, success
+from .compat import add_subcmd_token_endpoint
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ class CreateCommand(CLICommand):
         p.add_argument("--base-image", dest="base_image", default=None, help="Studio base image.")
         p.add_argument("--cover-image", dest="cover_image", default=None, help="Studio cover image URL.")
         p.add_argument("--hardware", dest="hardware", default=None, help="Studio hardware spec.")
+        add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
         api = make_api(self.args)
@@ -109,6 +111,7 @@ class InfoCommand(CLICommand):
     def _add_arguments(p) -> None:
         p.add_argument("repo_id")
         add_repo_type_arg(p)
+        add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
         api = make_api(self.args)
@@ -130,6 +133,7 @@ class DeleteCommand(CLICommand):
         p.add_argument("repo_id")
         add_repo_type_arg(p, choices=[RepoType.MODEL.value, RepoType.DATASET.value])
         p.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt.")
+        add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
         if not self.args.yes:
@@ -168,6 +172,7 @@ class ListCommand(CLICommand):
         p.add_argument("--search", default=None)
         p.add_argument("--page", dest="page_number", type=int, default=1)
         p.add_argument("--page-size", dest="page_size", type=int, default=10)
+        add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
         api = make_api(self.args)

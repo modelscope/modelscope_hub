@@ -154,6 +154,12 @@ class TestCreateParser:
         assert args.sdk_version == "4.0"
         assert args.hardware == "gpu.a10"
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "create", "o/r", "--repo-type", "model", "--token", "tk",
+        ])
+        assert args.subcmd_token == "tk"
+
 
 class TestInfoParser:
     """``ms info`` argument parsing."""
@@ -171,6 +177,13 @@ class TestInfoParser:
     def test_repo_type_required(self, parser):
         with pytest.raises(SystemExit):
             parser.parse_args(["info", "o/r"])
+
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "info", "o/r", "--repo-type", "model", "--token", "tk", "--endpoint", "https://x.cn",
+        ])
+        assert args.subcmd_token == "tk"
+        assert args.subcmd_endpoint == "https://x.cn"
 
 
 class TestListParser:
@@ -212,6 +225,12 @@ class TestListParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["list"])
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "list", "--repo-type", "model", "--token", "tk",
+        ])
+        assert args.subcmd_token == "tk"
+
 
 class TestDeleteParser:
     """``ms delete`` argument parsing."""
@@ -241,6 +260,12 @@ class TestDeleteParser:
     def test_yes_default_false(self, parser):
         args = parser.parse_args(["delete", "o/r", "--repo-type", "model"])
         assert args.yes is False
+
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "delete", "o/r", "--repo-type", "model", "--token", "tk",
+        ])
+        assert args.subcmd_token == "tk"
 
 
 # ===================================================================

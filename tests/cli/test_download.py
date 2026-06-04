@@ -38,14 +38,15 @@ class TestDownloadParser:
         args = parser.parse_args(["download", "owner/repo"])
         assert args.repo_type == "model"
 
-    @pytest.mark.parametrize("repo_type", ["model", "dataset", "studio"])
+    @pytest.mark.parametrize("repo_type", ["model", "dataset"])
     def test_repo_type_choices(self, parser, repo_type):
         args = parser.parse_args(["download", "o/r", "--repo-type", repo_type])
         assert args.repo_type == repo_type
 
-    def test_invalid_repo_type_rejected(self, parser):
+    @pytest.mark.parametrize("repo_type", ["studio", "skill"])
+    def test_invalid_repo_type_rejected(self, parser, repo_type):
         with pytest.raises(SystemExit):
-            parser.parse_args(["download", "o/r", "--repo-type", "skill"])
+            parser.parse_args(["download", "o/r", "--repo-type", repo_type])
 
     def test_revision_flag(self, parser):
         args = parser.parse_args(["download", "o/r", "--revision", "v2"])
@@ -272,12 +273,9 @@ class TestDownloadExecute:
             DownloadCommand(args).execute()
         assert mock_api.download_repo.call_args.kwargs["max_workers"] == 16
 
-    def test_studio_repo_type(self, parser, mock_api, capsys):
-        args = parser.parse_args(["download", "o/r", "--repo-type", "studio"])
-        p1, p2 = self._patch_download_api(mock_api)
-        with p1, p2:
-            DownloadCommand(args).execute()
-        assert mock_api.download_repo.call_args.args[1] == "studio"
+    def test_studio_repo_type_rejected(self, parser, mock_api, capsys):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["download", "o/r", "--repo-type", "studio"])
 
     def test_collection_download(self, parser, mock_api, capsys):
         args = parser.parse_args(["download", "--collection", "my-col"])

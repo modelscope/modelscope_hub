@@ -43,6 +43,13 @@ class TestWhoamiParser:
         args = parser.parse_args(["whoami"])
         assert hasattr(args, "_command")
 
+    def test_subcmd_token_endpoint(self, parser):
+        args = parser.parse_args([
+            "whoami", "--token", "my-tok", "--endpoint", "https://x.cn",
+        ])
+        assert args.subcmd_token == "my-tok"
+        assert args.subcmd_endpoint == "https://x.cn"
+
 
 # ===================================================================
 # Execution tests — mock HubApi
