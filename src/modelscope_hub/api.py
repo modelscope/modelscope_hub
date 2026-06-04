@@ -85,6 +85,11 @@ _LICENSE_DISPLAY_TO_SPDX: dict[str, str] = {
 }
 
 
+_STUDIO_FIELD_RENAMES: dict[str, str] = {
+    "cover_image": "coverImage",
+}
+
+
 class HubApi:
     """Unified client for ModelScope Hub operations.
 
@@ -558,6 +563,9 @@ class HubApi:
                 payload["license"] = license
             if description is not None:
                 payload["description"] = description
+            for old_key, new_key in _STUDIO_FIELD_RENAMES.items():
+                if old_key in extra:
+                    extra[new_key] = extra.pop(old_key)
             payload.update(extra)
             data = (
                 self.openapi.create_studio(payload)
@@ -1506,6 +1514,9 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
+        for old_key, new_key in _STUDIO_FIELD_RENAMES.items():
+            if old_key in settings:
+                settings[new_key] = settings.pop(old_key)
         if rt is RepoType.STUDIO:
             return self.openapi.update_studio_settings(owner, name, settings)
         if rt is RepoType.SKILL:
