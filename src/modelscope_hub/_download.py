@@ -24,7 +24,6 @@ import fnmatch
 import hashlib
 import io
 import os
-import platform
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -287,21 +286,12 @@ class DownloadManager:
     # User-agent & headers
     # ------------------------------------------------------------------
     def _build_user_agent(self, user_agent: dict | str | None = None) -> str:
-        from .version import __version__
+        from .utils import build_user_agent
 
-        env = os.environ.get("MODELSCOPE_CLOUD_ENVIRONMENT", "custom")
-        user_name = os.environ.get("MODELSCOPE_CLOUD_USERNAME", "unknown")
-
-        ua = (
-            f"modelscope_hub/{__version__}; python/{platform.python_version()}; "
-            f"session_id/{uuid.uuid4().hex}; platform/{platform.platform()}; "
-            f"processor/{platform.processor()}; env/{env}; user/{user_name}"
+        return build_user_agent(
+            session_id=self._config.get_session_id(),
+            extra=user_agent,
         )
-        if isinstance(user_agent, dict):
-            ua += "; " + "; ".join(f"{k}/{v}" for k, v in user_agent.items())
-        elif isinstance(user_agent, str):
-            ua += "; " + user_agent
-        return ua
 
     def _detect_region(self) -> str:
         """Detect Alibaba cloud region ID for intra-cloud acceleration."""

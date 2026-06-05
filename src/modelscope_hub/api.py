@@ -163,9 +163,12 @@ class HubApi:
     def legacy(self) -> LegacyClient:
         """Lazily-constructed legacy ``/api/v1`` client."""
         if self._legacy is None:
+            from .utils import build_user_agent
+
             self._legacy = LegacyClient(
                 token=self._config.token,
                 endpoint=self._config.endpoint,
+                user_agent=build_user_agent(self._config.get_session_id()),
             )
         elif self._legacy.token != self._config.token and self._config.token:
             self._legacy.token = self._config.token

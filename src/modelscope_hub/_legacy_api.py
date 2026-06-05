@@ -74,6 +74,7 @@ class LegacyClient:
         endpoint: str,
         timeout: int = API_TIMEOUT,
         max_retries: int = API_MAX_RETRIES,
+        user_agent: str | None = None,
     ) -> None:
         self._token = token
         self._endpoint = endpoint.rstrip("/")
@@ -81,6 +82,8 @@ class LegacyClient:
         self._session_authenticated = False
 
         self._session = requests.Session()
+        if user_agent:
+            self._session.headers["User-Agent"] = user_agent
         retry = Retry(
             total=max_retries,
             backoff_factor=0.5,
@@ -479,10 +482,16 @@ class LegacyClient:
         *,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
-    ) -> requests.Response:
+    ) -> dict:
         """Upload a blob to the presigned URL returned by :meth:`validate_blobs`.
 
         PUT {upload_url}
+
+        Sends both ``Authorization: Bearer`` and ``Cookie: m_session_id``
+        headers to authenticate against the LFS domain (which may differ
+        from the main API domain).
+
+        Returns the parsed JSON response body on success.
         """
         upload_headers: dict[str, str] = {
             "Content-Length": str(size),
@@ -490,6 +499,7 @@ class LegacyClient:
         }
         if self._token:
             upload_headers["Authorization"] = f"Bearer {self._token}"
+            upload_headers["Cookie"] = f"m_session_id={self._token}"
         if headers:
             upload_headers.update(headers)
 
@@ -506,7 +516,18 @@ class LegacyClient:
             raise RequestTimeoutError(f"Blob upload timed out: {exc}") from exc
 
         raise_for_status(resp)
-        return resp
+
+        body = resp.json()
+        if isinstance(body, dict) and body.get("Code") not in (200, "200", None):
+            from .errors import APIError
+            raise APIError(
+                body.get("Message") or body.get("message") or f"Blob upload failed (Code={body.get('Code')})",
+                status_code=resp.status_code,
+                response_body=body,
+                url=upload_url,
+                method="PUT",
+            )
+        return body
 
     # ------------------------------------------------------------------
     # Raw Download URL
