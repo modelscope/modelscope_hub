@@ -574,6 +574,32 @@ class LegacyClient:
         return self._json_data(resp)
 
     # ------------------------------------------------------------------
+    # Archive Download (skill repos)
+    # ------------------------------------------------------------------
+    def download_archive(
+        self,
+        repo_id: str,
+        repo_type: str,
+        revision: str = "master",
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        """Download the entire repo as a zip archive.
+
+        GET /api/v1/{type}s/{repo_id}/archive/zip/{revision}
+
+        Skills (and potentially other repo types) do not support per-file
+        download via ``/repo?FilePath=...``.  This method streams the
+        archive endpoint instead.
+        """
+        segment = _resolve_segment(repo_type)
+        return self._request(
+            "GET",
+            f"{segment}/{repo_id}/archive/zip/{revision}",
+            headers=headers,
+            stream=True,
+        )
+
+    # ------------------------------------------------------------------
     # Raw Download URL
     # ------------------------------------------------------------------
     def download_stream(

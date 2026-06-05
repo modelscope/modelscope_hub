@@ -526,6 +526,14 @@ class DownloadManager:
                 cache_dir=str(output_dir),
             )
 
+        if repo_type in ("skill", "skills"):
+            return self._download_archive(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                output_dir=output_dir,
+            )
+
         if repo_type in ("dataset", "datasets"):
             files = self._client.list_dataset_files_paginated(
                 repo_id=repo_id,
@@ -597,6 +605,54 @@ class DownloadManager:
             if errors:
                 logger.warning("%d file(s) failed to download", len(errors))
 
+        return output_dir
+
+    # ------------------------------------------------------------------
+    # Internal: archive-based download (skills)
+    # ------------------------------------------------------------------
+    def _download_archive(
+        self,
+        repo_id: str,
+        repo_type: str,
+        revision: str,
+        output_dir: Path,
+    ) -> Path:
+        """Download a repo via its zip archive endpoint and extract.
+
+        Skill repos do not support per-file ``/repo?FilePath=...`` download.
+        The old SDK uses ``/archive/zip/{revision}`` for these.
+        """
+        import shutil
+        import tempfile
+        import zipfile
+
+        resp = self._client.download_archive(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            revision=revision,
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+            tmp_path = Path(tmp.name)
+            for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                if chunk:
+                    tmp.write(chunk)
+
+        try:
+            with zipfile.ZipFile(tmp_path, "r") as zf:
+                zf.extractall(output_dir)
+
+            # Flatten if zip has a single top-level directory
+            entries = [e for e in output_dir.iterdir()]
+            if len(entries) == 1 and entries[0].is_dir():
+                nested = entries[0]
+                for item in nested.iterdir():
+                    shutil.move(str(item), str(output_dir / item.name))
+                nested.rmdir()
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+        logger.info("Extracted archive for %s to %s", repo_id, output_dir)
         return output_dir
 
     # ------------------------------------------------------------------

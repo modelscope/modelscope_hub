@@ -84,12 +84,25 @@ class _McpDeploy(CLICommand):
     def register(subparsers: Action) -> None:
         p = subparsers.add_parser("deploy", help="Deploy an MCP server.")
         p.add_argument("server_id")
+        p.add_argument(
+            "--transport-type", dest="transport_type", default=None,
+            help="Transport type (default: sse).",
+        )
+        p.add_argument(
+            "--expiration-minutes", dest="expiration_minutes", type=int, default=None,
+            help="Expiration time in minutes.",
+        )
         add_subcmd_token_endpoint(p)
         p.set_defaults(_command=McpCommand, _mcp_leaf=_McpDeploy)
 
     def execute(self) -> None:
         api = make_api(self.args)
-        api.deploy_mcp_server(self.args.server_id)
+        payload: dict = {}
+        if self.args.transport_type:
+            payload["transport_type"] = self.args.transport_type
+        if self.args.expiration_minutes is not None:
+            payload["expiration_minutes"] = self.args.expiration_minutes
+        api.deploy_mcp_server(self.args.server_id, payload=payload or None)
         success(f"Deploy requested for MCP server: {self.args.server_id}")
 
 
