@@ -31,6 +31,19 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ---
 
+## News
+
+**v0.0.5** (2026-06-05)
+- Fix `list_repos` pagination and dataset visibility issues
+- OpenAPI spec alignment: pagination limits, retry, auth, request body
+
+**v0.0.4** (2026-06-05)
+- Flatten CLI to top-level commands (`ms create/info/list/delete`)
+- Migrate credentials to `~/.modelscope/credentials/`
+- Fix dataset/skill download, blob upload auth, error code refactor
+
+---
+
 ## Installation
 
 ```bash
