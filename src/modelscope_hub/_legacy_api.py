@@ -395,6 +395,36 @@ class LegacyClient:
             return tags + branches
         return data if isinstance(data, list) else []
 
+    def list_revisions_detail(
+        self,
+        repo_id: str,
+        repo_type: str,
+        *,
+        end_time: int | None = None,
+    ) -> tuple[list[dict], list[dict]]:
+        """List branches and tags as separate lists.
+
+        GET /api/v1/{type}s/{repo_id}/revisions[?EndTime=...]
+
+        Returns ``(branches, tags)`` where each element is a list of dicts
+        with at least ``Revision`` and ``CreatedAt`` keys.
+        """
+        segment = _resolve_segment(repo_type)
+        params: dict[str, Any] = {}
+        if end_time is not None:
+            params["EndTime"] = end_time
+        resp = self._request(
+            "GET", f"{segment}/{repo_id}/revisions", params=params or None,
+        )
+        data = self._json_data(resp)
+        if isinstance(data, dict):
+            revision_map = data.get("RevisionMap", {})
+            return (
+                revision_map.get("Branches", []),
+                revision_map.get("Tags", []),
+            )
+        return [], []
+
     def create_tag(
         self,
         repo_id: str,

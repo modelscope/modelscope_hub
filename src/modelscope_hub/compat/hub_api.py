@@ -9,8 +9,11 @@ from __future__ import annotations
 import warnings
 from typing import Any
 
+import time
+
 from ..api import HubApi
 from ..constants import RepoType
+from ..errors import NotExistError
 
 _ALREADY_EXISTS_CODES = {10020101001, 10010101001}
 
@@ -205,6 +208,121 @@ class LegacyHubApi:
 
     def delete_studio_secret(self, studio_id: str, key: str, **kwargs: Any) -> None:
         self._api.delete_secret(studio_id, key, RepoType.STUDIO)
+
+    # ------------------------------------------------------------------
+    # Revision resolution
+    # ------------------------------------------------------------------
+    def get_model_branches_and_tags_details(
+        self, model_id: str, **kwargs: Any,
+    ) -> tuple[list[dict], list[dict]]:
+        """Get model branches and tags as two separate detail lists.
+
+        Returns ``(branches_detail, tags_detail)`` where each item is a dict
+        with at least ``Revision`` and ``CreatedAt`` keys.
+        """
+        return self._api.legacy.list_revisions_detail(model_id, "model")
+
+    def get_model_branches_and_tags(
+        self, model_id: str, **kwargs: Any,
+    ) -> tuple[list[str], list[str]]:
+        """Get model branch and tag names."""
+        branches_detail, tags_detail = self.get_model_branches_and_tags_details(model_id)
+        branches = [x["Revision"] for x in branches_detail] if branches_detail else []
+        tags = [x["Revision"] for x in tags_detail] if tags_detail else []
+        return branches, tags
+
+    def get_valid_revision_detail(
+        self,
+        model_id: str,
+        revision: str | None = None,
+        cookies: Any = None,
+        endpoint: str | None = None,
+        *,
+        release_timestamp: int | None = None,
+    ) -> dict:
+        """Resolve a model revision to a concrete branch/tag detail dict.
+
+        Replicates the old ``modelscope.hub.api.HubApi.get_valid_revision_detail``
+        behavior.  When *release_timestamp* is supplied (the old SDK passes
+        ``modelscope.version.__release_datetime__`` converted to epoch seconds),
+        the full version-selection logic is used:
+
+        * **Dev mode** (``release_timestamp > now + 1 year``): default to
+          ``master``, validate existence.
+        * **Release mode**: pick the newest tag whose ``CreatedAt <=
+          release_timestamp``, fall back to ``master`` if none match.
+
+        Without *release_timestamp* the simplified rule applies: explicit
+        *revision* is validated, ``None`` defaults to ``master``.
+        """
+        _ONE_YEAR = 365 * 24 * 60 * 60
+
+        branches_detail, tags_detail = self.get_model_branches_and_tags_details(model_id)
+        all_branches = [x["Revision"] for x in branches_detail] if branches_detail else []
+        all_tags = [x["Revision"] for x in tags_detail] if tags_detail else []
+
+        def _find(details: list[dict], name: str) -> dict | None:
+            for item in details:
+                if item.get("Revision") == name:
+                    return item
+            return None
+
+        # --- Dev mode or no release_timestamp ---------------------------------
+        if release_timestamp is None or release_timestamp > int(time.time()) + _ONE_YEAR:
+            if revision is None:
+                revision = "master"
+            if revision not in all_branches and revision not in all_tags:
+                raise NotExistError(
+                    f"The model: {model_id} has no revision: {revision}"
+                )
+            detail = _find(tags_detail, revision) or _find(branches_detail, revision)
+            return detail or {"Revision": revision}
+
+        # --- Release mode -----------------------------------------------------
+        # Explicit branch name → return immediately
+        if revision is not None and revision in all_branches:
+            return _find(branches_detail, revision) or {"Revision": revision}
+
+        # No tags at all → master (or validate explicit revision)
+        if not tags_detail:
+            if revision is None or revision == "master":
+                return _find(branches_detail, "master") or {"Revision": "master"}
+            raise NotExistError(
+                f"The model: {model_id} has no revision: {revision}"
+            )
+
+        # Has tags
+        if revision is None:
+            candidates = [
+                t for t in tags_detail
+                if (t.get("CreatedAt") or 0) <= release_timestamp
+            ]
+            if candidates:
+                return candidates[0]
+            return _find(branches_detail, "master") or {"Revision": "master"}
+
+        # Explicit revision
+        if revision in all_tags:
+            return _find(tags_detail, revision) or {"Revision": revision}
+        if revision == "master":
+            return _find(branches_detail, "master") or {"Revision": "master"}
+        valid = ", ".join(all_tags)
+        raise NotExistError(
+            f"The model: {model_id} has no revision: {revision} "
+            f"(valid tags: {valid})"
+        )
+
+    def get_valid_revision(
+        self,
+        model_id: str,
+        revision: str | None = None,
+        cookies: Any = None,
+        endpoint: str | None = None,
+    ) -> str:
+        """Resolve a model revision to a concrete revision string."""
+        return self.get_valid_revision_detail(
+            model_id, revision=revision, cookies=cookies, endpoint=endpoint,
+        )["Revision"]
 
     # ------------------------------------------------------------------
     # Collection / Skills

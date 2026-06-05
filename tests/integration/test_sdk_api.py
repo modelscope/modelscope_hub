@@ -353,6 +353,46 @@ class TestCompatSDK:
         paths = [f.get("Path") for f in files]
         assert "config.json" in paths
 
+    def test_get_valid_revision_public_model(self, test_token, test_endpoint):
+        from modelscope_hub.compat import LegacyHubApi
+
+        legacy = LegacyHubApi(token=test_token, endpoint=test_endpoint)
+        rev = legacy.get_valid_revision("Qwen/Qwen2.5-0.5B")
+        assert isinstance(rev, str)
+        assert len(rev) > 0
+
+    def test_get_valid_revision_explicit(self, test_token, test_endpoint):
+        from modelscope_hub.compat import LegacyHubApi
+
+        legacy = LegacyHubApi(token=test_token, endpoint=test_endpoint)
+        rev = legacy.get_valid_revision("Qwen/Qwen2.5-0.5B", revision="master")
+        assert rev == "master"
+
+    def test_get_valid_revision_detail(self, test_token, test_endpoint):
+        from modelscope_hub.compat import LegacyHubApi
+
+        legacy = LegacyHubApi(token=test_token, endpoint=test_endpoint)
+        detail = legacy.get_valid_revision_detail("Qwen/Qwen2.5-0.5B")
+        assert isinstance(detail, dict)
+        assert "Revision" in detail
+
+    def test_get_model_branches_and_tags(self, test_token, test_endpoint):
+        from modelscope_hub.compat import LegacyHubApi
+
+        legacy = LegacyHubApi(token=test_token, endpoint=test_endpoint)
+        branches, tags = legacy.get_model_branches_and_tags("Qwen/Qwen2.5-0.5B")
+        assert isinstance(branches, list)
+        assert isinstance(tags, list)
+        assert "master" in branches
+
+    def test_get_valid_revision_nonexistent_raises(self, test_token, test_endpoint):
+        from modelscope_hub.compat import LegacyHubApi
+        from modelscope_hub.errors import NotExistError
+
+        legacy = LegacyHubApi(token=test_token, endpoint=test_endpoint)
+        with pytest.raises(NotExistError):
+            legacy.get_valid_revision("Qwen/Qwen2.5-0.5B", revision="nonexistent_xyz_999")
+
 
 @pytest.mark.remote
 class TestListReposFacade:
