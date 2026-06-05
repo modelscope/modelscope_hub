@@ -16,6 +16,7 @@ from argparse import SUPPRESS
 from typing import Sequence
 
 from .. import __version__
+from ..constants import MODELSCOPE_ASCII
 from ..errors import HubError, InvalidParameter, NetworkError, NotSupportedError
 from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
 from .cache import CacheCommand, _CacheClear, _CacheScan
@@ -188,6 +189,7 @@ def _discover_plugins(subparsers) -> None:
 # ---------------------------------------------------------------------------
 def run_cmd(argv: Sequence[str] | None = None) -> int:
     """Console-script entry point referenced by ``[project.scripts]``."""
+    print(MODELSCOPE_ASCII, file=sys.stderr)
     parser = _build_parser()
     args = parser.parse_args(argv)
 

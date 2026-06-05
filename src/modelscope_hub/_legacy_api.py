@@ -74,6 +74,7 @@ class LegacyClient:
         endpoint: str,
         timeout: int = API_TIMEOUT,
         max_retries: int = API_MAX_RETRIES,
+        user_agent: str | None = None,
     ) -> None:
         self._token = token
         self._endpoint = endpoint.rstrip("/")
@@ -81,6 +82,8 @@ class LegacyClient:
         self._session_authenticated = False
 
         self._session = requests.Session()
+        if user_agent:
+            self._session.headers["User-Agent"] = user_agent
         retry = Retry(
             total=max_retries,
             backoff_factor=0.5,
@@ -202,8 +205,8 @@ class LegacyClient:
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
-    def login(self, access_token: str) -> dict:
-        """Authenticate via access token and return user info + git token.
+    def login(self, access_token: str) -> tuple[dict, "requests.cookies.RequestsCookieJar"]:
+        """Authenticate via access token and return (user_data, cookies).
 
         POST /api/v1/login
 
@@ -218,7 +221,7 @@ class LegacyClient:
         self._session.cookies.clear()
         self._ensure_session_auth()
         resp = self._request("POST", "login", json_body={"AccessToken": access_token})
-        return self._json_data(resp)
+        return self._json_data(resp), resp.cookies
 
     # ------------------------------------------------------------------
     # Repo CRUD (model / dataset)
@@ -365,8 +368,40 @@ class LegacyClient:
         POST /api/v1/{type}s/{repo_id}/repo/tag
         """
         segment = _resolve_segment(repo_type)
-        body = {"Tag": tag, "Revision": revision}
+        body = {"TagName": tag, "Ref": revision}
         resp = self._request("POST", f"{segment}/{repo_id}/repo/tag", json_body=body)
+        return self._json_data(resp)
+
+    # ------------------------------------------------------------------
+    # File deletion
+    # ------------------------------------------------------------------
+    def delete_file(
+        self,
+        repo_id: str,
+        repo_type: str,
+        file_path: str,
+        revision: str = "master",
+    ) -> dict:
+        """Delete a single file from the repository.
+
+        DELETE /api/v1/{type}s/{owner}/{name}/file?FilePath=...&Revision=...
+        (for models)
+        DELETE /api/v1/datasets/{owner}/{name}/repo?FilePath=...
+        (for datasets)
+        """
+        segment = _resolve_segment(repo_type)
+        if repo_type == RepoType.DATASET:
+            resp = self._request(
+                "DELETE",
+                f"{segment}/{repo_id}/repo",
+                params={"FilePath": file_path},
+            )
+        else:
+            resp = self._request(
+                "DELETE",
+                f"{segment}/{repo_id}/file",
+                params={"FilePath": file_path, "Revision": revision},
+            )
         return self._json_data(resp)
 
     # ------------------------------------------------------------------
@@ -447,10 +482,16 @@ class LegacyClient:
         *,
         headers: dict[str, str] | None = None,
         timeout: int | None = None,
-    ) -> requests.Response:
+    ) -> dict:
         """Upload a blob to the presigned URL returned by :meth:`validate_blobs`.
 
         PUT {upload_url}
+
+        Sends both ``Authorization: Bearer`` and ``Cookie: m_session_id``
+        headers to authenticate against the LFS domain (which may differ
+        from the main API domain).
+
+        Returns the parsed JSON response body on success.
         """
         upload_headers: dict[str, str] = {
             "Content-Length": str(size),
@@ -458,6 +499,7 @@ class LegacyClient:
         }
         if self._token:
             upload_headers["Authorization"] = f"Bearer {self._token}"
+            upload_headers["Cookie"] = f"m_session_id={self._token}"
         if headers:
             upload_headers.update(headers)
 
@@ -474,7 +516,22 @@ class LegacyClient:
             raise RequestTimeoutError(f"Blob upload timed out: {exc}") from exc
 
         raise_for_status(resp)
-        return resp
+
+        # Presigned URLs (cloud storage) may return empty bodies on success.
+        try:
+            body = resp.json()
+        except (ValueError, RuntimeError):
+            return {}
+        if isinstance(body, dict) and body.get("Code") not in (200, "200", None):
+            from .errors import APIError
+            raise APIError(
+                body.get("Message") or body.get("message") or f"Blob upload failed (Code={body.get('Code')})",
+                status_code=resp.status_code,
+                response_body=body,
+                url=upload_url,
+                method="PUT",
+            )
+        return body
 
     # ------------------------------------------------------------------
     # Raw Download URL
@@ -519,6 +576,32 @@ class LegacyClient:
         }
         resp = self._request("GET", "collections", params=params)
         return self._json_data(resp)
+
+    # ------------------------------------------------------------------
+    # Archive Download (skill repos)
+    # ------------------------------------------------------------------
+    def download_archive(
+        self,
+        repo_id: str,
+        repo_type: str,
+        revision: str = "master",
+        headers: dict[str, str] | None = None,
+    ) -> requests.Response:
+        """Download the entire repo as a zip archive.
+
+        GET /api/v1/{type}s/{repo_id}/archive/zip/{revision}
+
+        Skills (and potentially other repo types) do not support per-file
+        download via ``/repo?FilePath=...``.  This method streams the
+        archive endpoint instead.
+        """
+        segment = _resolve_segment(repo_type)
+        return self._request(
+            "GET",
+            f"{segment}/{repo_id}/archive/zip/{revision}",
+            headers=headers,
+            stream=True,
+        )
 
     # ------------------------------------------------------------------
     # Raw Download URL

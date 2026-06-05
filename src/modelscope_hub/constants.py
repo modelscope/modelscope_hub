@@ -281,11 +281,31 @@ DEFAULT_IGNORE_PATTERNS: list[str] = [
 
 
 # ---------------------------------------------------------------------------
+# Branding
+# ---------------------------------------------------------------------------
+MODELSCOPE_ASCII = r"""
+ _   .-')                _ .-') _     ('-.             .-')                              _ (`-.    ('-.
+( '.( OO )_             ( (  OO) )  _(  OO)           ( OO ).                           ( (OO  ) _(  OO)
+ ,--.   ,--.).-'),-----. \     .'_ (,------.,--.     (_)---\_)   .-----.  .-'),-----.  _.`     \(,------.
+ |   `.'   |( OO'  .-.  ',`'--..._) |  .---'|  |.-') /    _ |   '  .--./ ( OO'  .-.  '(__...--'' |  .---'
+ |         |/   |  | |  ||  |  \  ' |  |    |  | OO )\  :` `.   |  |('-. /   |  | |  | |  /  | | |  |
+ |  |'.'|  |\_) |  |\|  ||  |   ' |(|  '--. |  |`-' | '..`''.) /_) |OO  )\_) |  |\|  | |  |_.' |(|  '--.
+ |  |   |  |  \ |  | |  ||  |   / : |  .--'(|  '---.'.-._)   \ ||  |`-'|   \ |  | |  | |  .___.' |  .--'
+ |  |   |  |   `'  '-'  '|  '--'  / |  `---.|      | \       /(_'  '--'\    `'  '-'  ' |  |      |  `---.
+ `--'   `--'     `-----' `-------'  `------'`------'  `-----'    `-----'      `-----'  `--'      `------'
+"""  # noqa: E501
+
+
+# ---------------------------------------------------------------------------
 # Filesystem layout
 # ---------------------------------------------------------------------------
 DEFAULT_CACHE_DIR_NAME: str = "modelscope"
-TOKEN_FILE_NAME: str = "token"
+SESSION_FILE_NAME: str = "session"
 CONFIG_DIR_NAME: str = ".modelscope"
+CREDENTIALS_DIR_NAME: str = "credentials"
+COOKIES_FILE_NAME: str = "cookies"
+GIT_TOKEN_FILE_NAME: str = "git_token"
+USER_INFO_FILE_NAME: str = "user"
 
 
 __all__ = [
@@ -317,8 +337,8 @@ __all__ = [
     "OPENAPI_PREFIX",
     "RepoType",
     "StrEnum",
+    "SESSION_FILE_NAME",
     "TEMPORARY_FOLDER_NAME",
-    "TOKEN_FILE_NAME",
     "UPLOAD_ADAPTIVE_BATCH_SIZE",
     "UPLOAD_BLOB_CONNECT_TIMEOUT",
     "UPLOAD_BLOB_MAX_RETRIES",

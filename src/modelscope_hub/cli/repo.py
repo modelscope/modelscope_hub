@@ -17,6 +17,25 @@ from .compat import add_subcmd_token_endpoint
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+_ALREADY_EXISTS_CODES = {10020101001, 10010101001}
+
+
+def _is_already_exists(exc: BaseException) -> bool:
+    """Detect "repo already exists" regardless of locale."""
+    msg = str(exc).lower()
+    if "exist" in msg or "已被注册" in msg or "已存在" in msg:
+        return True
+    body = getattr(exc, "response_body", None)
+    if isinstance(body, dict):
+        code = body.get("Code")
+        try:
+            if int(code) in _ALREADY_EXISTS_CODES:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 def _format_visibility(value: object) -> str:
     if value is None:
         return "-"
@@ -71,12 +90,13 @@ class CreateCommand(CLICommand):
         p.add_argument("--base-image", dest="base_image", default=None, help="Studio base image.")
         p.add_argument("--cover-image", dest="cover_image", default=None, help="Studio cover image URL.")
         p.add_argument("--hardware", dest="hardware", default=None, help="Studio hardware spec.")
+        p.add_argument("--category", dest="category", default=None, help="Skill category (required for skill repos).")
         add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
         api = make_api(self.args)
         extra: dict[str, object] = {}
-        for key in ("sdk_type", "sdk_version", "base_image", "cover_image", "hardware"):
+        for key in ("sdk_type", "sdk_version", "base_image", "cover_image", "hardware", "category"):
             value = getattr(self.args, key, None)
             if value is not None:
                 extra[key] = value
@@ -92,7 +112,7 @@ class CreateCommand(CLICommand):
             )
             success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
         except Exception as exc:
-            if getattr(self.args, "exist_ok", False) and "exist" in str(exc).lower():
+            if getattr(self.args, "exist_ok", False) and _is_already_exists(exc):
                 info(f"Repository already exists: {self.args.repo_id}")
                 return
             raise

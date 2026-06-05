@@ -119,6 +119,10 @@ class OpenAPIClient:
     def _auth_headers(self, *, require_token: bool = False) -> dict[str, str]:
         token = self._config.token
         if not token:
+            token = self._config.load_token()
+            if token:
+                self._config.token = token
+        if not token:
             if require_token:
                 raise AuthenticationError(
                     "Missing API token. Call HubApi.login(...) or set MODELSCOPE_API_TOKEN."
@@ -555,10 +559,12 @@ class OpenAPIClient:
         payload: DeployMcpServerPayload | Mapping[str, Any] | None = None,
     ) -> JSON:
         """``POST /mcp/servers/{id}/deploy`` — deploy an MCP server for the caller."""
+        body = dict(payload or {})
+        body.setdefault("transport_type", "sse")
         return self._request(
             "POST",
             f"/mcp/servers/{server_id}/deploy",
-            json_body=dict(payload or {}),
+            json_body=body,
         )
 
     def undeploy_mcp_server(self, server_id: str | int) -> JSON:

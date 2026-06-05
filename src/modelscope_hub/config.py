@@ -14,15 +14,18 @@ This separation keeps the SDK trivially testable: tests can supply a
 from __future__ import annotations
 
 import os
-import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .constants import (
     CONFIG_DIR_NAME,
+    COOKIES_FILE_NAME,
+    CREDENTIALS_DIR_NAME,
     DEFAULT_CACHE_DIR_NAME,
     DEFAULT_ENDPOINT,
-    TOKEN_FILE_NAME,
+    GIT_TOKEN_FILE_NAME,
+    SESSION_FILE_NAME,
+    USER_INFO_FILE_NAME,
 )
 from .errors import CacheError, InvalidParameter
 
@@ -57,6 +60,7 @@ class HubConfig:
         )
     )
     token: str | None = None
+    _logged_out: bool = field(default=False, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -79,14 +83,15 @@ class HubConfig:
     # Path helpers
     # ------------------------------------------------------------------
     @property
-    def token_path(self) -> Path:
-        return self.config_dir / TOKEN_FILE_NAME
+    def credentials_dir(self) -> Path:
+        return self.config_dir / CREDENTIALS_DIR_NAME
 
     def ensure_dirs(self) -> None:
         """Create the config and cache directories if they do not exist."""
         try:
             self.config_dir.mkdir(parents=True, exist_ok=True)
             self.cache_dir.mkdir(parents=True, exist_ok=True)
+            self.credentials_dir.mkdir(parents=True, exist_ok=True)
         except OSError as exc:  # pragma: no cover - filesystem dependent
             raise CacheError(f"Failed to create SDK directories: {exc}") from exc
 
@@ -94,38 +99,144 @@ class HubConfig:
     # Token persistence
     # ------------------------------------------------------------------
     def save_token(self, token: str) -> None:
-        """Persist ``token`` to ``~/.modelscope/token`` with restrictive perms."""
+        """Persist token as ``m_session_id`` cookie in ``credentials/cookies``.
+
+        Creates a :class:`~requests.cookies.RequestsCookieJar` with a 30-day
+        expiry, matching the old SDK convention where the API token lives
+        exclusively inside the pickled cookie jar.
+        """
         if not token or not token.strip():
             raise InvalidParameter("token must be a non-empty string")
 
-        self.ensure_dirs()
-        path = self.token_path
-        path.write_text(token.strip(), encoding="utf-8")
-        try:
-            path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-        except OSError:  # pragma: no cover - best-effort on non-POSIX
-            pass
-        self.token = token.strip()
+        import time
+        from http.cookiejar import Cookie
+        from requests.cookies import RequestsCookieJar
+        from urllib.parse import urlparse
+
+        token = token.strip()
+        domain = urlparse(self.endpoint).hostname or "modelscope.cn"
+        expires = int(time.time()) + 30 * 24 * 3600  # 30 days
+
+        jar = RequestsCookieJar()
+        jar.set_cookie(Cookie(
+            version=0, name="m_session_id", value=token,
+            port=None, port_specified=False,
+            domain=domain, domain_specified=True, domain_initial_dot=False,
+            path="/", path_specified=True,
+            secure=False, expires=expires, discard=False,
+            comment=None, comment_url=None, rest={}, rfc2109=False,
+        ))
+        self.save_cookies(jar)
+        self.token = token
+        self._logged_out = False
 
     def load_token(self) -> str | None:
-        """Return the token persisted on disk, or ``None`` if absent."""
-        path = self.token_path
+        """Load the API token from ``~/.modelscope/credentials/cookies``.
+
+        Reads the pickled cookie jar and extracts the ``m_session_id`` value.
+        Returns ``None`` if:
+        - no cookies file exists
+        - the ``m_session_id`` cookie has expired
+        - :meth:`clear_token` was called (explicit logout)
+        """
+        if self._logged_out:
+            return None
+
+        cookies = self.load_cookies()
+        if cookies:
+            for cookie in cookies:
+                if cookie.name == "m_session_id":
+                    return cookie.value
+        return None
+
+    def clear_token(self) -> None:
+        """Remove persisted credentials (deletes ``credentials/cookies``)."""
+        self.token = None
+        self._logged_out = True
+        path = self.credentials_dir / COOKIES_FILE_NAME
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # ------------------------------------------------------------------
+    # Credentials persistence (compat with old modelscope SDK)
+    # ------------------------------------------------------------------
+    def save_cookies(self, cookies: object) -> None:
+        """Pickle cookies to ``~/.modelscope/credentials/cookies``."""
+        import pickle
+        import stat
+
+        self.ensure_dirs()
+        path = self.credentials_dir / COOKIES_FILE_NAME
+        with open(path, "wb") as f:
+            pickle.dump(cookies, f)
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    def load_cookies(self) -> object | None:
+        """Load saved cookies, returning None if absent or expired."""
+        import pickle
+
+        path = self.credentials_dir / COOKIES_FILE_NAME
         if not path.is_file():
             return None
         try:
-            value = path.read_text(encoding="utf-8").strip()
-        except OSError:
+            with open(path, "rb") as f:
+                cookies = pickle.load(f)
+        except (OSError, pickle.UnpicklingError):
             return None
-        return value or None
+        if not cookies:
+            return None
+        for cookie in cookies:
+            if cookie.name == "m_session_id" and cookie.is_expired():
+                return None
+        return cookies
 
-    def clear_token(self) -> None:
-        """Remove any persisted token from disk and from this config."""
-        self.token = None
-        path = self.token_path
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as exc:  # pragma: no cover - filesystem dependent
-            raise CacheError(f"Failed to remove token file {path}: {exc}") from exc
+    def save_user_info(self, username: str, email: str) -> None:
+        """Save ``username:email`` to ``~/.modelscope/credentials/user``."""
+        self.ensure_dirs()
+        path = self.credentials_dir / USER_INFO_FILE_NAME
+        path.write_text(f"{username}:{email}", encoding="utf-8")
+
+    def save_git_token(self, git_token: str) -> None:
+        """Save git token to ``~/.modelscope/credentials/git_token``."""
+        import stat
+
+        self.ensure_dirs()
+        path = self.credentials_dir / GIT_TOKEN_FILE_NAME
+        path.write_text(git_token, encoding="utf-8")
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    def load_git_token(self) -> str | None:
+        """Read git token from ``~/.modelscope/credentials/git_token``."""
+        path = self.credentials_dir / GIT_TOKEN_FILE_NAME
+        if path.is_file():
+            try:
+                return path.read_text(encoding="utf-8").strip() or None
+            except OSError:
+                return None
+        return None
+
+    def get_session_id(self) -> str:
+        """Return a stable SDK session UUID, auto-generating if absent.
+
+        The session ID is persisted to ``~/.modelscope/credentials/session``
+        and included in the User-Agent header for telemetry.
+        """
+        import uuid as _uuid
+
+        path = self.credentials_dir / SESSION_FILE_NAME
+        if path.is_file():
+            try:
+                sid = path.read_text(encoding="utf-8").strip()
+                if len(sid) == 32:
+                    return sid
+            except OSError:
+                pass
+        sid = _uuid.uuid4().hex
+        self.ensure_dirs()
+        path.write_text(sid, encoding="utf-8")
+        return sid
 
 
 # Singleton-style accessor — kept as a function so tests can monkeypatch it.
