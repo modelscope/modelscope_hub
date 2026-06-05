@@ -260,8 +260,8 @@ class TestOpenAPIQueries:
         assert hasattr(result, "items")
         assert len(result.items) <= 5
 
-    def test_list_datasets(self, api):
-        result = api.list_repos("dataset", page_size=3)
+    def test_list_datasets(self, api, test_owner):
+        result = api.list_repos("dataset", owner=test_owner, page_size=3)
         assert hasattr(result, "items")
         assert isinstance(result.items, list)
 
@@ -352,3 +352,101 @@ class TestCompatSDK:
         assert isinstance(files, list)
         paths = [f.get("Path") for f in files]
         assert "config.json" in paths
+
+
+@pytest.mark.remote
+class TestListReposFacade:
+    """Test list_repos for all supported repo types via HubApi facade."""
+
+    def test_list_models_with_search(self, api):
+        result = api.list_repos("model", search="bert", page_size=3)
+        assert result.total_count >= 0
+        assert len(result.items) <= 3
+
+    def test_list_models_with_owner(self, api, test_owner):
+        result = api.list_repos("model", owner=test_owner, page_size=5)
+        assert isinstance(result.items, list)
+        for item in result.items:
+            assert item.owner == test_owner
+
+    def test_list_datasets_legacy_path(self, api, test_owner):
+        """Datasets without search/sort/filters use legacy API."""
+        result = api.list_repos("dataset", owner=test_owner, page_size=5)
+        assert isinstance(result.items, list)
+        assert result.page_size == 5
+
+    def test_list_datasets_openapi_path(self, api):
+        """Datasets with search use OpenAPI path."""
+        result = api.list_repos("dataset", search="nlp", page_size=3)
+        assert isinstance(result.items, list)
+        assert result.total_count >= 0
+
+    def test_list_skills(self, api):
+        result = api.list_repos("skill", page_size=5)
+        assert isinstance(result.items, list)
+        assert result.total_count >= 0
+
+    def test_list_mcp_servers(self, api):
+        result = api.list_repos("mcp", page_size=5)
+        assert isinstance(result.items, list)
+        assert result.total_count >= 0
+        assert result.page_size == 5
+        assert result.page_number == 1
+
+    def test_list_mcp_servers_page_2(self, api):
+        result = api.list_repos("mcp", page_number=2, page_size=3)
+        assert result.page_number == 2
+        assert result.page_size == 3
+
+    def test_list_studio_raises(self, api):
+        with pytest.raises(Exception, match="not supported"):
+            api.list_repos("studio")
+
+
+@pytest.mark.remote
+class TestMCPServerFacade:
+    """Test MCP server read operations via HubApi facade."""
+
+    def test_list_mcp_servers_method(self, api):
+        result = api.list_mcp_servers(page_size=3)
+        assert hasattr(result, "items")
+        assert hasattr(result, "total_count")
+        assert result.total_count >= 0
+
+    def test_list_mcp_servers_search(self, api):
+        result = api.list_mcp_servers(search="weather", page_size=5)
+        assert isinstance(result.items, list)
+
+    def test_get_mcp_server(self, api):
+        listing = api.list_mcp_servers(page_size=1)
+        if not listing.items:
+            pytest.skip("No MCP servers available")
+        server = listing.items[0]
+        server_id = server.get("id") or server.get("Id")
+        if not server_id:
+            pytest.skip("Server has no id field")
+        result = api.get_mcp_server(str(server_id))
+        assert isinstance(result, dict)
+
+
+@pytest.mark.remote
+class TestPaginationEdgeCases:
+    """Test pagination boundary behavior."""
+
+    def test_page_size_1_returns_single_item(self, api):
+        result = api.list_repos("model", page_size=1)
+        assert len(result.items) <= 1
+        assert result.total_count >= 1
+
+    def test_large_page_number_returns_empty(self, api, test_owner):
+        result = api.list_repos("model", owner=test_owner, page_number=200, page_size=10)
+        assert result.items == []
+
+    def test_pagination_consistency(self, api, test_owner):
+        """page_size * page_number navigates correctly."""
+        page1 = api.list_repos("model", owner=test_owner, page_number=1, page_size=2)
+        page2 = api.list_repos("model", owner=test_owner, page_number=2, page_size=2)
+        if page1.items and page2.items:
+            ids1 = {i.repo_id for i in page1.items}
+            ids2 = {i.repo_id for i in page2.items}
+            assert ids1.isdisjoint(ids2)
