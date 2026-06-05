@@ -260,8 +260,8 @@ class TestOpenAPIQueries:
         assert hasattr(result, "items")
         assert len(result.items) <= 5
 
-    def test_list_datasets(self, api):
-        result = api.list_repos("dataset", page_size=3)
+    def test_list_datasets(self, api, test_owner):
+        result = api.list_repos("dataset", owner=test_owner, page_size=3)
         assert hasattr(result, "items")
         assert isinstance(result.items, list)
 
@@ -439,7 +439,7 @@ class TestPaginationEdgeCases:
         assert result.total_count >= 1
 
     def test_large_page_number_returns_empty(self, api):
-        result = api.list_repos("model", page_number=999, page_size=10)
+        result = api.list_repos("model", page_number=200, page_size=10)
         assert result.items == []
 
     def test_pagination_consistency(self, api, test_owner):

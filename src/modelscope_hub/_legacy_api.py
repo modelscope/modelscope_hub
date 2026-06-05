@@ -30,7 +30,7 @@ from .constants import (
     UPLOAD_BLOB_READ_TIMEOUT,
     UPLOAD_RETRY_ALLOWED_METHODS,
 )
-from .errors import InvalidParameter, NetworkError, RequestTimeoutError, raise_for_status
+from .errors import InvalidParameter, NetworkError, RequestTimeoutError, ServerError, raise_for_status
 from .utils.logger import get_logger
 
 logger = get_logger("legacy_api")
@@ -179,6 +179,8 @@ class LegacyClient:
                 timeout=timeout or self._timeout,
                 stream=stream,
             )
+        except requests.exceptions.RetryError as exc:
+            raise ServerError(f"Max retries exceeded: {exc}") from exc
         except requests.ConnectionError as exc:
             raise NetworkError(f"Connection failed: {exc}") from exc
         except requests.Timeout as exc:
