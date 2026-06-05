@@ -248,7 +248,7 @@ class HubApi:
 
     _PAGED_ITEM_KEYS = (
         "items", "list", "data", "results",
-        "models", "datasets", "skills", "servers",
+        "models", "datasets", "skills", "servers", "mcp_server_list",
         "Models", "Datasets", "Skills", "Servers",
     )
     _PAGED_META_KEYS = frozenset({
@@ -824,7 +824,7 @@ class HubApi:
             payload = self.openapi.list_mcp_servers(
                 search=search,
                 page_number=page_number, page_size=page_size,
-                extra=clean_filters or None,
+                filter=clean_filters or None,
             )
         elif rt is RepoType.STUDIO:
             raise NotSupportedError(
@@ -834,6 +834,10 @@ class HubApi:
             raise NotSupportedError(f"list_repos not supported for {rt}")
 
         items, total, page, size = self._extract_paged(payload)
+        # MCP response omits page_number/page_size — use requested values.
+        if rt is RepoType.MCP:
+            page = page_number
+            size = page_size
         infos = [self._repo_info_from_payload(item, rt) for item in items]
         return PagedResult(items=infos, total_count=total, page_number=page, page_size=size)
 

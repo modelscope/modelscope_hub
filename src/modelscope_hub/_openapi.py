@@ -28,6 +28,7 @@ from .config import HubConfig, get_default_config
 from .constants import API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX
 from .errors import (
     AuthenticationError,
+    InvalidParameter,
     NetworkError,
     RateLimitError,
     RequestTimeoutError,
@@ -49,6 +50,9 @@ _logger = get_logger("openapi")
 
 # HTTP methods that are safe to retry without risking duplicate side-effects.
 _IDEMPOTENT_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
+
+# POST endpoints that are semantically idempotent (deploy/stop are state transitions).
+_RETRYABLE_POST_PATHS: frozenset[str] = frozenset({"/deploy", "/stop", "/undeploy"})
 
 # Errors that warrant a transparent retry.
 _RETRYABLE_EXC: tuple[type[BaseException], ...] = (
@@ -225,8 +229,12 @@ class OpenAPIClient:
                 else:
                     return self._decode(response, unwrap=unwrap)
 
-            # Retry policy: only for idempotent methods on transient errors.
-            if attempt >= attempts or method_upper not in _IDEMPOTENT_METHODS:
+            # Retry policy: idempotent methods + known-idempotent POST paths.
+            is_retryable = (
+                method_upper in _IDEMPOTENT_METHODS
+                or (method_upper == "POST" and any(path.endswith(p) for p in _RETRYABLE_POST_PATHS))
+            )
+            if attempt >= attempts or not is_retryable:
                 break
             backoff = min(2 ** (attempt - 1), 16)
             _logger.debug(
@@ -271,7 +279,7 @@ class OpenAPIClient:
         owner: str | None = None,
         sort: str | None = None,
         page_number: int = 1,
-        page_size: int = 20,
+        page_size: int = 10,
         filters: Filters = None,
     ) -> JSON:
         """``GET /models`` — list models with pagination and filters.
@@ -279,6 +287,10 @@ class OpenAPIClient:
         Supported filter keys: ``task``, ``library``, ``model_type``,
         ``custom_tag``, ``license``, ``deploy``.
         """
+        if page_number * page_size > 3000:
+            raise InvalidParameter(
+                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
+            )
         params = self._merge_params(
             {
                 "search": search,
@@ -305,10 +317,14 @@ class OpenAPIClient:
         owner: str | None = None,
         sort: str | None = None,
         page_number: int = 1,
-        page_size: int = 20,
+        page_size: int = 10,
         filters: Filters = None,
     ) -> JSON:
         """``GET /datasets`` — list datasets. Filter keys: ``task``, ``license``."""
+        if page_number * page_size > 3000:
+            raise InvalidParameter(
+                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
+            )
         params = self._merge_params(
             {
                 "search": search,
@@ -379,7 +395,7 @@ class OpenAPIClient:
         *,
         search: str | None = None,
         page_number: int = 1,
-        page_size: int = 20,
+        page_size: int = 10,
         filters: Filters = None,
     ) -> JSON:
         """``GET /skills`` — list skills.
@@ -387,6 +403,10 @@ class OpenAPIClient:
         Filter keys: ``developer``, ``category``, ``license``, ``custom_tag``,
         ``owner``.
         """
+        if page_number * page_size > 3000:
+            raise InvalidParameter(
+                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
+            )
         params = self._merge_params(
             {
                 "search": search,
@@ -427,7 +447,7 @@ class OpenAPIClient:
 
     def get_studio(self, owner: str, repo_name: str) -> JSON:
         """``GET /studios/{owner}/{repo_name}`` — fetch Studio metadata."""
-        return self._request("GET", f"/studios/{owner}/{repo_name}", require_token=False)
+        return self._request("GET", f"/studios/{owner}/{repo_name}")
 
     def deploy_studio(
         self,
@@ -439,12 +459,12 @@ class OpenAPIClient:
         return self._request(
             "POST",
             f"/studios/{owner}/{repo_name}/deploy",
-            json_body=dict(payload or {}),
+            json_body=dict(payload) if payload else None,
         )
 
     def stop_studio(self, owner: str, repo_name: str) -> JSON:
         """``POST /studios/{owner}/{repo_name}/stop`` — stop a running Studio."""
-        return self._request("POST", f"/studios/{owner}/{repo_name}/stop")
+        return self._request("POST", f"/studios/{owner}/{repo_name}/stop", json_body=None)
 
     def get_studio_logs(
         self,
@@ -523,15 +543,28 @@ class OpenAPIClient:
         *,
         search: str | None = None,
         page_number: int = 1,
-        page_size: int = 20,
+        page_size: int = 10,
+        filter: Mapping[str, Any] | None = None,
         extra: Mapping[str, Any] | None = None,
     ) -> JSON:
-        """``PUT /mcp/servers`` — discover MCP servers (JSON body, not query)."""
+        """``PUT /mcp/servers`` — discover MCP servers (JSON body, not query).
+
+        Parameters
+        ----------
+        filter : dict, optional
+            Nested filter object. Supported keys: ``category``, ``is_hosted``.
+        """
+        if page_number * page_size > 100:
+            raise InvalidParameter(
+                f"page_number * page_size must be <= 100 for MCP servers (got {page_number * page_size})."
+            )
         body: dict[str, Any] = {
             "search": search,
             "page_number": page_number,
             "page_size": page_size,
         }
+        if filter:
+            body["filter"] = dict(filter)
         if extra:
             body.update(extra)
         body = {k: v for k, v in body.items() if v is not None}
