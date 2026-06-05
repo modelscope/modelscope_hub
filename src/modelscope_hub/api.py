@@ -797,10 +797,9 @@ class HubApi:
                 filters=clean_filters or None,
             )
         elif rt is RepoType.DATASET:
-            payload = self.openapi.list_datasets(
-                search=search, owner=owner, sort=sort,
+            payload = self.legacy.list_datasets(
+                owner=owner,
                 page_number=page_number, page_size=page_size,
-                filters=clean_filters or None,
             )
         elif rt is RepoType.SKILL:
             if owner:

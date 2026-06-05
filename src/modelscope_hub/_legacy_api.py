@@ -30,7 +30,7 @@ from .constants import (
     UPLOAD_BLOB_READ_TIMEOUT,
     UPLOAD_RETRY_ALLOWED_METHODS,
 )
-from .errors import NetworkError, RequestTimeoutError, raise_for_status
+from .errors import InvalidParameter, NetworkError, RequestTimeoutError, raise_for_status
 from .utils.logger import get_logger
 
 logger = get_logger("legacy_api")
@@ -251,6 +251,43 @@ class LegacyClient:
         segment = _resolve_segment(repo_type)
         resp = self._request("GET", f"{segment}/{repo_id}")
         return self._json_data(resp)
+
+    def list_datasets(
+        self,
+        *,
+        owner: str | None = None,
+        page_number: int = 1,
+        page_size: int = 50,
+    ) -> dict:
+        """GET /api/v1/datasets — list datasets with full private visibility.
+
+        The legacy endpoint returns ALL datasets for the authenticated user
+        (including private ones that the OpenAPI search index may miss).
+        """
+        params: dict[str, Any] = {
+            "PageNumber": page_number,
+            "PageSize": page_size,
+        }
+        if owner:
+            params["owner"] = owner
+        try:
+            resp = self._request("GET", "datasets", params=params)
+        except InvalidParameter as exc:
+            if "fromIndex" in str(exc) and "toIndex" in str(exc):
+                return {
+                    "items": [],
+                    "total_count": 0,
+                    "page_number": page_number,
+                    "page_size": page_size,
+                }
+            raise
+        body = resp.json()
+        return {
+            "items": body.get("Data") or [],
+            "total_count": body.get("TotalCount") or 0,
+            "page_number": body.get("PageNumber") or page_number,
+            "page_size": body.get("PageSize") or page_size,
+        }
 
     def delete_repo(self, repo_id: str, repo_type: str) -> None:
         """Delete a repository.
