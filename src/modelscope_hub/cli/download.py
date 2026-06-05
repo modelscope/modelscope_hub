@@ -179,11 +179,13 @@ class DownloadCommand(CLICommand):
 
         def _download_one(elem: dict) -> tuple[str, str | None, str | None]:
             skill_id = f"{elem['ElementPath']}/{elem['ElementName']}"
+            skill_name = elem["ElementName"]
+            skill_dir = str(Path(local_dir) / skill_name) if local_dir else None
             try:
                 result = api.download_repo(
                     skill_id,
                     repo_type=RepoType.SKILL,
-                    local_dir=local_dir,
+                    local_dir=skill_dir,
                 )
                 return skill_id, str(result), None
             except Exception as exc:

@@ -41,6 +41,7 @@ from .errors import (
     AuthenticationError,
     HubError,
     InvalidParameter,
+    NetworkError,
     NotExistError,
     NotSupportedError,
 )
@@ -163,10 +164,15 @@ class HubApi:
     def legacy(self) -> LegacyClient:
         """Lazily-constructed legacy ``/api/v1`` client."""
         if self._legacy is None:
+            from .utils import build_user_agent
+
             self._legacy = LegacyClient(
                 token=self._config.token,
                 endpoint=self._config.endpoint,
+                user_agent=build_user_agent(self._config.get_session_id()),
             )
+        elif self._legacy.token != self._config.token and self._config.token:
+            self._legacy.token = self._config.token
         return self._legacy
 
     @property
@@ -320,32 +326,37 @@ class HubApi:
         *,
         cookies_required: bool = False,
     ) -> RequestsCookieJar | None:
-        """Build a cookie jar for legacy API authentication.
+        """Get cookies for authentication from token or local cache.
 
-        The legacy ``/api/v1/`` surface authenticates via a
-        ``m_session_id`` cookie whose value is the access token. This
-        method creates a :class:`~requests.cookies.RequestsCookieJar`
-        with that cookie, scoped to the current endpoint's domain.
+        Resolution order:
+        1. Explicit ``access_token`` argument
+        2. Token configured on this instance
+        3. ``MODELSCOPE_API_TOKEN`` environment variable
+        4. Saved cookies from ``~/.modelscope/credentials/cookies``
+
+        When a token is available (steps 1-3), a fresh
+        :class:`~requests.cookies.RequestsCookieJar` with ``m_session_id``
+        is built. Otherwise the locally cached cookies from a prior
+        ``login()`` call are loaded.
 
         Parameters
         ----------
         access_token : str, optional
-            Explicit token override. Falls back to the token configured
-            on this instance, then to ``MODELSCOPE_API_TOKEN`` env var.
+            Explicit token override.
         cookies_required : bool, optional
-            When ``True``, raise :class:`AuthenticationError` if no token is
-            available. Default is ``False`` (return ``None``).
+            When ``True``, raise :class:`AuthenticationError` if no
+            credentials are available. Default is ``False``.
 
         Returns
         -------
         RequestsCookieJar or None
-            Cookie jar with ``m_session_id`` set, or ``None`` when no
-            token is available and ``cookies_required`` is ``False``.
+            Cookie jar for authentication, or ``None`` when no
+            credentials are available and ``cookies_required`` is ``False``.
 
         Raises
         ------
         AuthenticationError
-            When ``cookies_required`` is ``True`` and no token is available.
+            When ``cookies_required`` is ``True`` and no credentials found.
 
         Examples
         --------
@@ -354,26 +365,32 @@ class HubApi:
         'ms-xxxxxxxx'
         """
         import os
+
         token = access_token or self._config.token or os.environ.get("MODELSCOPE_API_TOKEN")
-        if not token:
-            if cookies_required:
-                raise AuthenticationError(
-                    "No credentials found. "
-                    "Pass --token, call HubApi.login(), or set MODELSCOPE_API_TOKEN. "
-                    "Your token is available at https://modelscope.cn/my/myaccesstoken"
-                )
-            return None
-        domain = urlparse(self._config.endpoint).hostname or ""
-        jar = RequestsCookieJar()
-        jar.set("m_session_id", token, domain=domain, path="/")
-        return jar
+        if token:
+            domain = urlparse(self._config.endpoint).hostname or ""
+            jar = RequestsCookieJar()
+            jar.set("m_session_id", token, domain=domain, path="/")
+            return jar
+
+        cookies = self._config.load_cookies()
+        if cookies is not None:
+            return cookies
+
+        if cookies_required:
+            raise AuthenticationError(
+                "No credentials found. "
+                "Pass --token, call HubApi.login(), or set MODELSCOPE_API_TOKEN. "
+                "Your token is available at https://modelscope.cn/my/myaccesstoken"
+            )
+        return None
 
     def login(self, token: str) -> UserInfo:
-        """Persist ``token`` locally and return the authenticated user profile.
+        """Authenticate and persist credentials locally.
 
-        The token is saved to the local config file so subsequent sessions
-        pick it up automatically. ``GET /users/me`` is then called to verify
-        the credential.
+        Calls ``POST /api/v1/login`` to obtain server-issued session cookies
+        and a git access token, then saves them to
+        ``~/.modelscope/credentials/`` (compatible with the old modelscope SDK).
 
         Parameters
         ----------
@@ -404,19 +421,32 @@ class HubApi:
             raise InvalidParameter("token must be a non-empty string")
 
         token = token.strip()
-        self._config.save_token(token)
+        self._config.token = token
+        self._config._logged_out = False
         self._openapi = None
         if self._legacy is not None:
             self._legacy.token = token
 
         try:
-            return self.whoami()
-        except AuthenticationError as exc:
+            data, cookies = self.legacy.login(token)
+        except (AuthenticationError, HubError) as exc:
             self._config.clear_token()
             raise AuthenticationError(
                 "Login failed: the provided token was rejected by the server.",
                 status_code=getattr(exc, "status_code", None),
             ) from exc
+
+        git_token = data.get("AccessToken", "")
+        username = data.get("Username", "")
+        email = data.get("Email", "")
+
+        self._config.save_cookies(cookies)
+        if git_token:
+            self._config.save_git_token(git_token)
+        if username:
+            self._config.save_user_info(username, email or "")
+
+        return self.whoami()
 
     def logout(self) -> None:
         """Clear the locally persisted token.
@@ -1259,7 +1289,12 @@ class HubApi:
         commit_message: str | None = None,
         revision: str | None = None,
     ) -> dict:
-        """Delete one or more files via a legacy commit operation.
+        """Delete one or more files from a repository.
+
+        .. note::
+           File deletion is restricted by the server to cookie-based session
+           auth (interactive login). API tokens (``ms-...``) may receive a 401
+           "token no longer supports deletion operations" error.
 
         Parameters
         ----------
@@ -1270,19 +1305,19 @@ class HubApi:
         file_paths : iterable of str
             Paths of files to remove. Empty entries are ignored.
         commit_message : str, optional
-            Commit message. Defaults to ``"Delete N file(s)"``.
+            Unused (kept for API compatibility).
         revision : str, optional
-            Branch to commit on. Defaults to ``"master"``.
+            Branch to delete from. Defaults to ``"master"``.
 
         Returns
         -------
         dict
-            Commit response payload.
+            Summary with ``deleted_files`` and ``failed_files`` lists.
 
         Raises
         ------
         InvalidParameter
-            When ``file_paths`` resolves to an empty operation list.
+            When ``file_paths`` resolves to an empty list.
 
         Examples
         --------
@@ -1290,22 +1325,30 @@ class HubApi:
         ...     "alice/llama-7b",
         ...     "model",
         ...     ["old_weights.bin", "deprecated/config.json"],
-        ...     commit_message="Remove deprecated artifacts",
         ... )
         """
         rt = self._normalize_repo_type(repo_type)
-        operations = [
-            {"action": "delete", "file_path": p} for p in file_paths if p
-        ]
-        if not operations:
+        paths = [p for p in file_paths if p]
+        if not paths:
             raise InvalidParameter("file_paths must contain at least one non-empty path.")
-        return self.legacy.create_commit(
-            repo_id=repo_id,
-            repo_type=str(rt),
-            operations=operations,
-            commit_message=commit_message or f"Delete {len(operations)} file(s)",
-            revision=revision or "master",
-        )
+
+        deleted, failed = [], []
+        for p in paths:
+            try:
+                self.legacy.delete_file(
+                    repo_id=repo_id,
+                    repo_type=str(rt),
+                    file_path=p,
+                    revision=revision or "master",
+                )
+                deleted.append(p)
+            except (AuthenticationError, NetworkError) as exc:
+                failed.append(p)
+                raise
+            except Exception:
+                failed.append(p)
+
+        return {"deleted_files": deleted, "failed_files": failed, "total_files": len(paths)}
 
     # ==================================================================
     # Versioning

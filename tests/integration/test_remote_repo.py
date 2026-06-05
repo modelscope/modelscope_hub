@@ -9,6 +9,10 @@ import pytest
 
 
 @pytest.mark.remote
+@pytest.mark.xfail(
+    reason="Server restricts repo deletion to cookie-based session auth; "
+    "API tokens get 401 'token no longer supports deletion operations'"
+)
 class TestRemoteRepoLifecycle:
     """Test full repo lifecycle: create → info → exists → delete."""
 
