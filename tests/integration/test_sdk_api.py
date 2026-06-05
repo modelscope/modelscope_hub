@@ -438,8 +438,8 @@ class TestPaginationEdgeCases:
         assert len(result.items) <= 1
         assert result.total_count >= 1
 
-    def test_large_page_number_returns_empty(self, api):
-        result = api.list_repos("model", page_number=200, page_size=10)
+    def test_large_page_number_returns_empty(self, api, test_owner):
+        result = api.list_repos("model", owner=test_owner, page_number=200, page_size=10)
         assert result.items == []
 
     def test_pagination_consistency(self, api, test_owner):
