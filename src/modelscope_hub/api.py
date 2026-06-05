@@ -281,12 +281,16 @@ class HubApi:
                     items = value
                     break
 
-        total = int(
-            payload.get("total_count") or payload.get("TotalCount")
-            or payload.get("total") or len(items)
-        )
-        page = int(payload.get("page_number") or payload.get("PageNumber") or payload.get("page") or 1)
-        size = int(payload.get("page_size") or payload.get("PageSize") or payload.get("size") or len(items))
+        def _first(keys: tuple[str, ...], default: int) -> int:
+            for k in keys:
+                v = payload.get(k)
+                if v is not None:
+                    return int(v)
+            return default
+
+        total = _first(("total_count", "TotalCount", "total"), len(items))
+        page = _first(("page_number", "PageNumber", "page"), 1)
+        size = _first(("page_size", "PageSize", "size"), len(items))
         return items, total, page, size
 
     @staticmethod
@@ -797,10 +801,17 @@ class HubApi:
                 filters=clean_filters or None,
             )
         elif rt is RepoType.DATASET:
-            payload = self.legacy.list_datasets(
-                owner=owner,
-                page_number=page_number, page_size=page_size,
-            )
+            if search or sort or clean_filters:
+                payload = self.openapi.list_datasets(
+                    search=search, owner=owner, sort=sort,
+                    page_number=page_number, page_size=page_size,
+                    filters=clean_filters or None,
+                )
+            else:
+                payload = self.legacy.list_datasets(
+                    owner=owner,
+                    page_number=page_number, page_size=page_size,
+                )
         elif rt is RepoType.SKILL:
             if owner:
                 clean_filters.setdefault("owner", owner)
