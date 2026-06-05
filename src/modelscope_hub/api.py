@@ -41,6 +41,7 @@ from .errors import (
     AuthenticationError,
     HubError,
     InvalidParameter,
+    NetworkError,
     NotExistError,
     NotSupportedError,
 )
@@ -1341,6 +1342,9 @@ class HubApi:
                     revision=revision or "master",
                 )
                 deleted.append(p)
+            except (AuthenticationError, NetworkError) as exc:
+                failed.append(p)
+                raise
             except Exception:
                 failed.append(p)
 

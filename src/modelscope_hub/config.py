@@ -165,11 +165,13 @@ class HubConfig:
     def save_cookies(self, cookies: object) -> None:
         """Pickle cookies to ``~/.modelscope/credentials/cookies``."""
         import pickle
+        import stat
 
         self.ensure_dirs()
         path = self.credentials_dir / COOKIES_FILE_NAME
         with open(path, "wb") as f:
             pickle.dump(cookies, f)
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     def load_cookies(self) -> object | None:
         """Load saved cookies, returning None if absent or expired."""
@@ -198,9 +200,12 @@ class HubConfig:
 
     def save_git_token(self, git_token: str) -> None:
         """Save git token to ``~/.modelscope/credentials/git_token``."""
+        import stat
+
         self.ensure_dirs()
         path = self.credentials_dir / GIT_TOKEN_FILE_NAME
         path.write_text(git_token, encoding="utf-8")
+        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     def load_git_token(self) -> str | None:
         """Read git token from ``~/.modelscope/credentials/git_token``."""

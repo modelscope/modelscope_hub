@@ -517,7 +517,11 @@ class LegacyClient:
 
         raise_for_status(resp)
 
-        body = resp.json()
+        # Presigned URLs (cloud storage) may return empty bodies on success.
+        try:
+            body = resp.json()
+        except (ValueError, RuntimeError):
+            return {}
         if isinstance(body, dict) and body.get("Code") not in (200, "200", None):
             from .errors import APIError
             raise APIError(

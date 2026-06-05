@@ -20,8 +20,13 @@ def _is_repo_exists_error(exc: BaseException) -> bool:
     if "exist" in msg or "已被注册" in msg or "已存在" in msg:
         return True
     body = getattr(exc, "response_body", None)
-    if isinstance(body, dict) and body.get("Code") in _ALREADY_EXISTS_CODES:
-        return True
+    if isinstance(body, dict):
+        code = body.get("Code")
+        try:
+            if int(code) in _ALREADY_EXISTS_CODES:
+                return True
+        except (TypeError, ValueError):
+            pass
     return False
 
 

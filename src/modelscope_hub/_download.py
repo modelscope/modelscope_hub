@@ -626,19 +626,20 @@ class DownloadManager:
         import tempfile
         import zipfile
 
-        resp = self._client.download_archive(
-            repo_id=repo_id,
-            repo_type=repo_type,
-            revision=revision,
-        )
-
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-            tmp_path = Path(tmp.name)
-            for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
-                if chunk:
-                    tmp.write(chunk)
-
+        tmp_path: Path | None = None
         try:
+            resp = self._client.download_archive(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+            )
+
+            with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+                for chunk in resp.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
+                    if chunk:
+                        tmp.write(chunk)
+
             with zipfile.ZipFile(tmp_path, "r") as zf:
                 zf.extractall(output_dir)
 
@@ -650,7 +651,8 @@ class DownloadManager:
                     shutil.move(str(item), str(output_dir / item.name))
                 nested.rmdir()
         finally:
-            tmp_path.unlink(missing_ok=True)
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
 
         logger.info("Extracted archive for %s to %s", repo_id, output_dir)
         return output_dir
