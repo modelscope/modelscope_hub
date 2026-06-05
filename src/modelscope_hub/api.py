@@ -246,22 +246,51 @@ class HubApi:
             return visibility
         return int(Visibility.from_label(str(visibility)))
 
+    _PAGED_ITEM_KEYS = (
+        "items", "list", "data", "results",
+        "models", "datasets", "skills", "servers",
+        "Models", "Datasets", "Skills", "Servers",
+    )
+    _PAGED_META_KEYS = frozenset({
+        "total_count", "total", "page_number", "page", "page_size", "size",
+        "TotalCount", "Total", "PageNumber", "PageSize",
+    })
+
     @staticmethod
     def _extract_paged(payload: Any) -> tuple[list[Any], int, int, int]:
-        """Decode a paginated OpenAPI response into ``(items, total, page, size)``."""
+        """Decode a paginated OpenAPI response into ``(items, total, page, size)``.
+
+        The ModelScope API returns item arrays under type-specific keys
+        (``models``, ``datasets``, ``skills``, ``servers``). This method
+        checks known keys first, then falls back to the first list-valued
+        key that is not pagination metadata.
+        """
         if isinstance(payload, list):
             return payload, len(payload), 1, len(payload)
         if not isinstance(payload, dict):
             return [], 0, 1, 0
-        for key in ("items", "list", "data", "results"):
+
+        items: list[Any] = []
+        for key in HubApi._PAGED_ITEM_KEYS:
             if isinstance(payload.get(key), list):
                 items = payload[key]
                 break
         else:
-            items = []
-        total = int(payload.get("total_count") or payload.get("total") or len(items))
-        page = int(payload.get("page_number") or payload.get("page") or 1)
-        size = int(payload.get("page_size") or payload.get("size") or len(items))
+            for key, value in payload.items():
+                if isinstance(value, list) and key not in HubApi._PAGED_META_KEYS:
+                    items = value
+                    break
+
+        def _first(keys: tuple[str, ...], default: int) -> int:
+            for k in keys:
+                v = payload.get(k)
+                if v is not None:
+                    return int(v)
+            return default
+
+        total = _first(("total_count", "TotalCount", "total"), len(items))
+        page = _first(("page_number", "PageNumber", "page"), 1)
+        size = _first(("page_size", "PageSize", "size"), len(items))
         return items, total, page, size
 
     @staticmethod
@@ -312,8 +341,20 @@ class HubApi:
                 else:
                     normalised["visibility"] = Visibility.PUBLIC
 
-        normalised.setdefault("owner", owner_hint)
-        normalised.setdefault("name", name_hint)
+        # The OpenAPI list endpoints return ``id`` as "owner/name".
+        # Split it so the computed ``repo_id`` property works.
+        id_val = normalised.get("id")
+        if isinstance(id_val, str) and "/" in id_val:
+            parts = id_val.split("/", 1)
+            if not normalised.get("owner"):
+                normalised["owner"] = parts[0]
+            if not normalised.get("name"):
+                normalised["name"] = parts[1]
+
+        if not normalised.get("owner"):
+            normalised["owner"] = owner_hint
+        if not normalised.get("name"):
+            normalised["name"] = name_hint
         normalised["repo_type"] = repo_type
         return RepoInfo.from_dict(normalised)
 
@@ -760,11 +801,17 @@ class HubApi:
                 filters=clean_filters or None,
             )
         elif rt is RepoType.DATASET:
-            payload = self.openapi.list_datasets(
-                search=search, owner=owner, sort=sort,
-                page_number=page_number, page_size=page_size,
-                filters=clean_filters or None,
-            )
+            if search or sort or clean_filters:
+                payload = self.openapi.list_datasets(
+                    search=search, owner=owner, sort=sort,
+                    page_number=page_number, page_size=page_size,
+                    filters=clean_filters or None,
+                )
+            else:
+                payload = self.legacy.list_datasets(
+                    owner=owner,
+                    page_number=page_number, page_size=page_size,
+                )
         elif rt is RepoType.SKILL:
             if owner:
                 clean_filters.setdefault("owner", owner)
