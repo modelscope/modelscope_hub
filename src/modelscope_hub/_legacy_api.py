@@ -389,9 +389,9 @@ class LegacyClient:
         resp = self._request("GET", f"{segment}/{repo_id}/revisions")
         data = self._json_data(resp)
         if isinstance(data, dict):
-            revision_map = data.get("RevisionMap", {})
-            tags = revision_map.get("Tags", [])
-            branches = revision_map.get("Branches", [])
+            revision_map = data.get("RevisionMap") or {}
+            tags = revision_map.get("Tags") or []
+            branches = revision_map.get("Branches") or []
             return tags + branches
         return data if isinstance(data, list) else []
 
@@ -418,10 +418,10 @@ class LegacyClient:
         )
         data = self._json_data(resp)
         if isinstance(data, dict):
-            revision_map = data.get("RevisionMap", {})
+            revision_map = data.get("RevisionMap") or {}
             return (
-                revision_map.get("Branches", []),
-                revision_map.get("Tags", []),
+                revision_map.get("Branches") or [],
+                revision_map.get("Tags") or [],
             )
         return [], []
 

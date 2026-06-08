@@ -84,9 +84,10 @@ def parse_timestamp(
     if isinstance(value, bool):
         raise TypeError(f"Unsupported timestamp type: {type(value).__name__}")
 
-    if isinstance(value, int):
+    if isinstance(value, (int, float)):
+        ts = value / 1000 if value > 9_999_999_999 else value
         try:
-            dt = datetime.fromtimestamp(value, tz=timezone.utc)
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         except (OverflowError, OSError, ValueError) as exc:
             raise ValueError(f"Invalid UNIX timestamp: {value!r}") from exc
         return dt.astimezone(target_tz)

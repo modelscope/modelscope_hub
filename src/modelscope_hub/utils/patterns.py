@@ -65,7 +65,7 @@ def _common_segments(prefixes: list[str]) -> str | None:
     """Compute the longest common path-segment prefix across all inputs."""
     segment_lists = [p.split(_PATH_SEPARATOR) for p in prefixes]
     common: list[str] = []
-    for segments in zip(*segment_lists, strict=False):
+    for segments in zip(*segment_lists):
         first = segments[0]
         if any(seg != first for seg in segments[1:]):
             break

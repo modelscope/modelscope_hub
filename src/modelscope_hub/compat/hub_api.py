@@ -100,7 +100,7 @@ class LegacyHubApi:
     ) -> None:
         """Create a repository (legacy signature)."""
         api = self._api
-        if token:
+        if token or endpoint:
             api = HubApi(token=token, endpoint=endpoint or self._endpoint)
         try:
             api.create_repo(
@@ -305,7 +305,7 @@ class LegacyHubApi:
                 if (t.get("CreatedAt") or 0) <= release_timestamp
             ]
             if candidates:
-                return candidates[0]
+                return max(candidates, key=lambda t: t.get("CreatedAt") or 0)
             return _find(branches_detail, "master") or {"Revision": "master"}
 
         # Explicit revision
@@ -615,6 +615,7 @@ class LegacyHubApi:
                 params={"Revision": revision, "FilePath": file_path},
             )
             local_path = os.path.join(meta_cache_dir, file_path)
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
             if os.path.exists(local_path):
                 local_paths[extension].append(local_path)
                 continue
