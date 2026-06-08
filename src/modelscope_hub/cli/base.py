@@ -19,6 +19,7 @@ from typing import Any, Iterable, Sequence
 
 from ..api import HubApi
 from ..constants import RepoType
+from ..utils.format import tabulate as _tabulate
 
 
 # ---------------------------------------------------------------------------
@@ -111,34 +112,8 @@ def error(message: str) -> None:
 
 
 def render_table(rows: Iterable[Sequence[Any]], headers: Sequence[str]) -> str:
-    """Format ``rows`` as a fixed-width text table.
-
-    Pure stdlib — no third-party dependencies. Truncates very long cells so a
-    runaway field cannot destroy the layout.
-    """
-    str_rows: list[list[str]] = [
-        [_truncate(str(c) if c is not None else "-") for c in row] for row in rows
-    ]
-    widths = [len(h) for h in headers]
-    for row in str_rows:
-        for i, cell in enumerate(row):
-            if i < len(widths):
-                widths[i] = max(widths[i], len(cell))
-
-    sep = "  "
-    out = [sep.join(h.ljust(widths[i]) for i, h in enumerate(headers))]
-    out.append(sep.join("-" * w for w in widths))
-    for row in str_rows:
-        out.append(sep.join(
-            (row[i] if i < len(row) else "").ljust(widths[i]) for i in range(len(headers))
-        ))
-    return "\n".join(out)
-
-
-def _truncate(text: str, limit: int = 80) -> str:
-    if len(text) <= limit:
-        return text
-    return text[: limit - 1] + "…"
+    """Format rows as a fixed-width text table."""
+    return _tabulate(rows, headers)
 
 
 def parse_kv_pairs(values: Iterable[str]) -> dict[str, str]:
