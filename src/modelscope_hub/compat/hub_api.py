@@ -119,6 +119,17 @@ class LegacyHubApi:
 
     def push_model(self, model_id: str, model_dir: str, **kwargs: Any) -> None:
         """Upload a model directory (legacy signature)."""
+        try:
+            self._api.create_repo(
+                model_id,
+                repo_type=RepoType.MODEL,
+                visibility=kwargs.get("visibility"),
+                license=kwargs.get("license"),
+                chinese_name=kwargs.get("chinese_name"),
+            )
+        except Exception as exc:
+            if not _is_repo_exists_error(exc):
+                raise
         self._api.upload_folder(
             model_id,
             RepoType.MODEL,

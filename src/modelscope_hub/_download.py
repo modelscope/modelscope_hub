@@ -45,7 +45,14 @@ from .constants import (
     ENV_INTRA_CLOUD_ACCELERATION,
     ENV_INTRA_CLOUD_REGION,
 )
-from .errors import CacheNotFound, FileIntegrityError, NetworkError, RequestTimeoutError
+from .errors import (
+    CacheNotFound,
+    FileIntegrityError,
+    NetworkError,
+    NotExistError,
+    PermissionDeniedError,
+    RequestTimeoutError,
+)
 from .utils.file_utils import compute_hash, ensure_dir
 from .utils.logger import get_logger
 
@@ -169,10 +176,21 @@ def _file_lock_enabled() -> bool:
 # Pattern matching
 # ---------------------------------------------------------------------------
 def _matches_patterns(path: str, patterns: list[str] | None) -> bool:
-    """Check if path matches any of the glob patterns."""
+    """Check if path matches any of the glob patterns.
+
+    Also accepts legacy regex-style patterns (e.g. ``.*\\.bin``) by
+    converting ``.*`` to ``*`` before matching.
+    """
     if not patterns:
         return False
-    return any(fnmatch.fnmatch(path, pat) for pat in patterns)
+    for pat in patterns:
+        if fnmatch.fnmatch(path, pat):
+            return True
+        if ".*" in pat:
+            glob_pat = pat.replace(".*", "*")
+            if fnmatch.fnmatch(path, glob_pat):
+                return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -799,6 +817,8 @@ class DownloadManager:
                 logger.debug("Downloaded: %s", target)
                 return target
 
+            except (NotExistError, PermissionDeniedError):
+                raise
             except Exception as exc:
                 retry = retry.increment("GET", file_path, error=exc)
                 logger.warning("Download failed for %s: %s, will retry", file_path, exc)
