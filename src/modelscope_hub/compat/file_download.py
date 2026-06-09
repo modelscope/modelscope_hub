@@ -36,8 +36,11 @@ def model_file_download(
 
     api = HubApi(token=token, endpoint=endpoint)
     if endpoint is None and not local_files_only:
-        endpoint = api.resolve_endpoint_for_read(model_id, repo_type="model")
-        api = HubApi(token=token, endpoint=endpoint)
+        try:
+            endpoint = api.resolve_endpoint_for_read(model_id, repo_type="model")
+            api = HubApi(token=token, endpoint=endpoint)
+        except Exception:
+            pass
     result = api.download_file(
         model_id,
         repo_type=RepoType.MODEL,
@@ -74,8 +77,11 @@ def dataset_file_download(
 
     api = HubApi(token=token, endpoint=endpoint)
     if endpoint is None and not local_files_only:
-        endpoint = api.resolve_endpoint_for_read(dataset_id, repo_type="dataset")
-        api = HubApi(token=token, endpoint=endpoint)
+        try:
+            endpoint = api.resolve_endpoint_for_read(dataset_id, repo_type="dataset")
+            api = HubApi(token=token, endpoint=endpoint)
+        except Exception:
+            pass
     result = api.download_file(
         dataset_id,
         repo_type=RepoType.DATASET,

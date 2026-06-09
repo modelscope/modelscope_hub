@@ -59,10 +59,13 @@ def snapshot_download(
 
     api = HubApi(token=token, endpoint=endpoint)
     if endpoint is None and not local_files_only:
-        endpoint = api.resolve_endpoint_for_read(
-            effective_id, repo_type=effective_type,
-        )
-        api = HubApi(token=token, endpoint=endpoint)
+        try:
+            endpoint = api.resolve_endpoint_for_read(
+                effective_id, repo_type=effective_type,
+            )
+            api = HubApi(token=token, endpoint=endpoint)
+        except Exception:
+            pass
     result = api.download_repo(
         effective_id,
         repo_type=effective_type,
@@ -108,8 +111,11 @@ def dataset_snapshot_download(
 
     api = HubApi(token=token, endpoint=endpoint)
     if endpoint is None and not local_files_only:
-        endpoint = api.resolve_endpoint_for_read(dataset_id, repo_type="dataset")
-        api = HubApi(token=token, endpoint=endpoint)
+        try:
+            endpoint = api.resolve_endpoint_for_read(dataset_id, repo_type="dataset")
+            api = HubApi(token=token, endpoint=endpoint)
+        except Exception:
+            pass
     result = api.download_repo(
         dataset_id,
         repo_type=RepoType.DATASET,
