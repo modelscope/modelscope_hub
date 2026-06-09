@@ -139,7 +139,11 @@ class HubApi:
         endpoint: str | None = None,
         token: str | None = None,
     ) -> None:
-        self._config = config or get_default_config()
+        base = config or get_default_config()
+        if config is None and (endpoint is not None or token is not None):
+            from dataclasses import replace
+            base = replace(base)
+        self._config = base
         if endpoint is not None:
             self._config.endpoint = endpoint.rstrip("/")
         if token is not None:
@@ -892,16 +896,21 @@ class HubApi:
         repo_id: str,
         *,
         repo_type: RepoTypeLike = "model",
+        token: str | None = None,
     ) -> str:
         """Resolve the best endpoint for read operations (download, list, get).
 
-        This replicates the old SDK's ``get_endpoint_for_read()`` behavior:
-
-        1. If ``MODELSCOPE_DOMAIN`` env var is set, use it directly (error if
-           the repo is not found on that endpoint).
+        1. If ``MODELSCOPE_DOMAIN`` env var is set, trust the user's
+           configuration and return it directly (no probe).
         2. If ``MODELSCOPE_PREFER_AI_SITE=true``, check ``.ai`` first, then
            fall back to ``.cn``.
         3. Otherwise (default), check ``.cn`` first, then fall back to ``.ai``.
+
+        Parameters
+        ----------
+        token : str, optional
+            Explicit token for the probe requests.  Falls back to the
+            token stored in this instance's config.
 
         Returns
         -------
@@ -925,13 +934,9 @@ class HubApi:
         domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
         if domain:
             endpoint = domain if domain.startswith("http") else f"https://{domain}"
-            endpoint = endpoint.rstrip("/")
-            probe = HubApi(endpoint=endpoint, token=self._config.token)
-            if not probe.repo_exists(repo_id, repo_type):
-                raise NotExistError(
-                    f"Repo {repo_id} does not exist on {endpoint}"
-                )
-            return endpoint
+            return endpoint.rstrip("/")
+
+        effective_token = token or self._config.token
 
         prefer_ai = (
             os.environ.get(ENV_PREFER_AI_SITE, "").strip().lower() == "true"
@@ -939,11 +944,11 @@ class HubApi:
         primary = DEFAULT_INTL_ENDPOINT if prefer_ai else DEFAULT_ENDPOINT
         fallback = DEFAULT_ENDPOINT if prefer_ai else DEFAULT_INTL_ENDPOINT
 
-        primary_probe = HubApi(endpoint=primary, token=self._config.token)
+        primary_probe = HubApi(endpoint=primary, token=effective_token)
         if primary_probe.repo_exists(repo_id, repo_type):
             return primary
 
-        fallback_probe = HubApi(endpoint=fallback, token=self._config.token)
+        fallback_probe = HubApi(endpoint=fallback, token=effective_token)
         if fallback_probe.repo_exists(repo_id, repo_type):
             logger.warning(
                 "Repo %s not found on %s, using %s instead.",
