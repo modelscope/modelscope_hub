@@ -16,10 +16,10 @@ from .constants import DEFAULT_DATASET_REVISION
 def model_file_download(
     model_id: str,
     file_path: str,
+    revision: str | None = None,
     *,
     cache_dir: str | None = None,
     local_dir: str | None = None,
-    revision: str | None = None,
     cookies: dict | None = None,
     token: str | None = None,
     endpoint: str | None = None,
