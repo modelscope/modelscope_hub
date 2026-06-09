@@ -139,7 +139,11 @@ class HubApi:
         endpoint: str | None = None,
         token: str | None = None,
     ) -> None:
-        self._config = config or get_default_config()
+        base = config or get_default_config()
+        if config is None and (endpoint is not None or token is not None):
+            from dataclasses import replace
+            base = replace(base)
+        self._config = base
         if endpoint is not None:
             self._config.endpoint = endpoint.rstrip("/")
         if token is not None:
