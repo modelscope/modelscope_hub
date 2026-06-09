@@ -6,6 +6,7 @@ import sys
 from argparse import Action
 
 from ..constants import RepoType
+from ..utils.format import format_size
 from .base import CLICommand, info, make_api, render_table, success
 
 
@@ -32,12 +33,7 @@ class CacheCommand(CLICommand):
 
 def _human_size(num: int) -> str:
     """Format a byte count using IEC suffixes."""
-    value = float(num)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if value < 1024 or unit == "TiB":
-            return f"{value:.1f} {unit}"
-        value /= 1024
-    return f"{value:.1f} TiB"  # pragma: no cover
+    return format_size(num)
 
 
 class _CacheScan(CLICommand):

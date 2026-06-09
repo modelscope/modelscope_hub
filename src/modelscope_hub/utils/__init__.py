@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 from .file_utils import compute_hash, ensure_dir, get_cache_dir, get_file_size
+from .format import format_size, format_timesince, tabulate
 from .logger import get_logger
+from .media import encode_media_to_base64
+from .patterns import extract_common_prefix, normalize_patterns
+from .time_utils import parse_timestamp
 
 __all__ = [
     "build_user_agent",
     "compute_hash",
+    "encode_media_to_base64",
     "ensure_dir",
+    "extract_common_prefix",
+    "format_size",
+    "format_timesince",
     "get_cache_dir",
     "get_file_size",
     "get_logger",
+    "normalize_patterns",
+    "parse_timestamp",
+    "tabulate",
 ]
 
 

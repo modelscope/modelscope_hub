@@ -12,6 +12,7 @@ from typing import Sequence
 
 from ..api import HubApi
 from ..constants import RepoType
+from ..utils.patterns import normalize_patterns
 from .constants import DEFAULT_DATASET_REVISION
 
 
@@ -125,8 +126,4 @@ def dataset_snapshot_download(
 
 
 def _normalize_pattern(pattern: Sequence[str] | str | None) -> list[str] | None:
-    if pattern is None:
-        return None
-    if isinstance(pattern, str):
-        return [pattern]
-    return list(pattern) or None
+    return normalize_patterns(pattern)

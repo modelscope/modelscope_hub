@@ -6,13 +6,23 @@ wrapping the new ``modelscope_hub.HubApi``.
 
 from __future__ import annotations
 
+import os
 import warnings
+from collections import defaultdict
 from typing import Any
+from urllib.parse import urlencode
+
+import time
 
 from ..api import HubApi
 from ..constants import RepoType
+from ..errors import NotExistError
 
 _ALREADY_EXISTS_CODES = {10020101001, 10010101001}
+
+DEFAULT_DATASET_REVISION = "master"
+
+META_FILES_FORMAT = {'.json', '.csv', '.jsonl', '.tsv', '.py'}
 
 
 def _is_repo_exists_error(exc: BaseException) -> bool:
@@ -90,7 +100,7 @@ class LegacyHubApi:
     ) -> None:
         """Create a repository (legacy signature)."""
         api = self._api
-        if token:
+        if token or endpoint:
             api = HubApi(token=token, endpoint=endpoint or self._endpoint)
         try:
             api.create_repo(
@@ -207,6 +217,121 @@ class LegacyHubApi:
         self._api.delete_secret(studio_id, key, RepoType.STUDIO)
 
     # ------------------------------------------------------------------
+    # Revision resolution
+    # ------------------------------------------------------------------
+    def get_model_branches_and_tags_details(
+        self, model_id: str, **kwargs: Any,
+    ) -> tuple[list[dict], list[dict]]:
+        """Get model branches and tags as two separate detail lists.
+
+        Returns ``(branches_detail, tags_detail)`` where each item is a dict
+        with at least ``Revision`` and ``CreatedAt`` keys.
+        """
+        return self._api.legacy.list_revisions_detail(model_id, "model")
+
+    def get_model_branches_and_tags(
+        self, model_id: str, **kwargs: Any,
+    ) -> tuple[list[str], list[str]]:
+        """Get model branch and tag names."""
+        branches_detail, tags_detail = self.get_model_branches_and_tags_details(model_id)
+        branches = [x["Revision"] for x in branches_detail] if branches_detail else []
+        tags = [x["Revision"] for x in tags_detail] if tags_detail else []
+        return branches, tags
+
+    def get_valid_revision_detail(
+        self,
+        model_id: str,
+        revision: str | None = None,
+        cookies: Any = None,
+        endpoint: str | None = None,
+        *,
+        release_timestamp: int | None = None,
+    ) -> dict:
+        """Resolve a model revision to a concrete branch/tag detail dict.
+
+        Replicates the old ``modelscope.hub.api.HubApi.get_valid_revision_detail``
+        behavior.  When *release_timestamp* is supplied (the old SDK passes
+        ``modelscope.version.__release_datetime__`` converted to epoch seconds),
+        the full version-selection logic is used:
+
+        * **Dev mode** (``release_timestamp > now + 1 year``): default to
+          ``master``, validate existence.
+        * **Release mode**: pick the newest tag whose ``CreatedAt <=
+          release_timestamp``, fall back to ``master`` if none match.
+
+        Without *release_timestamp* the simplified rule applies: explicit
+        *revision* is validated, ``None`` defaults to ``master``.
+        """
+        _ONE_YEAR = 365 * 24 * 60 * 60
+
+        branches_detail, tags_detail = self.get_model_branches_and_tags_details(model_id)
+        all_branches = [x["Revision"] for x in branches_detail] if branches_detail else []
+        all_tags = [x["Revision"] for x in tags_detail] if tags_detail else []
+
+        def _find(details: list[dict], name: str) -> dict | None:
+            for item in details:
+                if item.get("Revision") == name:
+                    return item
+            return None
+
+        # --- Dev mode or no release_timestamp ---------------------------------
+        if release_timestamp is None or release_timestamp > int(time.time()) + _ONE_YEAR:
+            if revision is None:
+                revision = "master"
+            if revision not in all_branches and revision not in all_tags:
+                raise NotExistError(
+                    f"The model: {model_id} has no revision: {revision}"
+                )
+            detail = _find(tags_detail, revision) or _find(branches_detail, revision)
+            return detail or {"Revision": revision}
+
+        # --- Release mode -----------------------------------------------------
+        # Explicit branch name → return immediately
+        if revision is not None and revision in all_branches:
+            return _find(branches_detail, revision) or {"Revision": revision}
+
+        # No tags at all → master (or validate explicit revision)
+        if not tags_detail:
+            if revision is None or revision == "master":
+                return _find(branches_detail, "master") or {"Revision": "master"}
+            raise NotExistError(
+                f"The model: {model_id} has no revision: {revision}"
+            )
+
+        # Has tags
+        if revision is None:
+            candidates = [
+                t for t in tags_detail
+                if (t.get("CreatedAt") or 0) <= release_timestamp
+            ]
+            if candidates:
+                return max(candidates, key=lambda t: t.get("CreatedAt") or 0)
+            return _find(branches_detail, "master") or {"Revision": "master"}
+
+        # Explicit revision
+        if revision in all_tags:
+            return _find(tags_detail, revision) or {"Revision": revision}
+        if revision == "master":
+            return _find(branches_detail, "master") or {"Revision": "master"}
+        valid = ", ".join(all_tags)
+        raise NotExistError(
+            f"The model: {model_id} has no revision: {revision} "
+            f"(valid tags: {valid})"
+        )
+
+    def get_valid_revision(
+        self,
+        model_id: str,
+        revision: str | None = None,
+        cookies: Any = None,
+        endpoint: str | None = None,
+    ) -> str:
+        """Resolve a model revision to a concrete revision string."""
+        return self.get_valid_revision_detail(
+            model_id, revision=revision, cookies=cookies, endpoint=endpoint,
+        )["Revision"]
+
+    # ------------------------------------------------------------------
     # Collection / Skills
     # ------------------------------------------------------------------
     def get_collection(self, collection_id: str, **kwargs: Any) -> dict:
@@ -221,6 +346,415 @@ class LegacyHubApi:
             local_dir=local_dir,
         )
         return str(result)
+
+    # ------------------------------------------------------------------
+    # Type-specific list/create/get/delete (old SDK compatibility)
+    # ------------------------------------------------------------------
+    def list_models(
+        self,
+        owner_or_group: str,
+        page_number: int = 1,
+        page_size: int = 10,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """List models owned by a user/org."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        page = api.list_repos(
+            RepoType.MODEL,
+            owner=owner_or_group,
+            page_number=page_number,
+            page_size=page_size,
+        )
+        return {
+            "Models": [_repo_info_to_dict(r) for r in page.items],
+            "TotalCount": page.total_count,
+        }
+
+    def list_datasets(
+        self,
+        owner_or_group: str,
+        *,
+        page_number: int = 1,
+        page_size: int = 10,
+        sort: str | None = None,
+        search: str | None = None,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """List datasets owned by a user/org."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        page = api.list_repos(
+            RepoType.DATASET,
+            owner=owner_or_group,
+            search=search,
+            sort=sort,
+            page_number=page_number,
+            page_size=page_size,
+        )
+        return {
+            "datasets": [_repo_info_to_dict(r) for r in page.items],
+            "total_count": page.total_count,
+            "page_number": page.page_number,
+            "page_size": page.page_size,
+        }
+
+    def create_dataset(
+        self,
+        dataset_name: str,
+        namespace: str,
+        chinese_name: str = "",
+        license: str = "Apache License 2.0",
+        visibility: int = 1,
+        description: str = "",
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> str:
+        """Create a dataset repository, return its URL."""
+        repo_id = f"{namespace}/{dataset_name}"
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        api.create_repo(
+            repo_id,
+            repo_type=RepoType.DATASET,
+            visibility=visibility,
+            license=license,
+            chinese_name=chinese_name,
+        )
+        ep = endpoint or self._endpoint or api._config.endpoint
+        return f"{ep}/datasets/{namespace}/{dataset_name}"
+
+    def get_dataset(
+        self,
+        dataset_id: str,
+        revision: str | None = DEFAULT_DATASET_REVISION,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """Get dataset information via the legacy datahub API."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        data = api.legacy.get_repo_info(dataset_id, RepoType.DATASET)
+        return data
+
+    def delete_model(
+        self,
+        model_id: str,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> None:
+        """Delete a model repository."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        api.delete_repo(model_id, RepoType.MODEL)
+
+    def delete_dataset(
+        self,
+        dataset_id: str,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> None:
+        """Delete a dataset repository."""
+        warnings.warn(
+            "This function is deprecated due to security reasons, "
+            "and will be recovered in future versions with proper token authentication.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        api.delete_repo(dataset_id, RepoType.DATASET)
+
+    def get_dataset_files(
+        self,
+        repo_id: str,
+        *,
+        revision: str = DEFAULT_DATASET_REVISION,
+        root_path: str = "/",
+        recursive: bool = True,
+        page_number: int = 1,
+        page_size: int = 100,
+        endpoint: str | None = None,
+        token: str | None = None,
+        dataset_hub_id: str | None = None,
+    ) -> list:
+        """Get dataset file tree via the datahub API."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+
+        if dataset_hub_id is None:
+            if "/" in repo_id:
+                _owner, _name = repo_id.split("/", 1)
+            else:
+                raise ValueError(f"Invalid repo_id: {repo_id}")
+            dataset_hub_id, _ = self.get_dataset_id_and_type(
+                dataset_name=_name, namespace=_owner, endpoint=endpoint, token=token)
+
+        params: dict[str, Any] = {
+            "Revision": revision,
+            "Root": root_path,
+            "Recursive": "True" if recursive else "False",
+            "PageNumber": page_number,
+            "PageSize": page_size,
+        }
+        resp = api.legacy._request(
+            "GET", f"datasets/{dataset_hub_id}/repo/tree", params=params)
+        data = api.legacy._json_data(resp)
+        if isinstance(data, dict):
+            return data.get("Files") or []
+        return data if isinstance(data, list) else []
+
+    # ------------------------------------------------------------------
+    # Datahub-specific methods (raw HTTP via legacy client)
+    # ------------------------------------------------------------------
+    _dataset_id_type_cache: dict = {}
+
+    def get_dataset_id_and_type(
+        self,
+        dataset_name: str,
+        namespace: str,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> tuple:
+        """Get the dataset hub-internal id and type."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+
+        cache_key = (namespace, dataset_name, endpoint or self._endpoint)
+        cached = LegacyHubApi._dataset_id_type_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        data = api.legacy.get_repo_info(f"{namespace}/{dataset_name}", RepoType.DATASET)
+        dataset_id = data["Id"]
+        dataset_type = data["Type"]
+        LegacyHubApi._dataset_id_type_cache[cache_key] = (dataset_id, dataset_type)
+        return dataset_id, dataset_type
+
+    def get_dataset_meta_file_list(
+        self,
+        dataset_name: str,
+        namespace: str,
+        dataset_id: str,
+        revision: str,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> list:
+        """Get the meta file-list of the dataset."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+
+        params = {"Revision": revision}
+        resp = api.legacy._request(
+            "GET", f"datasets/{dataset_id}/repo/tree", params=params)
+        data = api.legacy._json_data(resp)
+        if data is None:
+            raise NotExistError(
+                f"The modelscope dataset [dataset_name = {dataset_name}, "
+                f"namespace = {namespace}, version = {revision}] does not exist")
+        file_list = data.get("Files") if isinstance(data, dict) else data
+        if file_list is None:
+            raise NotExistError(
+                f"The modelscope dataset [dataset_name = {dataset_name}, "
+                f"namespace = {namespace}, version = {revision}] does not exist")
+        return file_list
+
+    @staticmethod
+    def dump_datatype_file(dataset_type: int, meta_cache_dir: str) -> None:
+        """Dump dataset type marker file for offline formation detection."""
+        from modelscope.utils.constant import DatasetFormations
+        ext = DatasetFormations.formation_mark_ext.value
+        dataset_type_file_path = os.path.join(
+            meta_cache_dir, f"{str(dataset_type)}{ext}")
+        with open(dataset_type_file_path, "w") as fp:
+            fp.write("*** Automatically-generated file, do not modify ***")
+
+    def get_dataset_meta_files_local_paths(
+        self,
+        dataset_name: str,
+        namespace: str,
+        revision: str,
+        meta_cache_dir: str,
+        dataset_type: int,
+        file_list: list,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> tuple:
+        """Download meta files and return local paths grouped by extension."""
+        from modelscope.utils.constant import DatasetFormations, DatasetMetaFormats
+
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+
+        local_paths: dict[str, list] = defaultdict(list)
+        dataset_formation = DatasetFormations(dataset_type)
+        dataset_meta_format = DatasetMetaFormats[dataset_formation]
+
+        self.dump_datatype_file(dataset_type=dataset_type, meta_cache_dir=meta_cache_dir)
+
+        for file_info in file_list:
+            file_path = file_info["Path"]
+            extension = os.path.splitext(file_path)[-1]
+            if extension not in dataset_meta_format:
+                continue
+            resp = api.legacy._request(
+                "GET",
+                f"datasets/{namespace}/{dataset_name}/repo",
+                params={"Revision": revision, "FilePath": file_path},
+            )
+            local_path = os.path.join(meta_cache_dir, file_path)
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            if os.path.exists(local_path):
+                local_paths[extension].append(local_path)
+                continue
+            with open(local_path, "wb") as f:
+                f.write(resp.content)
+            local_paths[extension].append(local_path)
+
+        return local_paths, dataset_formation
+
+    def get_dataset_file_url(
+        self,
+        file_name: str,
+        dataset_name: str,
+        namespace: str,
+        revision: str | None = DEFAULT_DATASET_REVISION,
+        view: bool = False,
+        extension_filter: bool = True,
+        endpoint: str | None = None,
+    ) -> str:
+        """Construct the download URL for a dataset file."""
+        if not file_name or not dataset_name or not namespace:
+            raise ValueError("Args (file_name, dataset_name, namespace) cannot be empty!")
+        ep = endpoint or self._endpoint or self._api._config.endpoint
+        params = urlencode({
+            "Source": "SDK",
+            "Revision": revision,
+            "FilePath": file_name,
+            "View": view,
+        })
+        return f"{ep}/api/v1/datasets/{namespace}/{dataset_name}/repo?{params}"
+
+    def get_dataset_file_url_origin(
+        self,
+        file_name: str,
+        dataset_name: str,
+        namespace: str,
+        revision: str | None = DEFAULT_DATASET_REVISION,
+        endpoint: str | None = None,
+    ) -> str:
+        """Get dataset file URL, resolving meta files to API URLs."""
+        ep = endpoint or self._endpoint or self._api._config.endpoint
+        if file_name and os.path.splitext(file_name)[-1] in META_FILES_FORMAT:
+            file_name = (
+                f"{ep}/api/v1/datasets/{namespace}/{dataset_name}/repo?"
+                f"Revision={revision}&FilePath={file_name}"
+            )
+        return file_name
+
+    def get_dataset_access_config(
+        self,
+        dataset_name: str,
+        namespace: str,
+        revision: str | None = DEFAULT_DATASET_REVISION,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """Get STS token config for dataset OSS access."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        resp = api.legacy._request(
+            "GET",
+            f"datasets/{namespace}/{dataset_name}/ststoken",
+            params={"Revision": revision},
+        )
+        return api.legacy._json_data(resp)
+
+    def get_dataset_access_config_session(
+        self,
+        dataset_name: str,
+        namespace: str,
+        check_cookie: bool = False,
+        revision: str | None = DEFAULT_DATASET_REVISION,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """Get STS token config with session-based auth."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        resp = api.legacy._request(
+            "GET",
+            f"datasets/{namespace}/{dataset_name}/ststoken",
+            params={"Revision": revision},
+        )
+        return api.legacy._json_data(resp)
+
+    def get_dataset_access_config_for_unzipped(
+        self,
+        dataset_name: str,
+        namespace: str,
+        revision: str,
+        zip_file_name: str,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """Get STS config for unzipped dataset files."""
+        api = self._api
+        if token:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+
+        # Get visibility
+        data = api.legacy.get_repo_info(f"{namespace}/{dataset_name}", RepoType.DATASET)
+        visibility_map = {1: "public", 2: "private"}
+        visibility = visibility_map.get(data.get("Visibility", 1), "public")
+
+        # Get STS token
+        resp = api.legacy._request(
+            "GET",
+            f"datasets/{namespace}/{dataset_name}/ststoken",
+            params={"Revision": revision},
+        )
+        data_sts = api.legacy._json_data(resp)
+        file_dir = f"{visibility}-unzipped/{namespace}_{dataset_name}_{zip_file_name}"
+        data_sts["Dir"] = file_dir
+        return data_sts
+
+    def dataset_download_statistics(
+        self,
+        dataset_name: str,
+        namespace: str,
+        use_streaming: bool = False,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> None:
+        """Report dataset download for statistics."""
+        is_ci_test = os.getenv("CI_TEST") == "True"
+        if not dataset_name or not namespace or is_ci_test or use_streaming:
+            return
+        try:
+            api = self._api
+            if token:
+                api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api.legacy._request(
+                "POST",
+                f"datasets/{namespace}/{dataset_name}/download/increase",
+            )
+        except Exception:
+            pass
 
 
 def _repo_info_to_dict(info: Any) -> dict:
