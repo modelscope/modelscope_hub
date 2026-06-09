@@ -60,9 +60,10 @@ class LegacyHubApi:
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
-    def login(self, token: str) -> None:
-        """Login with token (old style returns None)."""
+    def login(self, token: str) -> tuple[str, None]:
+        """Login with token (old style returns ``(token, cookie)``)."""
         self._api.login(token)
+        return (token, None)
 
     def get_cookies(self, access_token: str | None = None, cookies_required: bool = False):
         """Get cookies for legacy API authentication.
@@ -350,6 +351,8 @@ class LegacyHubApi:
     # ------------------------------------------------------------------
     # Type-specific list/create/get/delete (old SDK compatibility)
     # ------------------------------------------------------------------
+    _OPENAPI_MAX_PAGE_SIZE = 50
+
     def list_models(
         self,
         owner_or_group: str,
@@ -366,7 +369,7 @@ class LegacyHubApi:
             RepoType.MODEL,
             owner=owner_or_group,
             page_number=page_number,
-            page_size=page_size,
+            page_size=min(page_size, self._OPENAPI_MAX_PAGE_SIZE),
         )
         return {
             "Models": [_repo_info_to_dict(r) for r in page.items],
@@ -394,7 +397,7 @@ class LegacyHubApi:
             search=search,
             sort=sort,
             page_number=page_number,
-            page_size=page_size,
+            page_size=min(page_size, self._OPENAPI_MAX_PAGE_SIZE),
         )
         return {
             "datasets": [_repo_info_to_dict(r) for r in page.items],
@@ -757,11 +760,29 @@ class LegacyHubApi:
             pass
 
 
+_LEGACY_KEY_MAP: dict[str, str] = {
+    "id": "Id",
+    "owner": "Owner",
+    "name": "Name",
+    "repo_type": "RepoType",
+    "visibility": "Visibility",
+    "description": "Description",
+    "downloads": "Downloads",
+    "likes": "Likes",
+    "created_at": "CreatedAt",
+    "updated_at": "UpdatedAt",
+    "license": "License",
+    "tags": "Tags",
+}
+
+
 def _repo_info_to_dict(info: Any) -> dict:
-    """Convert a RepoInfo to a plain dict."""
+    """Convert a RepoInfo to a plain dict with legacy PascalCase keys."""
     if hasattr(info, "__dataclass_fields__"):
         from dataclasses import asdict
-        return asdict(info)
-    if hasattr(info, "__dict__"):
-        return {k: v for k, v in info.__dict__.items() if not k.startswith("_")}
-    return {}
+        raw = asdict(info)
+    elif hasattr(info, "__dict__"):
+        raw = {k: v for k, v in info.__dict__.items() if not k.startswith("_")}
+    else:
+        return {}
+    return {_LEGACY_KEY_MAP.get(k, k): v for k, v in raw.items()}
