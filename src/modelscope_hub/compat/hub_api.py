@@ -145,7 +145,7 @@ class LegacyHubApi:
         Honors ``MODELSCOPE_DOMAIN`` and ``MODELSCOPE_PREFER_AI_SITE`` env vars.
         """
         return self._api.resolve_endpoint_for_read(
-            repo_id, repo_type=repo_type or "model"
+            repo_id, repo_type=repo_type or "model", token=token,
         )
 
     def repo_exists(
@@ -157,10 +157,13 @@ class LegacyHubApi:
         re_raise: bool = False,
         token: str | None = None,
     ) -> bool:
-        """Check if a repo exists (legacy signature with endpoint override)."""
+        """Check if a repo exists (legacy signature with endpoint/token override)."""
         api = self._api
-        if endpoint is not None:
-            api = HubApi(endpoint=endpoint, token=token or self._api._config.token)
+        if endpoint is not None or token is not None:
+            api = HubApi(
+                endpoint=endpoint or self._api._config.endpoint,
+                token=token or self._api._config.token,
+            )
         try:
             return api.repo_exists(repo_id, repo_type or "model")
         except Exception:
