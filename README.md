@@ -38,11 +38,9 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 - **Feature**: `ms list --envs` — discover all configurable environment variables
 - **Refactor**: Centralize env var registry with auto-registration and category validation
 - **Refactor**: Unify `MODELSCOPE_DOMAIN` into `MODELSCOPE_ENDPOINT` (deprecated with `FutureWarning`)
+- **Fix**: Prevent `HubApi` from mutating global singleton config
 - **Fix**: Validate `repo_id` format in compat `get_file_base_path`
-
-**v0.0.6/0.0.7** (2026-06-07)
-- Fix `HubApi` mutating global singleton config when constructed with overrides
-- Add `get_file_base_path` compat method for legacy SDK migration
+- **Compat**: Add `get_file_base_path` for legacy SDK migration
 
 <details>
 <summary>Older releases</summary>

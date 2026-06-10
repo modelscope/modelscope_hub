@@ -440,42 +440,41 @@ class DownloadManager:
                 cache_dir=str(target.parent),
             )
 
-        if not force and target.exists():
-            if expected_sha256:
-                actual = compute_hash(target, "sha256")
-                if actual == expected_sha256:
-                    logger.debug("Cache hit (hash verified): %s", target)
-                    return target
-                logger.debug("Cache stale (hash mismatch): %s", target)
-            else:
-                logger.debug("Cache hit: %s", target)
+        if not force and self._cache_hit(target, expected_sha256):
+            return target
+
+        use_lock = _file_lock_enabled()
+        lock_path = self._lock_path(repo_id, repo_type, file_path=file_path) if use_lock else None
+        with _optional_file_lock(lock_path, enabled=use_lock):
+            # Re-check after acquiring lock — another process may have finished.
+            if not force and self._cache_hit(target, expected_sha256):
                 return target
 
-        ensure_dir(target.parent)
+            ensure_dir(target.parent)
 
-        for attempt in range(DOWNLOAD_HASH_RETRY_TIMES):
-            self._download_with_resume(
-                repo_id, repo_type, file_path, revision, target,
-                file_size=file_size,
-                user_agent=user_agent,
-                progress_callbacks=progress_callbacks,
-            )
+            for attempt in range(DOWNLOAD_HASH_RETRY_TIMES):
+                self._download_with_resume(
+                    repo_id, repo_type, file_path, revision, target,
+                    file_size=file_size,
+                    user_agent=user_agent,
+                    progress_callbacks=progress_callbacks,
+                )
 
-            if not expected_sha256:
-                break
+                if not expected_sha256:
+                    break
 
-            try:
-                self.verify_file(target, expected_sha256)
-                break
-            except FileIntegrityError:
-                if attempt < DOWNLOAD_HASH_RETRY_TIMES - 1:
-                    logger.warning(
-                        "Hash validation failed for %s, retrying (%d/%d)",
-                        file_path, attempt + 1, DOWNLOAD_HASH_RETRY_TIMES,
-                    )
-                    target.unlink(missing_ok=True)
-                else:
-                    raise
+                try:
+                    self.verify_file(target, expected_sha256)
+                    break
+                except FileIntegrityError:
+                    if attempt < DOWNLOAD_HASH_RETRY_TIMES - 1:
+                        logger.warning(
+                            "Hash validation failed for %s, retrying (%d/%d)",
+                            file_path, attempt + 1, DOWNLOAD_HASH_RETRY_TIMES,
+                        )
+                        target.unlink(missing_ok=True)
+                    else:
+                        raise
 
         return target
 
@@ -588,40 +587,38 @@ class DownloadManager:
 
         logger.info("Downloading %d files from %s@%s", len(download_items), repo_id, revision)
 
-        lock_path = self._lock_path(repo_id, repo_type, cache_dir) if _file_lock_enabled() else None
-        with _optional_file_lock(lock_path, enabled=lock_path is not None):
-            errors: list[str] = []
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(
-                        self.download_file,
-                        repo_id=repo_id,
-                        repo_type=repo_type,
-                        file_path=fp,
-                        revision=revision,
-                        cache_dir=cache_dir,
-                        local_dir=local_dir,
-                        expected_sha256=sha256,
-                        file_size=size,
-                        user_agent=user_agent,
-                        progress_callbacks=progress_callbacks,
-                    ): fp
-                    for fp, sha256, size in download_items
-                }
+        errors: list[str] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    self.download_file,
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    file_path=fp,
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    local_dir=local_dir,
+                    expected_sha256=sha256,
+                    file_size=size,
+                    user_agent=user_agent,
+                    progress_callbacks=progress_callbacks,
+                ): fp
+                for fp, sha256, size in download_items
+            }
 
-                with tqdm(total=len(download_items), desc="Downloading", unit="file") as pbar:
-                    for future in as_completed(futures):
-                        fp = futures[future]
-                        try:
-                            future.result()
-                        except Exception as exc:
-                            errors.append(f"{fp}: {exc}")
-                            logger.error("Failed to download %s: %s", fp, exc)
-                        finally:
-                            pbar.update(1)
+            with tqdm(total=len(download_items), desc="Downloading", unit="file") as pbar:
+                for future in as_completed(futures):
+                    fp = futures[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        errors.append(f"{fp}: {exc}")
+                        logger.error("Failed to download %s: %s", fp, exc)
+                    finally:
+                        pbar.update(1)
 
-            if errors:
-                logger.warning("%d file(s) failed to download", len(errors))
+        if errors:
+            logger.warning("%d file(s) failed to download", len(errors))
 
         return output_dir
 
@@ -678,6 +675,21 @@ class DownloadManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _cache_hit(target: Path, expected_sha256: str | None) -> bool:
+        """Return True if *target* exists and passes optional hash check."""
+        if not target.exists():
+            return False
+        if expected_sha256:
+            actual = compute_hash(target, "sha256")
+            if actual != expected_sha256:
+                logger.debug("Cache stale (hash mismatch): %s", target)
+                return False
+            logger.debug("Cache hit (hash verified): %s", target)
+        else:
+            logger.debug("Cache hit: %s", target)
+        return True
+
     def _repo_cache_dir(
         self,
         repo_id: str,
@@ -695,10 +707,14 @@ class DownloadManager:
         repo_id: str,
         repo_type: str,
         cache_dir: Path | None = None,
+        file_path: str | None = None,
     ) -> Path:
-        """Compute the lock file path for a given repo."""
+        """Compute the lock file path for a given repo or file."""
         base = cache_dir or self._config.cache_dir
         safe_id = repo_id.replace("/", "___")
+        if file_path is not None:
+            safe_file = file_path.replace("/", "___").replace(".", "_")
+            return base / ".lock" / f"{repo_type}_{safe_id}_{safe_file}.lock"
         return base / ".lock" / f"{repo_type}_{safe_id}.lock"
 
     def _download_with_resume(

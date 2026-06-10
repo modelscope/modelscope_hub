@@ -50,7 +50,7 @@ class HubConfig:
     :func:`dataclasses.replace`, and keeps fields explicit and discoverable.
     """
 
-    endpoint: str = field(default_factory=lambda: os.environ.get(ENV_ENDPOINT) or DEFAULT_ENDPOINT)
+    endpoint: str | None = None  # type: ignore[assignment]  # sentinel; always str after __post_init__
     cache_dir: Path = field(
         default_factory=lambda: _expand(
             os.environ.get(ENV_CACHE) or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME
@@ -69,9 +69,13 @@ class HubConfig:
     # Construction helpers
     # ------------------------------------------------------------------
     def __post_init__(self) -> None:
-        if os.environ.get(ENV_ENDPOINT):
+        # Precedence: explicit arg > MODELSCOPE_ENDPOINT > MODELSCOPE_DOMAIN > default
+        if self.endpoint is not None:
             self._endpoint_overridden = True
-        elif not self._endpoint_overridden:
+        elif os.environ.get(ENV_ENDPOINT):
+            self.endpoint = os.environ.get(ENV_ENDPOINT)
+            self._endpoint_overridden = True
+        else:
             domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
             if domain:
                 warnings.warn(
@@ -84,6 +88,8 @@ class HubConfig:
                     domain = f"https://{domain}"
                 self.endpoint = domain
                 self._endpoint_overridden = True
+            else:
+                self.endpoint = DEFAULT_ENDPOINT
         self.endpoint = self.endpoint.rstrip("/")
         if self.token is None:
             self.token = os.environ.get(ENV_TOKEN) or self.load_token()
