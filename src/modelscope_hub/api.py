@@ -966,6 +966,16 @@ class HubApi:
     # ==================================================================
     # Files
     # ==================================================================
+    def upload_file_to_openapi(self, file: str | Path | BinaryIO) -> str:
+        """Upload a file (max 5 MiB) via OpenAPI and return the file ID.
+
+        This is a generic upload not tied to any repository.  The returned
+        ID can be used in subsequent API calls (e.g. ``skill_file`` when
+        creating a skill).
+        """
+        data = self.openapi.upload_file(file=file)
+        return data["id"]
+
     def upload_file(
         self,
         repo_id: str,

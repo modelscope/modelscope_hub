@@ -348,22 +348,27 @@ class OpenAPIClient:
         self,
         *,
         file: str | Path | BinaryIO,
-        path_in_repo: str,
-        repo_id: str,
-        repo_type: str = "model",
+        path_in_repo: str | None = None,
+        repo_id: str | None = None,
+        repo_type: str | None = None,
         revision: str | None = None,
         commit_message: str | None = None,
         extra_fields: Mapping[str, Any] | None = None,
     ) -> JSON:
         """``POST /files/upload`` — upload a single file (≤ 5 MiB).
 
-        For larger files, use the LFS upload path exposed by :mod:`_upload`.
+        When called with ``repo_id`` / ``path_in_repo`` / ``repo_type``,
+        the file is committed to the given repository.  When called with
+        only ``file``, a generic upload is performed and the response
+        contains the file ID (used by skill creation, etc.).
         """
-        form: list[tuple[str, Any]] = [
-            ("path", (None, path_in_repo)),
-            ("repo_id", (None, repo_id)),
-            ("repo_type", (None, repo_type)),
-        ]
+        form: list[tuple[str, Any]] = []
+        if path_in_repo is not None:
+            form.append(("path", (None, path_in_repo)))
+        if repo_id is not None:
+            form.append(("repo_id", (None, repo_id)))
+        if repo_type is not None:
+            form.append(("repo_type", (None, repo_type)))
         if revision:
             form.append(("revision", (None, revision)))
         if commit_message:

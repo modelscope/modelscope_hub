@@ -8,7 +8,7 @@ Includes:
 from __future__ import annotations
 
 import warnings
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -400,6 +400,38 @@ class TestCreateExecute:
             visibility=None, license=None,
             chinese_name="测试数据集", description="这是一个测试数据集",
         )
+
+
+    def test_create_skill_with_skill_file(self, parser, mock_api, capsys, tmp_path):
+        """Skill file is uploaded and its ID is forwarded to create_repo."""
+        zip_file = tmp_path / "skill.zip"
+        zip_file.write_bytes(b"PK dummy")
+        mock_api.upload_file_to_openapi = MagicMock(
+            return_value="8c378570-8991-431b-a82c-96f3d0b4f0f4"
+        )
+        args = parser.parse_args([
+            "create", "owner/my-skill", "--repo-type", "skill",
+            "--category", "developer-tools",
+            "--skill-file", str(zip_file),
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        mock_api.upload_file_to_openapi.assert_called_once()
+        call_kwargs = mock_api.create_repo.call_args
+        assert call_kwargs.kwargs["skill_file"] == "8c378570-8991-431b-a82c-96f3d0b4f0f4"
+        assert call_kwargs.kwargs["category"] == "developer-tools"
+
+    def test_create_skill_file_not_found(self, parser, mock_api):
+        """Non-existent --skill-file path causes SystemExit(2)."""
+        args = parser.parse_args([
+            "create", "owner/my-skill", "--repo-type", "skill",
+            "--category", "developer-tools",
+            "--skill-file", "/nonexistent/skill.zip",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            with pytest.raises(SystemExit) as exc_info:
+                CreateCommand(args).execute()
+            assert exc_info.value.code == 2
 
 
 @pytest.mark.mock_only

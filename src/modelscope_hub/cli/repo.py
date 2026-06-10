@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from argparse import Action
+from pathlib import Path
 
 from ..constants import RepoType
 from ..errors import is_repo_exists_error
@@ -71,6 +72,11 @@ class CreateCommand(CLICommand):
         p.add_argument("--cover-image", dest="cover_image", default=None, help="Studio cover image URL.")
         p.add_argument("--hardware", dest="hardware", default=None, help="Studio hardware spec.")
         p.add_argument("--category", dest="category", default=None, help="Skill category (required for skill repos).")
+        p.add_argument(
+            "--skill-file", dest="skill_file", default=None,
+            help="Local zip for skill (max 5 MB, root must contain exactly one "
+                 "SKILL.md with YAML front-matter: name, version, description).",
+        )
         add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
@@ -80,6 +86,17 @@ class CreateCommand(CLICommand):
             value = getattr(self.args, key, None)
             if value is not None:
                 extra[key] = value
+
+        skill_file = getattr(self.args, "skill_file", None)
+        if skill_file:
+            p = Path(skill_file).expanduser()
+            if not p.exists():
+                error(f"Skill file not found: {p}")
+                raise SystemExit(2)
+            info(f"Uploading skill file: {p}")
+            file_id = api.upload_file_to_openapi(p)
+            extra["skill_file"] = file_id
+
         try:
             repo = api.create_repo(
                 self.args.repo_id,
