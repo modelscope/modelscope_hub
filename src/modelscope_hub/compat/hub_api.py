@@ -648,7 +648,9 @@ class LegacyHubApi:
         endpoint: str | None = None,
     ) -> str:
         """Return the base URL prefix for dataset file downloads."""
-        namespace, dataset_name = repo_id.split("/")
+        if "/" not in repo_id:
+            raise ValueError(f"Invalid repo_id format, expected 'namespace/name': {repo_id!r}")
+        namespace, dataset_name = repo_id.split("/", 1)
         ep = endpoint or self._endpoint or self._api._config.endpoint
         return f"{ep}/api/v1/datasets/{namespace}/{dataset_name}/repo?"
 
