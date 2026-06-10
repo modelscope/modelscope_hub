@@ -36,7 +36,7 @@ from urllib3.util.retry import Retry
 
 from .constants import (
     DOWNLOAD_CHUNK_SIZE,
-    DOWNLOAD_PARALLEL_THRESHOLD_MB,
+    DOWNLOAD_PARALLEL_THRESHOLD,
     DOWNLOAD_PARALLELS,
     DOWNLOAD_PART_SIZE,
     DOWNLOAD_RETRY_TIMES,
@@ -758,7 +758,7 @@ class DownloadManager:
         """Download a file with HTTP Range resume support and retry."""
         use_parallel = (
             file_size is not None
-            and file_size > DOWNLOAD_PARALLEL_THRESHOLD_MB * 1_000_000
+            and file_size > DOWNLOAD_PARALLEL_THRESHOLD
             and DOWNLOAD_PARALLELS > 1
         )
 
