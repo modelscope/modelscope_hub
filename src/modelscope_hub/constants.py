@@ -195,7 +195,7 @@ DEFAULT_INTL_ENDPOINT: str = "https://www.modelscope.ai"
 # ---------------------------------------------------------------------------
 # Download tunables
 # ---------------------------------------------------------------------------
-DOWNLOAD_CHUNK_SIZE: int = _env_int("DOWNLOAD_CHUNK_SIZE", 1024 * 1024, "Streaming chunk size (bytes)", "Download")
+DOWNLOAD_CHUNK_SIZE: int = _env_int("DOWNLOAD_CHUNK_SIZE", 1, "Streaming chunk size (MB)", "Download") * 1024 * 1024
 
 DOWNLOAD_PARALLEL_THRESHOLD_MB: int = _env_int(
     "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB", 500,
@@ -209,9 +209,9 @@ DOWNLOAD_RETRY_TIMES: int = _env_int("DOWNLOAD_RETRY_TIMES", 5, "Per-file downlo
 DOWNLOAD_TIMEOUT: int = _env_int("DOWNLOAD_TIMEOUT", 60, "Per-file download timeout (seconds)", "Download")
 
 DOWNLOAD_PART_SIZE: int = _env_int(
-    "DOWNLOAD_PART_SIZE", 160 * 1024 * 1024,
-    "Parallel range chunk size (bytes)", "Download",
-)
+    "DOWNLOAD_PART_SIZE", 160,
+    "Parallel range chunk size (MB)", "Download",
+) * 1024 * 1024
 
 TEMPORARY_FOLDER_NAME: str = "._____temp"
 """Temporary folder name used during downloads."""
@@ -279,9 +279,9 @@ UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 
 # Upload: limits
 UPLOAD_MAX_FILE_SIZE: int = _env_int(
-    "UPLOAD_MAX_FILE_SIZE", 100 * 1024 * 1024 * 1024,
-    "Max single file size (bytes)", "Upload",
-)
+    "UPLOAD_MAX_FILE_SIZE", 100 * 1024,
+    "Max single file size (MB, default 100 GB)", "Upload",
+) * 1024 * 1024
 UPLOAD_MAX_FILE_COUNT: int = _env_int(
     "UPLOAD_MAX_FILE_COUNT", 100_000, "Max total files per upload", "Upload",
 )

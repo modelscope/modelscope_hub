@@ -556,8 +556,8 @@ Token is persisted locally after `ms login` and auto-loaded in subsequent sessio
 |----------|---------|-------------|
 | `MODELSCOPE_DOWNLOAD_PARALLELS` | `1` | Parallel range-download streams |
 | `MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB` | `500` | File size threshold (MB) for parallel download |
-| `DOWNLOAD_CHUNK_SIZE` | `1048576` | Streaming chunk size (bytes) |
-| `DOWNLOAD_PART_SIZE` | `167772160` | Parallel range chunk size (bytes) |
+| `DOWNLOAD_CHUNK_SIZE` | `1` | Streaming chunk size (MB) |
+| `DOWNLOAD_PART_SIZE` | `160` | Parallel range chunk size (MB) |
 | `DOWNLOAD_RETRY_TIMES` | `5` | Per-file download retry count |
 | `DOWNLOAD_TIMEOUT` | `60` | Per-file download timeout (seconds) |
 | `MODELSCOPE_HUB_FILE_LOCK` | `true` | File lock for multiprocess download safety |
@@ -570,7 +570,7 @@ Token is persisted locally after `ms login` and auto-loaded in subsequent sessio
 |----------|---------|-------------|
 | `DEFAULT_MAX_WORKERS` | `min(8, cpu+4)` | Default parallel worker threads |
 | `UPLOAD_USE_CACHE` | `true` | Enable resumable upload cache |
-| `UPLOAD_MAX_FILE_SIZE` | `107374182400` | Max single file size (bytes) |
+| `UPLOAD_MAX_FILE_SIZE` | `102400` | Max single file size (MB, default 100 GB) |
 | `UPLOAD_MAX_FILE_COUNT` | `100000` | Max total files per upload |
 | `UPLOAD_BLOB_CONNECT_TIMEOUT` | `30` | Blob upload connect timeout (seconds) |
 | `UPLOAD_BLOB_READ_TIMEOUT` | `3600` | Blob upload read timeout (seconds) |
