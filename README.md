@@ -34,27 +34,10 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 ## News
 
 **v0.0.8** (2026-06-10)
-
-*Feature*
-- `ms list --all` — auto-paginate to fetch all results in one command
-- `ms create --repo-type skill --skill-file` — upload local zip and create skill in one step
-- `ms list --envs` — discover all configurable environment variables
-
-*Fix*
-- Download robustness: per-file lock, stale lock detection, atomic parallel merge
-- `upload_folder --disable-tqdm` now suppresses all progress bars (including commit batches)
-- Preserve `_endpoint_overridden` across `HubApi` config updates
-- Validate `repo_id` format in compat `get_file_base_path`
-
-*Security*
-- Redact OAuth tokens from git error logs and API error output
-
-*Refactor*
-- Centralize env var registry with auto-registration and category validation
-- Unify `MODELSCOPE_DOMAIN` into `MODELSCOPE_ENDPOINT` (deprecated with `FutureWarning`)
-
-*Compat*
-- Add `get_file_base_path` for legacy SDK migration
+- **Feature**: `ms list --all` auto-pagination; `ms create --skill-file` zip upload; `ms list --envs`
+- **Fix**: Download per-file lock & stale detection & atomic merge; `--disable-tqdm` for folder upload
+- **Security**: Redact tokens from git/API error output
+- **Refactor**: Centralize env var registry; unify `MODELSCOPE_DOMAIN` → `MODELSCOPE_ENDPOINT`
 
 <details>
 <summary>Older releases</summary>
