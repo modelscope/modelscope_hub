@@ -112,6 +112,9 @@ class TqdmCallback(ProgressCallback):
 # ---------------------------------------------------------------------------
 # File lock
 # ---------------------------------------------------------------------------
+_STALE_LOCK_SECONDS = 2 * 3600
+
+
 @contextlib.contextmanager
 def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
     """Acquire a file lock when *enabled*, otherwise no-op."""
@@ -124,11 +127,30 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     default_interval = 60
     lock = FileLock(str(lock_path), timeout=default_interval)
+    is_soft = False
+    waited = 0
 
     while True:
         try:
             lock.acquire(timeout=default_interval)
         except Timeout:
+            waited += default_interval
+            if is_soft and waited >= _STALE_LOCK_SECONDS:
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                except OSError:
+                    age = 0
+                if age >= _STALE_LOCK_SECONDS:
+                    logger.warning(
+                        "Removing possibly stale SoftFileLock (age=%.0fs): %s",
+                        age, lock_path,
+                    )
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    waited = 0
+                    continue
             logger.info(
                 "Still waiting to acquire lock on %s",
                 lock_path,
@@ -140,6 +162,7 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
                     lock_path,
                 )
                 lock = SoftFileLock(str(lock_path), timeout=default_interval)
+                is_soft = True
                 continue
             raise
         except OSError as exc:
@@ -149,6 +172,7 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
                     exc.errno, lock_path,
                 )
                 lock = SoftFileLock(str(lock_path), timeout=default_interval)
+                is_soft = True
                 continue
             raise
         else:
@@ -272,7 +296,8 @@ def _parallel_download(
         cb.end()
 
     hash_sha256 = hashlib.sha256()
-    with open(file_path, "wb") as output_file:
+    tmp_target = target.with_suffix(target.suffix + ".parallel_tmp")
+    with open(tmp_target, "wb") as output_file:
         for task in tasks:
             part_file_name = f"{task[0]}_{task[2]}_{task[3]}"
             with open(part_file_name, "rb") as part_file:
@@ -283,6 +308,7 @@ def _parallel_download(
                     output_file.write(chunk)
                     hash_sha256.update(chunk)
             os.remove(part_file_name)
+    tmp_target.replace(target)
     return hash_sha256.hexdigest()
 
 
@@ -444,7 +470,7 @@ class DownloadManager:
             return target
 
         use_lock = _file_lock_enabled()
-        lock_path = self._lock_path(repo_id, repo_type, file_path=file_path) if use_lock else None
+        lock_path = self._lock_path(repo_id, repo_type, cache_dir=cache_dir, file_path=file_path) if use_lock else None
         with _optional_file_lock(lock_path, enabled=use_lock):
             # Re-check after acquiring lock — another process may have finished.
             if not force and self._cache_hit(target, expected_sha256):
