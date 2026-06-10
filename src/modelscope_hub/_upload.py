@@ -965,6 +965,7 @@ class UploadManager:
                     commit_message=commit_message,
                     revision=revision,
                     max_workers=max_workers,
+                    disable_tqdm=disable_tqdm,
                 )
             )
             commit_infos.extend(react_commits)
@@ -980,6 +981,7 @@ class UploadManager:
                 revision=revision,
                 commit_infos=commit_infos,
                 all_results=all_results,
+                disable_tqdm=disable_tqdm,
             )
 
         tracker.save()
@@ -1466,6 +1468,7 @@ class UploadManager:
         commit_message: str,
         revision: str,
         max_workers: int,
+        disable_tqdm: bool = False,
     ) -> tuple[list[tuple], list[dict], list[dict]]:
         commit_infos: list[dict] = []
         all_successes: list[dict] = []
@@ -1735,6 +1738,7 @@ class UploadManager:
         revision: str,
         commit_infos: list[dict],
         all_results: list[dict],
+        disable_tqdm: bool = False,
     ) -> list[tuple]:
         total_failed_files = list(failed_files)
         for retry_round in range(UPLOAD_FAILED_FILE_MAX_RETRIES):

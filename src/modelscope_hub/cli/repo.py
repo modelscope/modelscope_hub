@@ -13,7 +13,7 @@ from pathlib import Path
 from ..constants import RepoType
 from ..errors import is_repo_exists_error
 from ..types import RepoInfo
-from .base import CLICommand, add_repo_type_arg, info, make_api, print_env_table, render_table, success
+from .base import CLICommand, add_repo_type_arg, error, info, make_api, print_env_table, render_table, success
 from .compat import add_subcmd_token_endpoint
 
 
@@ -214,7 +214,6 @@ class ListCommand(CLICommand):
             return
 
         if not self.args.repo_type:
-            from .base import error
             error("--repo-type is required (unless using --envs).")
             raise SystemExit(2)
 
