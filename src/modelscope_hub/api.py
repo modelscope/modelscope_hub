@@ -142,7 +142,12 @@ class HubApi:
         base = config or get_default_config()
         if config is None and (endpoint is not None or token is not None):
             from dataclasses import replace
+            was_overridden = base._endpoint_overridden
             base = replace(base)
+            # replace() re-runs __post_init__ which sees the inherited
+            # endpoint string as "explicit" and sets _endpoint_overridden.
+            # Restore the original state so resolve_endpoint_for_read works.
+            base._endpoint_overridden = was_overridden
         self._config = base
         if endpoint is not None:
             self._config.endpoint = endpoint.rstrip("/")
@@ -376,11 +381,10 @@ class HubApi:
 
         Resolution order:
         1. Explicit ``access_token`` argument
-        2. Token configured on this instance
-        3. ``MODELSCOPE_API_TOKEN`` environment variable
-        4. Saved cookies from ``~/.modelscope/credentials/cookies``
+        2. Token from config (explicit arg > env var > persisted cookie)
+        3. Saved cookies from ``~/.modelscope/credentials/cookies``
 
-        When a token is available (steps 1-3), a fresh
+        When a token is available (steps 1-2), a fresh
         :class:`~requests.cookies.RequestsCookieJar` with ``m_session_id``
         is built. Otherwise the locally cached cookies from a prior
         ``login()`` call are loaded.
