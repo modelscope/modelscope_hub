@@ -26,7 +26,15 @@ class GitError(HubError):
     suggestion = "Git operation failed. Please check network and repo permissions."
 
 
-_CREDENTIAL_RE = re.compile(r"://oauth2:[^@]+@")
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def _redact_git_url(url: str) -> str:
+    """Strip userinfo from a single URL using urlparse (handles `@` in creds)."""
+    parsed = urlparse(url)
+    if parsed.username or parsed.password:
+        return urlunparse(parsed._replace(netloc=f"***@{parsed.hostname}" + (f":{parsed.port}" if parsed.port else "")))
+    return url
 
 
 class GitCommand:
@@ -47,8 +55,8 @@ class GitCommand:
     # ------------------------------------------------------------------
     @staticmethod
     def _redact(text: str) -> str:
-        """Strip embedded OAuth credentials from arbitrary text."""
-        return _CREDENTIAL_RE.sub("://***@", text)
+        """Strip embedded credentials from arbitrary text."""
+        return _URL_RE.sub(lambda m: _redact_git_url(m.group()), text)
 
     @classmethod
     def _run(cls, *args: str, cwd: Path | str | None = None) -> subprocess.CompletedProcess[str]:

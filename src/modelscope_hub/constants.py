@@ -118,11 +118,10 @@ def _env_int(
     default: int,
     description: str = "",
     category: str = "",
-    default_display: str = "",
 ) -> int:
     """Read a positive integer from the environment and register it."""
     if description and category:
-        ENV_REGISTRY.append(EnvVar(name, default_display or str(default), description, category))
+        _env_register(name, str(default), description, category)
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
         return default
@@ -141,19 +140,25 @@ def _env_bool(
 ) -> bool:
     """Read a boolean from the environment and register it."""
     if description and category:
-        ENV_REGISTRY.append(
-            EnvVar(name, str(default).lower(), description, category)
-        )
+        _env_register(name, str(default).lower(), description, category)
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
+_REGISTERED_NAMES: set[str] = set()
+
+
 def _env_register(
     name: str, default: str, description: str, category: str,
 ) -> None:
     """Register an env var for display only (read logic lives elsewhere)."""
+    if category not in CATEGORY_ORDER:
+        raise ValueError(f"Unknown env var category {category!r}, must be one of {CATEGORY_ORDER}")
+    if name in _REGISTERED_NAMES:
+        return
+    _REGISTERED_NAMES.add(name)
     ENV_REGISTRY.append(EnvVar(name, default, description, category))
 
 
@@ -264,11 +269,8 @@ UPLOAD_REACT_BACKOFF_MAX_EXPONENT: int = _env_int("UPLOAD_REACT_BACKOFF_MAX_EXPO
 UPLOAD_REACT_MAX_DELAY: int = _env_int("UPLOAD_REACT_MAX_DELAY", 120)
 
 # Upload: workers
-DEFAULT_MAX_WORKERS: int = _env_int(
-    "DEFAULT_MAX_WORKERS", min(8, (os.cpu_count() or 4) + 4),
-    "Default parallel worker threads", "Upload",
-    default_display="min(8, cpu+4)",
-)
+_env_register("DEFAULT_MAX_WORKERS", "min(8, cpu+4)", "Default parallel worker threads", "Upload")
+DEFAULT_MAX_WORKERS: int = _env_int("DEFAULT_MAX_WORKERS", min(8, (os.cpu_count() or 4) + 4))
 
 # Upload: cache / tracker
 UPLOAD_USE_CACHE: bool = _env_bool("UPLOAD_USE_CACHE", True, "Enable resumable upload cache", "Upload")

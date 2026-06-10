@@ -6,56 +6,13 @@ The legacy ``ms repo <action>`` form is preserved as a hidden alias.
 
 from __future__ import annotations
 
-import os
 from argparse import Action
 
-from ..constants import CATEGORY_ORDER, ENV_REGISTRY, RepoType
+from ..constants import RepoType
+from ..errors import is_repo_exists_error
 from ..types import RepoInfo
-from .base import CLICommand, add_repo_type_arg, info, make_api, render_table, success
+from .base import CLICommand, add_repo_type_arg, info, make_api, print_env_table, render_table, success
 from .compat import add_subcmd_token_endpoint
-
-
-def _print_env_table() -> None:
-    """Print all configurable environment variables grouped by category."""
-    from collections import defaultdict
-
-    groups: dict[str, list] = defaultdict(list)
-    for entry in ENV_REGISTRY:
-        groups[entry.category].append(entry)
-
-    for cat in CATEGORY_ORDER:
-        entries = groups.get(cat)
-        if not entries:
-            continue
-        info(f"\n[{cat}]")
-        rows = []
-        for e in entries:
-            current = os.environ.get(e.name)
-            display = current if current is not None else "(not set)"
-            rows.append((e.name, display, e.default, e.description))
-        info(render_table(rows, headers=["Variable", "Current", "Default", "Description"]))
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-_ALREADY_EXISTS_CODES = {10020101001, 10010101001}
-
-
-def _is_already_exists(exc: BaseException) -> bool:
-    """Detect "repo already exists" regardless of locale."""
-    msg = str(exc).lower()
-    if "exist" in msg or "已被注册" in msg or "已存在" in msg:
-        return True
-    body = getattr(exc, "response_body", None)
-    if isinstance(body, dict):
-        code = body.get("Code")
-        try:
-            if int(code) in _ALREADY_EXISTS_CODES:
-                return True
-        except (TypeError, ValueError):
-            pass
-    return False
 
 
 def _format_visibility(value: object) -> str:
@@ -134,7 +91,7 @@ class CreateCommand(CLICommand):
             )
             success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
         except Exception as exc:
-            if getattr(self.args, "exist_ok", False) and _is_already_exists(exc):
+            if getattr(self.args, "exist_ok", False) and is_repo_exists_error(exc):
                 info(f"Repository already exists: {self.args.repo_id}")
                 return
             raise
@@ -224,7 +181,7 @@ class ListCommand(CLICommand):
 
     def execute(self) -> None:
         if self.args.envs:
-            _print_env_table()
+            print_env_table()
             return
 
         if not self.args.repo_type:

@@ -27,13 +27,17 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 # ---------------------------------------------------------------------------
 # Credential redaction helpers
 # ---------------------------------------------------------------------------
+_SENSITIVE_KEYWORDS: tuple[str, ...] = (
+    "token", "secret", "password", "cookie", "authorization",
+    "credential", "session", "api_key", "apikey",
+)
 _SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset({
-    "token", "access_token", "cookie", "m_session_id",
-    "secret", "password", "key", "authorization",
+    "token", "access_token", "auth_token", "api_key", "apikey",
+    "cookie", "m_session_id", "session",
+    "secret", "password", "key", "authorization", "credentials",
 })
 _SENSITIVE_BODY_KEYS: re.Pattern[str] = re.compile(
-    r"^(token|access_token|cookie|m_session_id|secret|password|key|authorization)$",
-    re.IGNORECASE,
+    "|".join(_SENSITIVE_KEYWORDS), re.IGNORECASE,
 )
 _REDACTED = "***"
 
@@ -61,7 +65,7 @@ def _redact_body(body: Any) -> Any:
     """Deep-redact sensitive keys in a response body structure."""
     if isinstance(body, dict):
         return {
-            k: _REDACTED if _SENSITIVE_BODY_KEYS.match(k) else _redact_body(v)
+            k: _REDACTED if _SENSITIVE_BODY_KEYS.search(k) else _redact_body(v)
             for k, v in body.items()
         }
     if isinstance(body, list):
@@ -474,6 +478,28 @@ def raise_for_status(response: "Response") -> None:
     raise exc_cls(message, **kwargs)
 
 
+# ---------------------------------------------------------------------------
+# Repo-exists detection (shared by cli/repo.py and compat/hub_api.py)
+# ---------------------------------------------------------------------------
+_ALREADY_EXISTS_CODES = {10020101001, 10010101001}
+
+
+def is_repo_exists_error(exc: BaseException) -> bool:
+    """Detect "repo already exists" regardless of locale or error format."""
+    msg = str(exc).lower()
+    if "exist" in msg or "已被注册" in msg or "已存在" in msg:
+        return True
+    body = getattr(exc, "response_body", None)
+    if isinstance(body, dict):
+        code = body.get("Code")
+        try:
+            if int(code) in _ALREADY_EXISTS_CODES:
+                return True
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 __all__ = [
     # Base
     "APIError",
@@ -502,5 +528,6 @@ __all__ = [
     "PermissionError",
     "ValidationError",
     # Utilities
+    "is_repo_exists_error",
     "raise_for_status",
 ]

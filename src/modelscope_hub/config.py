@@ -24,6 +24,7 @@ from .constants import (
     CREDENTIALS_DIR_NAME,
     DEFAULT_CACHE_DIR_NAME,
     DEFAULT_ENDPOINT,
+    ENV_MODELSCOPE_DOMAIN,
     GIT_TOKEN_FILE_NAME,
     SESSION_FILE_NAME,
     USER_INFO_FILE_NAME,
@@ -71,7 +72,7 @@ class HubConfig:
         if os.environ.get(ENV_ENDPOINT):
             self._endpoint_overridden = True
         elif not self._endpoint_overridden:
-            domain = os.environ.get("MODELSCOPE_DOMAIN", "").strip()
+            domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
             if domain:
                 warnings.warn(
                     "Environment variable MODELSCOPE_DOMAIN is deprecated, "

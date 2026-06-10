@@ -410,9 +410,7 @@ class HubApi:
         >>> cookies['m_session_id']
         'ms-xxxxxxxx'
         """
-        import os
-
-        token = access_token or self._config.token or os.environ.get("MODELSCOPE_API_TOKEN")
+        token = access_token or self._config.token
         if token:
             domain = urlparse(self._config.endpoint).hostname or ""
             jar = RequestsCookieJar()
