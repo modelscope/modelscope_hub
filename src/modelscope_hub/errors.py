@@ -17,10 +17,56 @@ status codes.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from requests import Response
+
+# ---------------------------------------------------------------------------
+# Credential redaction helpers
+# ---------------------------------------------------------------------------
+_SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset({
+    "token", "access_token", "cookie", "m_session_id",
+    "secret", "password", "key", "authorization",
+})
+_SENSITIVE_BODY_KEYS: re.Pattern[str] = re.compile(
+    r"^(token|access_token|cookie|m_session_id|secret|password|key|authorization)$",
+    re.IGNORECASE,
+)
+_REDACTED = "***"
+
+
+def _redact_url(url: str) -> str:
+    """Strip sensitive query parameters from a URL."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return url
+    if not parsed.query:
+        return url
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    clean_parts: list[str] = []
+    for k, vals in params.items():
+        if k.lower() in _SENSITIVE_QUERY_KEYS:
+            clean_parts.append(f"{k}={_REDACTED}")
+        else:
+            for v in vals:
+                clean_parts.append(f"{k}={v}")
+    return urlunparse(parsed._replace(query="&".join(clean_parts)))
+
+
+def _redact_body(body: Any) -> Any:
+    """Deep-redact sensitive keys in a response body structure."""
+    if isinstance(body, dict):
+        return {
+            k: _REDACTED if _SENSITIVE_BODY_KEYS.match(k) else _redact_body(v)
+            for k, v in body.items()
+        }
+    if isinstance(body, list):
+        return [_redact_body(item) for item in body]
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -91,13 +137,12 @@ class APIError(HubError):
         detail = self._format_body_detail()
         if detail:
             parts.append(f"| {detail}")
-        # Append debug context on separate lines
         headline = " ".join(parts)
         debug_lines: list[str] = []
         if self.url:
-            debug_lines.append(f"  Request: {self.method or 'GET'} {self.url}")
+            debug_lines.append(f"  Request: {self.method or 'GET'} {_redact_url(self.url)}")
         if self.response_body is not None:
-            body_str = str(self.response_body)
+            body_str = str(_redact_body(self.response_body))
             if len(body_str) > 500:
                 body_str = body_str[:500] + "..."
             debug_lines.append(f"  Response: {body_str}")
@@ -110,12 +155,13 @@ class APIError(HubError):
         if self.response_body is None:
             return None
         if isinstance(self.response_body, dict):
+            safe_body = _redact_body(self.response_body)
             extras: list[str] = []
-            code = self.response_body.get("Code") or self.response_body.get("code")
+            code = safe_body.get("Code") or safe_body.get("code")
             if code is not None:
                 extras.append(f"code={code}")
             for key in ("Data", "data", "detail", "Detail", "errors"):
-                val = self.response_body.get(key)
+                val = safe_body.get(key)
                 if val is not None:
                     val_str = str(val)
                     if len(val_str) > 300:
