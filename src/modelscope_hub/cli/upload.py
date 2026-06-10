@@ -137,6 +137,7 @@ class UploadCommand(CLICommand):
             ignore_patterns=self.args.ignore_patterns,
             max_workers=self.args.max_workers,
             use_cache=self.args.use_cache,
+            disable_tqdm=self.args.disable_tqdm,
         )
         if result is None:
             success("All files already committed, nothing to upload.")

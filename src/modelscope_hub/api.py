@@ -1054,6 +1054,7 @@ class HubApi:
         ignore_patterns: list[str] | None = None,
         max_workers: int | None = None,
         use_cache: bool = True,
+        disable_tqdm: bool = False,
     ) -> dict | list[dict] | None:
         """Upload an entire folder to a repository with resumable support.
 
@@ -1085,6 +1086,8 @@ class HubApi:
             Concurrency for parallel uploads. Defaults to adaptive.
         use_cache : bool, optional
             Use ``.ms_upload_cache`` for resumable uploads. Default True.
+        disable_tqdm : bool, optional
+            Disable progress bars. Default False.
 
         Returns
         -------
@@ -1118,6 +1121,7 @@ class HubApi:
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,
             use_cache=use_cache,
+            disable_tqdm=disable_tqdm,
         )
 
     def download_file(

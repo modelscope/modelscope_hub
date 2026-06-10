@@ -668,6 +668,7 @@ class UploadManager:
         ignore_patterns: list[str] | None = None,
         max_workers: int | None = None,
         use_cache: bool = UPLOAD_USE_CACHE,
+        disable_tqdm: bool = False,
     ) -> dict | list[dict] | None:
         """Upload a folder with resumable support, adaptive batching, and retry."""
         start_time = time.time()
@@ -834,6 +835,7 @@ class UploadManager:
                     repo_type=repo_type,
                     tracker=tracker,
                     pre_validated=pre_validated,
+                    disable_tqdm=disable_tqdm,
                 )
                 logger.debug("Uploaded: %s", path_in_repo_w)
                 batch_tracker.record_success(file_idx, result)
@@ -862,6 +864,7 @@ class UploadManager:
                     range(num_batches),
                     desc="[Committing batches]",
                     total=num_batches,
+                    disable=disable_tqdm,
                 ):
                     batch_start = batch_idx * commit_batch_size
                     batch_end = min(
@@ -1032,6 +1035,7 @@ class UploadManager:
         repo_type: str,
         tracker: UploadTracker | NullTracker | None = None,
         pre_validated: Any = None,
+        disable_tqdm: bool = False,
     ) -> dict:
         if tracker is None:
             tracker = NullTracker()
@@ -1091,7 +1095,7 @@ class UploadManager:
                     sha256=file_hash,
                     size=file_size,
                     data=file_path,
-                    disable_tqdm=file_size <= UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD,
+                    disable_tqdm=disable_tqdm or file_size <= UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD,
                     tqdm_desc=f"[Uploading {file_path_in_repo}]",
                     pre_validated=pre_validated,
                 )
@@ -1547,6 +1551,7 @@ class UploadManager:
                             repo_id=repo_id,
                             repo_type=repo_type,
                             tracker=tracker,
+                            disable_tqdm=disable_tqdm,
                         )
                         future_map[future] = (path_in_repo_r, file_path_r)
                     for future in as_completed(future_map):
@@ -1585,6 +1590,7 @@ class UploadManager:
                             repo_id=repo_id,
                             repo_type=repo_type,
                             tracker=tracker,
+                            disable_tqdm=disable_tqdm,
                         )
                         round_successes.append(result)
                     except Exception as e:
@@ -1749,6 +1755,7 @@ class UploadManager:
                         repo_id=repo_id,
                         repo_type=repo_type,
                         tracker=tracker,
+                        disable_tqdm=disable_tqdm,
                     )
                     retry_successes.append(result)
                 except Exception as e:
