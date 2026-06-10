@@ -222,8 +222,11 @@ class TestListParser:
         assert args.page_size == 10
 
     def test_missing_repo_type_exits(self, parser):
+        args = parser.parse_args(["list"])
+        assert args.repo_type is None
+        from modelscope_hub.cli.repo import ListCommand
         with pytest.raises(SystemExit):
-            parser.parse_args(["list"])
+            ListCommand(args).execute()
 
     def test_subcmd_token_endpoint(self, parser):
         args = parser.parse_args([
