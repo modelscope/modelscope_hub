@@ -33,6 +33,20 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.0.8** (2026-06-10)
+- **Security**: Redact OAuth tokens from git error logs and API error output
+- **Feature**: `ms list --envs` — discover all configurable environment variables
+- **Refactor**: Centralize env var registry with auto-registration and category validation
+- **Refactor**: Unify `MODELSCOPE_DOMAIN` into `MODELSCOPE_ENDPOINT` (deprecated with `FutureWarning`)
+- **Fix**: Validate `repo_id` format in compat `get_file_base_path`
+
+**v0.0.6/0.0.7** (2026-06-07)
+- Fix `HubApi` mutating global singleton config when constructed with overrides
+- Add `get_file_base_path` compat method for legacy SDK migration
+
+<details>
+<summary>Older releases</summary>
+
 **v0.0.5** (2026-06-05)
 - Fix `list_repos` pagination and dataset visibility issues
 - OpenAPI spec alignment: pagination limits, retry, auth, request body
@@ -41,6 +55,8 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 - Flatten CLI to top-level commands (`ms create/info/list/delete`)
 - Migrate credentials to `~/.modelscope/credentials/`
 - Fix dataset/skill download, blob upload auth, error code refactor
+
+</details>
 
 ---
 
