@@ -6,12 +6,76 @@ The legacy ``ms repo <action>`` form is preserved as a hidden alias.
 
 from __future__ import annotations
 
+import os
 from argparse import Action
 
 from ..constants import RepoType
 from ..types import RepoInfo
 from .base import CLICommand, add_repo_type_arg, info, make_api, render_table, success
 from .compat import add_subcmd_token_endpoint
+
+
+# ---------------------------------------------------------------------------
+# Environment variable registry for ``ms list --envs``
+# ---------------------------------------------------------------------------
+_ENV_VARS: list[tuple[str, str, str, str]] = [
+    # (env_name, default, description, category)
+    # -- Core --
+    ("MODELSCOPE_API_TOKEN", "-", "API authentication token", "Core"),
+    ("MODELSCOPE_ENDPOINT", "https://modelscope.cn", "API endpoint URL", "Core"),
+    ("MODELSCOPE_CACHE", "~/.cache/modelscope", "Local cache directory", "Core"),
+    ("MODELSCOPE_HOME", "~/.modelscope", "SDK config directory", "Core"),
+    ("MODELSCOPE_PREFER_AI_SITE", "false", "Prefer modelscope.ai over modelscope.cn", "Core"),
+    # -- Network --
+    ("API_TIMEOUT", "60", "HTTP request timeout (seconds)", "Network"),
+    ("MODELSCOPE_API_CONNECT_TIMEOUT", "10", "HTTP connect timeout (seconds)", "Network"),
+    ("API_MAX_RETRIES", "5", "Max retry attempts for transient failures", "Network"),
+    # -- Download --
+    ("MODELSCOPE_DOWNLOAD_PARALLELS", "1", "Parallel range-download streams", "Download"),
+    ("MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB", "500", "File size threshold (MB) for parallel download", "Download"),
+    ("DOWNLOAD_CHUNK_SIZE", "1048576", "Streaming chunk size (bytes)", "Download"),
+    ("DOWNLOAD_PART_SIZE", "167772160", "Parallel range chunk size (bytes)", "Download"),
+    ("DOWNLOAD_RETRY_TIMES", "5", "Per-file download retry count", "Download"),
+    ("DOWNLOAD_TIMEOUT", "60", "Per-file download timeout (seconds)", "Download"),
+    ("MODELSCOPE_HUB_FILE_LOCK", "true", "File lock for multiprocess download safety", "Download"),
+    ("INTRA_CLOUD_ACCELERATION", "true", "Alibaba cloud intra-cloud acceleration", "Download"),
+    ("INTRA_CLOUD_ACCELERATION_REGION", "(auto)", "Override intra-cloud region ID", "Download"),
+    # -- Upload --
+    ("DEFAULT_MAX_WORKERS", "min(8, cpu+4)", "Default parallel worker threads", "Upload"),
+    ("UPLOAD_USE_CACHE", "true", "Enable resumable upload cache", "Upload"),
+    ("UPLOAD_MAX_FILE_SIZE", "107374182400", "Max single file size (bytes)", "Upload"),
+    ("UPLOAD_MAX_FILE_COUNT", "100000", "Max total files per upload", "Upload"),
+    ("UPLOAD_BLOB_CONNECT_TIMEOUT", "30", "Blob upload connect timeout (seconds)", "Upload"),
+    ("UPLOAD_BLOB_READ_TIMEOUT", "3600", "Blob upload read timeout (seconds)", "Upload"),
+    # -- Logging --
+    ("MODELSCOPE_LOG_LEVEL", "INFO", "SDK log level (DEBUG/INFO/WARNING/ERROR)", "Logging"),
+    # -- Deprecated --
+    ("MODELSCOPE_DOMAIN", "-", "Deprecated: use MODELSCOPE_ENDPOINT", "Deprecated"),
+    ("MODELSCOPE_HUB_NO_DEPRECATION_WARNINGS", "-", "Suppress deprecation warnings", "Deprecated"),
+]
+
+_CATEGORY_ORDER = ["Core", "Network", "Download", "Upload", "Logging", "Deprecated"]
+
+
+def _print_env_table() -> None:
+    """Print all configurable environment variables grouped by category."""
+    from collections import defaultdict
+
+    groups: dict[str, list[tuple[str, str, str, str]]] = defaultdict(list)
+    for entry in _ENV_VARS:
+        groups[entry[3]].append(entry)
+
+    for cat in _CATEGORY_ORDER:
+        entries = groups.get(cat)
+        if not entries:
+            continue
+        info(f"\n[{cat}]")
+        rows = []
+        for name, default, desc, _ in entries:
+            current = os.environ.get(name)
+            display = current if current is not None else "(not set)"
+            rows.append((name, display, default, desc))
+        info(render_table(rows, headers=["Variable", "Current", "Default", "Description"]))
 
 
 # ---------------------------------------------------------------------------
@@ -169,18 +233,24 @@ class DeleteCommand(CLICommand):
 
 
 class ListCommand(CLICommand):
-    """``ms list`` — list repositories of a given type."""
+    """``ms list`` — list repositories or environment variables."""
 
     @staticmethod
     def register(subparsers: Action) -> None:
-        p = subparsers.add_parser("list", help="List repositories of a given type.")
+        p = subparsers.add_parser("list", help="List repositories or show configurable env vars.")
         ListCommand._add_arguments(p)
         p.set_defaults(_command=ListCommand)
 
     @staticmethod
     def _add_arguments(p) -> None:
+        p.add_argument(
+            "--envs", action="store_true", default=False,
+            help="Show all configurable environment variables and exit.",
+        )
         add_repo_type_arg(
             p,
+            required=False,
+            default=None,
             choices=[
                 RepoType.MODEL.value,
                 RepoType.DATASET.value,
@@ -195,6 +265,15 @@ class ListCommand(CLICommand):
         add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
+        if self.args.envs:
+            _print_env_table()
+            return
+
+        if not self.args.repo_type:
+            from .base import error
+            error("--repo-type is required (unless using --envs).")
+            raise SystemExit(2)
+
         api = make_api(self.args)
         result = api.list_repos(
             self.args.repo_type,

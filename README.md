@@ -514,19 +514,60 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 
 ## Configuration
 
-| Environment Variable | Purpose | Default |
-|---------------------|---------|---------|
-| `MODELSCOPE_API_TOKEN` | Default API token | — |
-| `MODELSCOPE_ENDPOINT` | API endpoint | `https://modelscope.cn` |
-| `MODELSCOPE_CACHE` | Override cache directory | `~/.modelscope/hub` |
-| `MODELSCOPE_DOWNLOAD_PARALLELS` | Parallel range-download parts for large files | `1` (disabled) |
-| `MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB` | File size threshold (MB) to trigger parallel range download | `500` |
-| `DOWNLOAD_RETRY_TIMES` | Per-file download retry count | `5` |
-| `DOWNLOAD_TIMEOUT` | Per-request download timeout (seconds) | `60` |
-| `MODELSCOPE_HUB_FILE_LOCK` | Enable file lock for multiprocess download safety | `true` |
-| `INTRA_CLOUD_ACCELERATION` | Enable Alibaba cloud intra-cloud download acceleration | `true` |
+Run `ms list --envs` to see all configurable environment variables with their current values.
 
 Token is persisted locally after `ms login` and auto-loaded in subsequent sessions.
+
+**Core:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODELSCOPE_API_TOKEN` | — | API authentication token |
+| `MODELSCOPE_ENDPOINT` | `https://modelscope.cn` | API endpoint URL |
+| `MODELSCOPE_CACHE` | `~/.cache/modelscope` | Local cache directory |
+| `MODELSCOPE_HOME` | `~/.modelscope` | SDK config directory |
+| `MODELSCOPE_PREFER_AI_SITE` | `false` | Prefer `modelscope.ai` over `modelscope.cn` |
+
+**Network:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_TIMEOUT` | `60` | HTTP request timeout (seconds) |
+| `MODELSCOPE_API_CONNECT_TIMEOUT` | `10` | HTTP connect timeout (seconds) |
+| `API_MAX_RETRIES` | `5` | Max retry attempts for transient failures |
+
+**Download:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODELSCOPE_DOWNLOAD_PARALLELS` | `1` | Parallel range-download streams |
+| `MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB` | `500` | File size threshold (MB) for parallel download |
+| `DOWNLOAD_CHUNK_SIZE` | `1048576` | Streaming chunk size (bytes) |
+| `DOWNLOAD_PART_SIZE` | `167772160` | Parallel range chunk size (bytes) |
+| `DOWNLOAD_RETRY_TIMES` | `5` | Per-file download retry count |
+| `DOWNLOAD_TIMEOUT` | `60` | Per-file download timeout (seconds) |
+| `MODELSCOPE_HUB_FILE_LOCK` | `true` | File lock for multiprocess download safety |
+| `INTRA_CLOUD_ACCELERATION` | `true` | Alibaba cloud intra-cloud acceleration |
+| `INTRA_CLOUD_ACCELERATION_REGION` | (auto) | Override intra-cloud region ID |
+
+**Upload:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEFAULT_MAX_WORKERS` | `min(8, cpu+4)` | Default parallel worker threads |
+| `UPLOAD_USE_CACHE` | `true` | Enable resumable upload cache |
+| `UPLOAD_MAX_FILE_SIZE` | `107374182400` | Max single file size (bytes) |
+| `UPLOAD_MAX_FILE_COUNT` | `100000` | Max total files per upload |
+| `UPLOAD_BLOB_CONNECT_TIMEOUT` | `30` | Blob upload connect timeout (seconds) |
+| `UPLOAD_BLOB_READ_TIMEOUT` | `3600` | Blob upload read timeout (seconds) |
+
+**Logging:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MODELSCOPE_LOG_LEVEL` | `INFO` | SDK log level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+
+> `MODELSCOPE_DOMAIN` is deprecated — use `MODELSCOPE_ENDPOINT` instead.
 
 ---
 
