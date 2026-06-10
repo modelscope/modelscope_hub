@@ -340,7 +340,7 @@ UPLOAD_REACT_MAX_DELAY: int = _env_int("UPLOAD_REACT_MAX_DELAY", 120)
 # Upload: workers
 DEFAULT_MAX_WORKERS: int = _env_int(
     "MODELSCOPE_UPLOAD_MAX_WORKERS", min(8, (os.cpu_count() or 4) + 4),
-    "Default parallel worker threads", "Upload",
+    "Default parallel worker threads (min(8, cpu+4))", "Upload",
     "DEFAULT_MAX_WORKERS",
 )
 

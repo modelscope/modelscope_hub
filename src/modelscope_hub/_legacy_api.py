@@ -22,6 +22,7 @@ import requests
 from requests.adapters import HTTPAdapter, Retry
 
 from .constants import (
+    API_CONNECT_TIMEOUT,
     API_MAX_RETRIES,
     API_TIMEOUT,
     LEGACY_API_PREFIX,
@@ -78,7 +79,7 @@ class LegacyClient:
     ) -> None:
         self._token = token
         self._endpoint = endpoint.rstrip("/")
-        self._timeout = timeout
+        self._timeout: int | tuple[int, int] = (API_CONNECT_TIMEOUT, timeout)
         self._session_authenticated = False
 
         self._session = requests.Session()

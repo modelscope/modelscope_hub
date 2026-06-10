@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from typing import IO, Union
 
+from ..config import ENV_CACHE
 from ..constants import DEFAULT_CACHE_DIR_NAME, DOWNLOAD_CHUNK_SIZE
 from ..errors import FileIntegrityError
 
@@ -78,7 +79,7 @@ def get_file_size(path_or_fileobj: PathLike | FileObj) -> int:
 
 def get_cache_dir() -> Path:
     """Return the SDK cache directory, honouring ``MODELSCOPE_CACHE``."""
-    override = os.environ.get("MODELSCOPE_CACHE")
+    override = os.environ.get(ENV_CACHE)
     if override:
         return ensure_dir(override)
     return ensure_dir(Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME)
