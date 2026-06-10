@@ -16,12 +16,13 @@ from typing import Any, Sequence
 # ---------------------------------------------------------------------------
 # Deprecation infrastructure
 # ---------------------------------------------------------------------------
-_SUPPRESS_ENVVAR = "MODELSCOPE_HUB_NO_DEPRECATION_WARNINGS"
+_SUPPRESS_ENVVAR = "MODELSCOPE_NO_DEPRECATION_WARNINGS"
+_SUPPRESS_ENVVAR_OLD = "MODELSCOPE_HUB_NO_DEPRECATION_WARNINGS"
 
 
 def deprecated_arg(old: str, new: str) -> None:
     """Emit a DeprecationWarning for a renamed CLI argument."""
-    if os.environ.get(_SUPPRESS_ENVVAR):
+    if os.environ.get(_SUPPRESS_ENVVAR) or os.environ.get(_SUPPRESS_ENVVAR_OLD):
         return
     warnings.warn(
         f"'{old}' is deprecated and will be removed in a future version. "

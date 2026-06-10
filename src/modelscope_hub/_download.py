@@ -372,14 +372,14 @@ class DownloadManager:
         self,
         user_agent: dict | str | None = None,
     ) -> dict[str, str]:
-        from .constants import _env_bool
+        from .constants import _env, _env_bool
 
         headers: dict[str, str] = {
             "user-agent": self._build_user_agent(user_agent),
             "snapshot-identifier": uuid.uuid4().hex,
         }
         if _env_bool(ENV_INTRA_CLOUD_ACCELERATION, True):
-            region = os.environ.get(ENV_INTRA_CLOUD_REGION, "").strip()
+            region = (_env(ENV_INTRA_CLOUD_REGION, "INTRA_CLOUD_ACCELERATION_REGION") or "").strip()
             if not region:
                 try:
                     region = self._detect_region()

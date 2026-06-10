@@ -154,7 +154,17 @@ def print_env_table() -> None:
         rows = []
         for e in entries:
             current = os.environ.get(e.name)
+            deprecated_in_use = None
+            if current is None and e.deprecated_names:
+                for old in e.deprecated_names:
+                    val = os.environ.get(old)
+                    if val is not None:
+                        current = val
+                        deprecated_in_use = old
+                        break
             display = current if current is not None else "(not set)"
+            if deprecated_in_use:
+                display += f"  (via deprecated {deprecated_in_use})"
             rows.append((e.name, display, e.default, e.description))
         info(render_table(rows, headers=["Variable", "Current", "Default", "Description"]))
 

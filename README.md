@@ -546,42 +546,45 @@ Token is persisted locally after `ms login` and auto-loaded in subsequent sessio
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `API_TIMEOUT` | `60` | HTTP request timeout (seconds) |
+| `MODELSCOPE_API_TIMEOUT` | `60` | HTTP request timeout (seconds) |
 | `MODELSCOPE_API_CONNECT_TIMEOUT` | `10` | HTTP connect timeout (seconds) |
-| `API_MAX_RETRIES` | `5` | Max retry attempts for transient failures |
+| `MODELSCOPE_API_MAX_RETRIES` | `5` | Max retry attempts for transient failures |
 
 **Download:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MODELSCOPE_DOWNLOAD_PARALLELS` | `1` | Parallel range-download streams |
-| `MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD` | `500` | Parallel download threshold (MB) |
-| `DOWNLOAD_CHUNK_SIZE` | `1` | Streaming chunk size (MB) |
-| `DOWNLOAD_PART_SIZE` | `160` | Parallel range chunk size (MB) |
-| `DOWNLOAD_RETRY_TIMES` | `5` | Per-file download retry count |
-| `DOWNLOAD_TIMEOUT` | `60` | Per-file download timeout (seconds) |
-| `MODELSCOPE_HUB_FILE_LOCK` | `true` | File lock for multiprocess download safety |
-| `INTRA_CLOUD_ACCELERATION` | `true` | Alibaba cloud intra-cloud acceleration |
-| `INTRA_CLOUD_ACCELERATION_REGION` | (auto) | Override intra-cloud region ID |
+| `MODELSCOPE_DOWNLOAD_PARALLEL_WORKERS` | `1` | Parallel range-download streams |
+| `MODELSCOPE_DOWNLOAD_PARALLEL_THRESHOLD_MB` | `500` | Parallel download threshold (MB) |
+| `MODELSCOPE_DOWNLOAD_CHUNK_SIZE_MB` | `1` | Streaming chunk size (MB) |
+| `MODELSCOPE_DOWNLOAD_PART_SIZE_MB` | `160` | Parallel range chunk size (MB) |
+| `MODELSCOPE_DOWNLOAD_MAX_RETRIES` | `5` | Per-file download retry count |
+| `MODELSCOPE_DOWNLOAD_TIMEOUT` | `60` | Per-file download timeout (seconds) |
+| `MODELSCOPE_DOWNLOAD_FILE_LOCK` | `true` | File lock for multiprocess download safety |
+| `MODELSCOPE_DOWNLOAD_INTRA_CLOUD` | `true` | Alibaba cloud intra-cloud acceleration |
+| `MODELSCOPE_DOWNLOAD_INTRA_CLOUD_REGION` | (auto) | Override intra-cloud region ID |
 
 **Upload:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEFAULT_MAX_WORKERS` | `min(8, cpu+4)` | Default parallel worker threads |
-| `UPLOAD_USE_CACHE` | `true` | Enable resumable upload cache |
-| `UPLOAD_MAX_FILE_SIZE` | `102400` | Max single file size (MB, default 100 GB) |
-| `UPLOAD_MAX_FILE_COUNT` | `100000` | Max total files per upload |
-| `UPLOAD_BLOB_CONNECT_TIMEOUT` | `30` | Blob upload connect timeout (seconds) |
-| `UPLOAD_BLOB_READ_TIMEOUT` | `3600` | Blob upload read timeout (seconds) |
+| `MODELSCOPE_UPLOAD_MAX_WORKERS` | `min(8, cpu+4)` | Default parallel worker threads |
+| `MODELSCOPE_UPLOAD_CACHE` | `true` | Enable resumable upload cache |
+| `MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB` | `102400` | Max single file size (MB, default 100 GB) |
+| `MODELSCOPE_UPLOAD_MAX_FILE_COUNT` | `100000` | Max total files per upload |
+| `MODELSCOPE_UPLOAD_CONNECT_TIMEOUT` | `30` | Upload connect timeout (seconds) |
+| `MODELSCOPE_UPLOAD_READ_TIMEOUT` | `3600` | Upload read timeout (seconds) |
 
 **Logging:**
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MODELSCOPE_LOG_LEVEL` | `INFO` | SDK log level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
+| `MODELSCOPE_NO_DEPRECATION_WARNINGS` | — | Suppress deprecation warnings |
 
-> `MODELSCOPE_DOMAIN` is deprecated — use `MODELSCOPE_ENDPOINT` instead.
+> Old variable names (e.g. `API_TIMEOUT`, `DOWNLOAD_RETRY_TIMES`, `UPLOAD_USE_CACHE`) are
+> still accepted but emit a `FutureWarning`. Run `ms list --envs` to see which deprecated
+> names are active in your environment.
 
 </details>
 

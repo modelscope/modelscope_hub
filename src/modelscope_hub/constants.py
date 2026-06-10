@@ -36,6 +36,7 @@ class EnvVar:
     default: str
     description: str
     category: str  # Core, Network, Download, Upload, Logging, Deprecated
+    deprecated_names: tuple[str, ...] = ()
 
 ENV_REGISTRY: list[EnvVar] = []
 
@@ -113,16 +114,41 @@ LEGACY_API_PREFIX: str = "/api/v1"
 # ---------------------------------------------------------------------------
 # Helpers for environment-driven overrides (auto-registering)
 # ---------------------------------------------------------------------------
+_REGISTERED_NAMES: set[str] = set()
+_DEPRECATED_LOOKUP: dict[str, tuple[str, ...]] = {}
+
+
+def _env(name: str, *deprecated_names: str) -> str | None:
+    """Read an env var, falling back to deprecated names with a warning."""
+    value = os.environ.get(name)
+    if value is not None:
+        return value
+    for old in deprecated_names:
+        value = os.environ.get(old)
+        if value is not None:
+            import warnings
+            warnings.warn(
+                f"Environment variable {old!r} is deprecated, "
+                f"use {name!r} instead.",
+                FutureWarning,
+                stacklevel=4,
+            )
+            return value
+    return None
+
+
 def _env_int(
     name: str,
     default: int,
     description: str = "",
     category: str = "",
+    *deprecated_names: str,
 ) -> int:
     """Read a positive integer from the environment and register it."""
     if description and category:
-        _env_register(name, str(default), description, category)
-    raw = os.environ.get(name)
+        _env_register(name, str(default), description, category,
+                      deprecated_names=deprecated_names)
+    raw = _env(name, *deprecated_names)
     if raw is None or raw.strip() == "":
         return default
     try:
@@ -137,21 +163,26 @@ def _env_bool(
     default: bool,
     description: str = "",
     category: str = "",
+    *deprecated_names: str,
 ) -> bool:
     """Read a boolean from the environment and register it."""
     if description and category:
-        _env_register(name, str(default).lower(), description, category)
-    raw = os.environ.get(name)
+        _env_register(name, str(default).lower(), description, category,
+                      deprecated_names=deprecated_names)
+    all_deprecated = deprecated_names or _DEPRECATED_LOOKUP.get(name, ())
+    raw = _env(name, *all_deprecated)
     if raw is None or raw.strip() == "":
         return default
     return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
-_REGISTERED_NAMES: set[str] = set()
-
-
 def _env_register(
-    name: str, default: str, description: str, category: str,
+    name: str,
+    default: str,
+    description: str,
+    category: str,
+    *,
+    deprecated_names: tuple[str, ...] = (),
 ) -> None:
     """Register an env var for display only (read logic lives elsewhere)."""
     if category not in CATEGORY_ORDER:
@@ -159,7 +190,9 @@ def _env_register(
     if name in _REGISTERED_NAMES:
         return
     _REGISTERED_NAMES.add(name)
-    ENV_REGISTRY.append(EnvVar(name, default, description, category))
+    if deprecated_names:
+        _DEPRECATED_LOOKUP[name] = deprecated_names
+    ENV_REGISTRY.append(EnvVar(name, default, description, category, deprecated_names))
 
 
 # ---------------------------------------------------------------------------
@@ -174,11 +207,22 @@ _env_register("MODELSCOPE_HOME", "~/.modelscope", "SDK config directory", "Core"
 # ---------------------------------------------------------------------------
 # Network / IO tunables
 # ---------------------------------------------------------------------------
-API_TIMEOUT: int = _env_int("API_TIMEOUT", 60, "HTTP request timeout (seconds)", "Network")
+API_TIMEOUT: int = _env_int(
+    "MODELSCOPE_API_TIMEOUT", 60,
+    "HTTP request timeout (seconds)", "Network",
+    "API_TIMEOUT",
+)
 
-API_CONNECT_TIMEOUT: int = _env_int("MODELSCOPE_API_CONNECT_TIMEOUT", 10, "HTTP connect timeout (seconds)", "Network")
+API_CONNECT_TIMEOUT: int = _env_int(
+    "MODELSCOPE_API_CONNECT_TIMEOUT", 10,
+    "HTTP connect timeout (seconds)", "Network",
+)
 
-API_MAX_RETRIES: int = _env_int("API_MAX_RETRIES", 5, "Max retry attempts for transient failures", "Network")
+API_MAX_RETRIES: int = _env_int(
+    "MODELSCOPE_API_MAX_RETRIES", 5,
+    "Max retry attempts for transient failures", "Network",
+    "API_MAX_RETRIES",
+)
 
 # ---------------------------------------------------------------------------
 # Endpoint switching
@@ -195,22 +239,40 @@ DEFAULT_INTL_ENDPOINT: str = "https://www.modelscope.ai"
 # ---------------------------------------------------------------------------
 # Download tunables
 # ---------------------------------------------------------------------------
-DOWNLOAD_CHUNK_SIZE: int = _env_int("DOWNLOAD_CHUNK_SIZE", 1, "Streaming chunk size (MB)", "Download") * 1024 * 1024
-
-DOWNLOAD_PARALLEL_THRESHOLD: int = _env_int(
-    "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD", 500,
-    "Parallel download threshold (MB)", "Download",
+DOWNLOAD_CHUNK_SIZE: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_CHUNK_SIZE_MB", 1,
+    "Streaming chunk size (MB)", "Download",
+    "DOWNLOAD_CHUNK_SIZE",
 ) * 1024 * 1024
 
-DOWNLOAD_PARALLELS: int = _env_int("MODELSCOPE_DOWNLOAD_PARALLELS", 1, "Parallel range-download streams", "Download")
+DOWNLOAD_PARALLEL_THRESHOLD: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_PARALLEL_THRESHOLD_MB", 500,
+    "Parallel download threshold (MB)", "Download",
+    "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD",
+) * 1024 * 1024
 
-DOWNLOAD_RETRY_TIMES: int = _env_int("DOWNLOAD_RETRY_TIMES", 5, "Per-file download retry count", "Download")
+DOWNLOAD_PARALLELS: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_PARALLEL_WORKERS", 1,
+    "Parallel range-download streams", "Download",
+    "MODELSCOPE_DOWNLOAD_PARALLELS",
+)
 
-DOWNLOAD_TIMEOUT: int = _env_int("DOWNLOAD_TIMEOUT", 60, "Per-file download timeout (seconds)", "Download")
+DOWNLOAD_RETRY_TIMES: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_MAX_RETRIES", 5,
+    "Per-file download retry count", "Download",
+    "DOWNLOAD_RETRY_TIMES",
+)
+
+DOWNLOAD_TIMEOUT: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_TIMEOUT", 60,
+    "Per-file download timeout (seconds)", "Download",
+    "DOWNLOAD_TIMEOUT",
+)
 
 DOWNLOAD_PART_SIZE: int = _env_int(
-    "DOWNLOAD_PART_SIZE", 160,
+    "MODELSCOPE_DOWNLOAD_PART_SIZE_MB", 160,
     "Parallel range chunk size (MB)", "Download",
+    "DOWNLOAD_PART_SIZE",
 ) * 1024 * 1024
 
 TEMPORARY_FOLDER_NAME: str = "._____temp"
@@ -219,14 +281,17 @@ TEMPORARY_FOLDER_NAME: str = "._____temp"
 FILE_HASH_FIELD: str = "Sha256"
 """API response field name for file hash."""
 
-ENV_FILE_LOCK: str = "MODELSCOPE_HUB_FILE_LOCK"
-_env_register(ENV_FILE_LOCK, "true", "File lock for multiprocess download safety", "Download")
+ENV_FILE_LOCK: str = "MODELSCOPE_DOWNLOAD_FILE_LOCK"
+_env_register(ENV_FILE_LOCK, "true", "File lock for multiprocess download safety", "Download",
+              deprecated_names=("MODELSCOPE_HUB_FILE_LOCK",))
 
-ENV_INTRA_CLOUD_ACCELERATION: str = "INTRA_CLOUD_ACCELERATION"
-_env_register(ENV_INTRA_CLOUD_ACCELERATION, "true", "Alibaba cloud intra-cloud acceleration", "Download")
+ENV_INTRA_CLOUD_ACCELERATION: str = "MODELSCOPE_DOWNLOAD_INTRA_CLOUD"
+_env_register(ENV_INTRA_CLOUD_ACCELERATION, "true", "Alibaba cloud intra-cloud acceleration", "Download",
+              deprecated_names=("INTRA_CLOUD_ACCELERATION",))
 
-ENV_INTRA_CLOUD_REGION: str = "INTRA_CLOUD_ACCELERATION_REGION"
-_env_register(ENV_INTRA_CLOUD_REGION, "(auto)", "Override intra-cloud region ID", "Download")
+ENV_INTRA_CLOUD_REGION: str = "MODELSCOPE_DOWNLOAD_INTRA_CLOUD_REGION"
+_env_register(ENV_INTRA_CLOUD_REGION, "(auto)", "Override intra-cloud region ID", "Download",
+              deprecated_names=("INTRA_CLOUD_ACCELERATION_REGION",))
 
 UPLOAD_LFS_THRESHOLD: int = _env_int("UPLOAD_LFS_THRESHOLD", 5 * 1024 * 1024)
 UPLOAD_LFS_ENFORCE_THRESHOLD: int = _env_int("UPLOAD_LFS_ENFORCE_THRESHOLD", 1 * 1024 * 1024)
@@ -239,10 +304,14 @@ UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD: int = _env_int("UPLOAD_BLOB_TQDM_DISABLE_THR
 
 # Upload: blob timeout
 UPLOAD_BLOB_CONNECT_TIMEOUT: int = _env_int(
-    "UPLOAD_BLOB_CONNECT_TIMEOUT", 30, "Blob upload connect timeout (seconds)", "Upload",
+    "MODELSCOPE_UPLOAD_CONNECT_TIMEOUT", 30,
+    "Upload connect timeout (seconds)", "Upload",
+    "UPLOAD_BLOB_CONNECT_TIMEOUT",
 )
 UPLOAD_BLOB_READ_TIMEOUT: int = _env_int(
-    "UPLOAD_BLOB_READ_TIMEOUT", 3600, "Blob upload read timeout (seconds)", "Upload",
+    "MODELSCOPE_UPLOAD_READ_TIMEOUT", 3600,
+    "Upload read timeout (seconds)", "Upload",
+    "UPLOAD_BLOB_READ_TIMEOUT",
 )
 
 # Upload: urllib3 retry
@@ -269,21 +338,31 @@ UPLOAD_REACT_BACKOFF_MAX_EXPONENT: int = _env_int("UPLOAD_REACT_BACKOFF_MAX_EXPO
 UPLOAD_REACT_MAX_DELAY: int = _env_int("UPLOAD_REACT_MAX_DELAY", 120)
 
 # Upload: workers
-_env_register("DEFAULT_MAX_WORKERS", "min(8, cpu+4)", "Default parallel worker threads", "Upload")
-DEFAULT_MAX_WORKERS: int = _env_int("DEFAULT_MAX_WORKERS", min(8, (os.cpu_count() or 4) + 4))
+DEFAULT_MAX_WORKERS: int = _env_int(
+    "MODELSCOPE_UPLOAD_MAX_WORKERS", min(8, (os.cpu_count() or 4) + 4),
+    "Default parallel worker threads", "Upload",
+    "DEFAULT_MAX_WORKERS",
+)
 
 # Upload: cache / tracker
-UPLOAD_USE_CACHE: bool = _env_bool("UPLOAD_USE_CACHE", True, "Enable resumable upload cache", "Upload")
+UPLOAD_USE_CACHE: bool = _env_bool(
+    "MODELSCOPE_UPLOAD_CACHE", True,
+    "Enable resumable upload cache", "Upload",
+    "UPLOAD_USE_CACHE",
+)
 UPLOAD_CACHE_FILE: str = ".ms_upload_cache"
 UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 
 # Upload: limits
 UPLOAD_MAX_FILE_SIZE: int = _env_int(
-    "UPLOAD_MAX_FILE_SIZE", 100 * 1024,
+    "MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB", 100 * 1024,
     "Max single file size (MB, default 100 GB)", "Upload",
+    "UPLOAD_MAX_FILE_SIZE",
 ) * 1024 * 1024
 UPLOAD_MAX_FILE_COUNT: int = _env_int(
-    "UPLOAD_MAX_FILE_COUNT", 100_000, "Max total files per upload", "Upload",
+    "MODELSCOPE_UPLOAD_MAX_FILE_COUNT", 100_000,
+    "Max total files per upload", "Upload",
+    "UPLOAD_MAX_FILE_COUNT",
 )
 UPLOAD_MAX_FILE_COUNT_IN_DIR: int = _env_int("UPLOAD_MAX_FILE_COUNT_IN_DIR", 50_000)
 UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT: int = _env_int("UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT", 500 * 1024 * 1024)
@@ -331,7 +410,8 @@ MODELSCOPE_ASCII = r"""
 # Logging / deprecated (read logic in utils/logger.py, cli/compat.py)
 # ---------------------------------------------------------------------------
 _env_register("MODELSCOPE_LOG_LEVEL", "INFO", "SDK log level (DEBUG/INFO/WARNING/ERROR)", "Logging")
-_env_register("MODELSCOPE_HUB_NO_DEPRECATION_WARNINGS", "-", "Suppress deprecation warnings", "Deprecated")
+_env_register("MODELSCOPE_NO_DEPRECATION_WARNINGS", "-", "Suppress deprecation warnings", "Logging",
+              deprecated_names=("MODELSCOPE_HUB_NO_DEPRECATION_WARNINGS",))
 
 
 # ---------------------------------------------------------------------------
