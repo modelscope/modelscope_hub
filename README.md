@@ -555,7 +555,7 @@ Token is persisted locally after `ms login` and auto-loaded in subsequent sessio
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MODELSCOPE_DOWNLOAD_PARALLELS` | `1` | Parallel range-download streams |
-| `MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB` | `500` | File size threshold (MB) for parallel download |
+| `MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD` | `500` | Parallel download threshold (MB) |
 | `DOWNLOAD_CHUNK_SIZE` | `1` | Streaming chunk size (MB) |
 | `DOWNLOAD_PART_SIZE` | `160` | Parallel range chunk size (MB) |
 | `DOWNLOAD_RETRY_TIMES` | `5` | Per-file download retry count |

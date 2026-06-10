@@ -198,8 +198,8 @@ DEFAULT_INTL_ENDPOINT: str = "https://www.modelscope.ai"
 DOWNLOAD_CHUNK_SIZE: int = _env_int("DOWNLOAD_CHUNK_SIZE", 1, "Streaming chunk size (MB)", "Download") * 1024 * 1024
 
 DOWNLOAD_PARALLEL_THRESHOLD_MB: int = _env_int(
-    "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB", 500,
-    "File size threshold (MB) for parallel download", "Download",
+    "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD", 500,
+    "Parallel download threshold (MB)", "Download",
 )
 
 DOWNLOAD_PARALLELS: int = _env_int("MODELSCOPE_DOWNLOAD_PARALLELS", 1, "Parallel range-download streams", "Download")
