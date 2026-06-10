@@ -529,6 +529,9 @@ Run `ms list --envs` to see all configurable environment variables with their cu
 
 Token is persisted locally after `ms login` and auto-loaded in subsequent sessions.
 
+<details>
+<summary>Environment variables</summary>
+
 **Core:**
 
 | Variable | Default | Description |
@@ -579,6 +582,8 @@ Token is persisted locally after `ms login` and auto-loaded in subsequent sessio
 | `MODELSCOPE_LOG_LEVEL` | `INFO` | SDK log level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 
 > `MODELSCOPE_DOMAIN` is deprecated — use `MODELSCOPE_ENDPOINT` instead.
+
+</details>
 
 ---
 
