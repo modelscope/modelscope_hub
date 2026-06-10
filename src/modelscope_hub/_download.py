@@ -112,6 +112,9 @@ class TqdmCallback(ProgressCallback):
 # ---------------------------------------------------------------------------
 # File lock
 # ---------------------------------------------------------------------------
+_STALE_LOCK_SECONDS = 2 * 3600
+
+
 @contextlib.contextmanager
 def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
     """Acquire a file lock when *enabled*, otherwise no-op."""
@@ -124,11 +127,30 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     default_interval = 60
     lock = FileLock(str(lock_path), timeout=default_interval)
+    is_soft = False
+    waited = 0
 
     while True:
         try:
             lock.acquire(timeout=default_interval)
         except Timeout:
+            waited += default_interval
+            if is_soft and waited >= _STALE_LOCK_SECONDS:
+                try:
+                    age = time.time() - lock_path.stat().st_mtime
+                except OSError:
+                    age = 0
+                if age >= _STALE_LOCK_SECONDS:
+                    logger.warning(
+                        "Removing possibly stale SoftFileLock (age=%.0fs): %s",
+                        age, lock_path,
+                    )
+                    try:
+                        lock_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    waited = 0
+                    continue
             logger.info(
                 "Still waiting to acquire lock on %s",
                 lock_path,
@@ -140,6 +162,7 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
                     lock_path,
                 )
                 lock = SoftFileLock(str(lock_path), timeout=default_interval)
+                is_soft = True
                 continue
             raise
         except OSError as exc:
@@ -149,6 +172,7 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
                     exc.errno, lock_path,
                 )
                 lock = SoftFileLock(str(lock_path), timeout=default_interval)
+                is_soft = True
                 continue
             raise
         else:
@@ -272,7 +296,8 @@ def _parallel_download(
         cb.end()
 
     hash_sha256 = hashlib.sha256()
-    with open(file_path, "wb") as output_file:
+    tmp_target = target.with_suffix(target.suffix + ".parallel_tmp")
+    with open(tmp_target, "wb") as output_file:
         for task in tasks:
             part_file_name = f"{task[0]}_{task[2]}_{task[3]}"
             with open(part_file_name, "rb") as part_file:
@@ -283,6 +308,7 @@ def _parallel_download(
                     output_file.write(chunk)
                     hash_sha256.update(chunk)
             os.remove(part_file_name)
+    tmp_target.replace(target)
     return hash_sha256.hexdigest()
 
 
@@ -440,42 +466,41 @@ class DownloadManager:
                 cache_dir=str(target.parent),
             )
 
-        if not force and target.exists():
-            if expected_sha256:
-                actual = compute_hash(target, "sha256")
-                if actual == expected_sha256:
-                    logger.debug("Cache hit (hash verified): %s", target)
-                    return target
-                logger.debug("Cache stale (hash mismatch): %s", target)
-            else:
-                logger.debug("Cache hit: %s", target)
+        if not force and self._cache_hit(target, expected_sha256):
+            return target
+
+        use_lock = _file_lock_enabled()
+        lock_path = self._lock_path(repo_id, repo_type, cache_dir=cache_dir, file_path=file_path) if use_lock else None
+        with _optional_file_lock(lock_path, enabled=use_lock):
+            # Re-check after acquiring lock — another process may have finished.
+            if not force and self._cache_hit(target, expected_sha256):
                 return target
 
-        ensure_dir(target.parent)
+            ensure_dir(target.parent)
 
-        for attempt in range(DOWNLOAD_HASH_RETRY_TIMES):
-            self._download_with_resume(
-                repo_id, repo_type, file_path, revision, target,
-                file_size=file_size,
-                user_agent=user_agent,
-                progress_callbacks=progress_callbacks,
-            )
+            for attempt in range(DOWNLOAD_HASH_RETRY_TIMES):
+                self._download_with_resume(
+                    repo_id, repo_type, file_path, revision, target,
+                    file_size=file_size,
+                    user_agent=user_agent,
+                    progress_callbacks=progress_callbacks,
+                )
 
-            if not expected_sha256:
-                break
+                if not expected_sha256:
+                    break
 
-            try:
-                self.verify_file(target, expected_sha256)
-                break
-            except FileIntegrityError:
-                if attempt < DOWNLOAD_HASH_RETRY_TIMES - 1:
-                    logger.warning(
-                        "Hash validation failed for %s, retrying (%d/%d)",
-                        file_path, attempt + 1, DOWNLOAD_HASH_RETRY_TIMES,
-                    )
-                    target.unlink(missing_ok=True)
-                else:
-                    raise
+                try:
+                    self.verify_file(target, expected_sha256)
+                    break
+                except FileIntegrityError:
+                    if attempt < DOWNLOAD_HASH_RETRY_TIMES - 1:
+                        logger.warning(
+                            "Hash validation failed for %s, retrying (%d/%d)",
+                            file_path, attempt + 1, DOWNLOAD_HASH_RETRY_TIMES,
+                        )
+                        target.unlink(missing_ok=True)
+                    else:
+                        raise
 
         return target
 
@@ -588,40 +613,38 @@ class DownloadManager:
 
         logger.info("Downloading %d files from %s@%s", len(download_items), repo_id, revision)
 
-        lock_path = self._lock_path(repo_id, repo_type, cache_dir) if _file_lock_enabled() else None
-        with _optional_file_lock(lock_path, enabled=lock_path is not None):
-            errors: list[str] = []
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(
-                        self.download_file,
-                        repo_id=repo_id,
-                        repo_type=repo_type,
-                        file_path=fp,
-                        revision=revision,
-                        cache_dir=cache_dir,
-                        local_dir=local_dir,
-                        expected_sha256=sha256,
-                        file_size=size,
-                        user_agent=user_agent,
-                        progress_callbacks=progress_callbacks,
-                    ): fp
-                    for fp, sha256, size in download_items
-                }
+        errors: list[str] = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(
+                    self.download_file,
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    file_path=fp,
+                    revision=revision,
+                    cache_dir=cache_dir,
+                    local_dir=local_dir,
+                    expected_sha256=sha256,
+                    file_size=size,
+                    user_agent=user_agent,
+                    progress_callbacks=progress_callbacks,
+                ): fp
+                for fp, sha256, size in download_items
+            }
 
-                with tqdm(total=len(download_items), desc="Downloading", unit="file") as pbar:
-                    for future in as_completed(futures):
-                        fp = futures[future]
-                        try:
-                            future.result()
-                        except Exception as exc:
-                            errors.append(f"{fp}: {exc}")
-                            logger.error("Failed to download %s: %s", fp, exc)
-                        finally:
-                            pbar.update(1)
+            with tqdm(total=len(download_items), desc="Downloading", unit="file") as pbar:
+                for future in as_completed(futures):
+                    fp = futures[future]
+                    try:
+                        future.result()
+                    except Exception as exc:
+                        errors.append(f"{fp}: {exc}")
+                        logger.error("Failed to download %s: %s", fp, exc)
+                    finally:
+                        pbar.update(1)
 
-            if errors:
-                logger.warning("%d file(s) failed to download", len(errors))
+        if errors:
+            logger.warning("%d file(s) failed to download", len(errors))
 
         return output_dir
 
@@ -678,6 +701,21 @@ class DownloadManager:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _cache_hit(target: Path, expected_sha256: str | None) -> bool:
+        """Return True if *target* exists and passes optional hash check."""
+        if not target.exists():
+            return False
+        if expected_sha256:
+            actual = compute_hash(target, "sha256")
+            if actual != expected_sha256:
+                logger.debug("Cache stale (hash mismatch): %s", target)
+                return False
+            logger.debug("Cache hit (hash verified): %s", target)
+        else:
+            logger.debug("Cache hit: %s", target)
+        return True
+
     def _repo_cache_dir(
         self,
         repo_id: str,
@@ -695,10 +733,14 @@ class DownloadManager:
         repo_id: str,
         repo_type: str,
         cache_dir: Path | None = None,
+        file_path: str | None = None,
     ) -> Path:
-        """Compute the lock file path for a given repo."""
+        """Compute the lock file path for a given repo or file."""
         base = cache_dir or self._config.cache_dir
         safe_id = repo_id.replace("/", "___")
+        if file_path is not None:
+            safe_file = file_path.replace("/", "___").replace(".", "_")
+            return base / ".lock" / f"{repo_type}_{safe_id}_{safe_file}.lock"
         return base / ".lock" / f"{repo_type}_{safe_id}.lock"
 
     def _download_with_resume(

@@ -14,6 +14,7 @@ This separation keeps the SDK trivially testable: tests can supply a
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -23,6 +24,7 @@ from .constants import (
     CREDENTIALS_DIR_NAME,
     DEFAULT_CACHE_DIR_NAME,
     DEFAULT_ENDPOINT,
+    ENV_MODELSCOPE_DOMAIN,
     GIT_TOKEN_FILE_NAME,
     SESSION_FILE_NAME,
     USER_INFO_FILE_NAME,
@@ -48,7 +50,7 @@ class HubConfig:
     :func:`dataclasses.replace`, and keeps fields explicit and discoverable.
     """
 
-    endpoint: str = field(default_factory=lambda: os.environ.get(ENV_ENDPOINT) or DEFAULT_ENDPOINT)
+    endpoint: str | None = None  # type: ignore[assignment]  # sentinel; always str after __post_init__
     cache_dir: Path = field(
         default_factory=lambda: _expand(
             os.environ.get(ENV_CACHE) or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME
@@ -61,20 +63,33 @@ class HubConfig:
     )
     token: str | None = None
     _logged_out: bool = field(default=False, init=False, repr=False)
+    _endpoint_overridden: bool = field(default=False, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
     def __post_init__(self) -> None:
-        # MODELSCOPE_DOMAIN backward compat: if MODELSCOPE_ENDPOINT is not set
-        # but the old MODELSCOPE_DOMAIN env var is, use it as the endpoint.
-        if not os.environ.get(ENV_ENDPOINT):
-            domain = os.environ.get("MODELSCOPE_DOMAIN", "").strip()
+        # Precedence: explicit arg > MODELSCOPE_ENDPOINT > MODELSCOPE_DOMAIN > default
+        if self.endpoint is not None:
+            self._endpoint_overridden = True
+        elif os.environ.get(ENV_ENDPOINT):
+            self.endpoint = os.environ.get(ENV_ENDPOINT)
+            self._endpoint_overridden = True
+        else:
+            domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
             if domain:
+                warnings.warn(
+                    "Environment variable MODELSCOPE_DOMAIN is deprecated, "
+                    "use MODELSCOPE_ENDPOINT instead.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
                 if not domain.startswith("http://") and not domain.startswith("https://"):
                     domain = f"https://{domain}"
                 self.endpoint = domain
-        # Strip trailing slash so URL composition stays predictable.
+                self._endpoint_overridden = True
+            else:
+                self.endpoint = DEFAULT_ENDPOINT
         self.endpoint = self.endpoint.rstrip("/")
         if self.token is None:
             self.token = os.environ.get(ENV_TOKEN) or self.load_token()

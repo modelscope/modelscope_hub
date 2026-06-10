@@ -8,7 +8,7 @@ Includes:
 from __future__ import annotations
 
 import warnings
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -18,7 +18,7 @@ from modelscope_hub.cli.repo import (
     InfoCommand,
     ListCommand,
 )
-from modelscope_hub.types import PagedResult
+from modelscope_hub.types import PagedResult, RepoInfo
 
 from .conftest import run_cli
 
@@ -222,8 +222,11 @@ class TestListParser:
         assert args.page_size == 10
 
     def test_missing_repo_type_exits(self, parser):
+        args = parser.parse_args(["list"])
+        assert args.repo_type is None
+        from modelscope_hub.cli.repo import ListCommand
         with pytest.raises(SystemExit):
-            parser.parse_args(["list"])
+            ListCommand(args).execute()
 
     def test_subcmd_token_endpoint(self, parser):
         args = parser.parse_args([
@@ -399,6 +402,38 @@ class TestCreateExecute:
         )
 
 
+    def test_create_skill_with_skill_file(self, parser, mock_api, capsys, tmp_path):
+        """Skill file is uploaded and its ID is forwarded to create_repo."""
+        zip_file = tmp_path / "skill.zip"
+        zip_file.write_bytes(b"PK dummy")
+        mock_api.upload_file_to_openapi = MagicMock(
+            return_value="8c378570-8991-431b-a82c-96f3d0b4f0f4"
+        )
+        args = parser.parse_args([
+            "create", "owner/my-skill", "--repo-type", "skill",
+            "--category", "developer-tools",
+            "--skill-file", str(zip_file),
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        mock_api.upload_file_to_openapi.assert_called_once()
+        call_kwargs = mock_api.create_repo.call_args
+        assert call_kwargs.kwargs["skill_file"] == "8c378570-8991-431b-a82c-96f3d0b4f0f4"
+        assert call_kwargs.kwargs["category"] == "developer-tools"
+
+    def test_create_skill_file_not_found(self, parser, mock_api):
+        """Non-existent --skill-file path causes SystemExit(2)."""
+        args = parser.parse_args([
+            "create", "owner/my-skill", "--repo-type", "skill",
+            "--category", "developer-tools",
+            "--skill-file", "/nonexistent/skill.zip",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            with pytest.raises(SystemExit) as exc_info:
+                CreateCommand(args).execute()
+            assert exc_info.value.code == 2
+
+
 @pytest.mark.mock_only
 class TestInfoExecute:
     """InfoCommand.execute() logic."""
@@ -448,6 +483,41 @@ class TestListExecute:
         mock_api.list_repos.assert_called_once_with(
             "dataset", owner=None, search="qwen", page_number=1, page_size=10,
         )
+
+    def test_list_all_paginates(self, parser, mock_api, capsys):
+        page1 = PagedResult(
+            items=[RepoInfo(id=1, owner="o", name="m1", repo_type="model", downloads=10, likes=1)],
+            total_count=2, page_number=1, page_size=1,
+        )
+        page2 = PagedResult(
+            items=[RepoInfo(id=2, owner="o", name="m2", repo_type="model", downloads=5, likes=0)],
+            total_count=2, page_number=2, page_size=1,
+        )
+        mock_api.list_repos.side_effect = [page1, page2]
+        args = parser.parse_args([
+            "list", "--repo-type", "model", "--all", "--page-size", "1",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            ListCommand(args).execute()
+        assert mock_api.list_repos.call_count == 2
+        out = capsys.readouterr().out
+        assert "o/m1" in out
+        assert "o/m2" in out
+        assert "total 2 repos" in out
+
+    def test_list_all_empty(self, parser, mock_api, capsys):
+        mock_api.list_repos.return_value = PagedResult(
+            items=[], total_count=0, page_number=1, page_size=50,
+        )
+        args = parser.parse_args(["list", "--repo-type", "model", "--all"])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            ListCommand(args).execute()
+        out = capsys.readouterr().out
+        assert "no repositories found" in out
+
+    def test_list_all_and_page_mutually_exclusive(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["list", "--repo-type", "model", "--all", "--page", "2"])
 
 
 @pytest.mark.mock_only

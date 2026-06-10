@@ -142,10 +142,16 @@ class HubApi:
         base = config or get_default_config()
         if config is None and (endpoint is not None or token is not None):
             from dataclasses import replace
+            was_overridden = base._endpoint_overridden
             base = replace(base)
+            # replace() re-runs __post_init__ which sees the inherited
+            # endpoint string as "explicit" and sets _endpoint_overridden.
+            # Restore the original state so resolve_endpoint_for_read works.
+            base._endpoint_overridden = was_overridden
         self._config = base
         if endpoint is not None:
             self._config.endpoint = endpoint.rstrip("/")
+            self._config._endpoint_overridden = True
         if token is not None:
             self._config.token = token
 
@@ -375,11 +381,10 @@ class HubApi:
 
         Resolution order:
         1. Explicit ``access_token`` argument
-        2. Token configured on this instance
-        3. ``MODELSCOPE_API_TOKEN`` environment variable
-        4. Saved cookies from ``~/.modelscope/credentials/cookies``
+        2. Token from config (explicit arg > env var > persisted cookie)
+        3. Saved cookies from ``~/.modelscope/credentials/cookies``
 
-        When a token is available (steps 1-3), a fresh
+        When a token is available (steps 1-2), a fresh
         :class:`~requests.cookies.RequestsCookieJar` with ``m_session_id``
         is built. Otherwise the locally cached cookies from a prior
         ``login()`` call are loaded.
@@ -409,9 +414,7 @@ class HubApi:
         >>> cookies['m_session_id']
         'ms-xxxxxxxx'
         """
-        import os
-
-        token = access_token or self._config.token or os.environ.get("MODELSCOPE_API_TOKEN")
+        token = access_token or self._config.token
         if token:
             domain = urlparse(self._config.endpoint).hostname or ""
             jar = RequestsCookieJar()
@@ -900,8 +903,9 @@ class HubApi:
     ) -> str:
         """Resolve the best endpoint for read operations (download, list, get).
 
-        1. If ``MODELSCOPE_DOMAIN`` env var is set, trust the user's
-           configuration and return it directly (no probe).
+        1. If the endpoint was explicitly configured (via constructor arg,
+           ``MODELSCOPE_ENDPOINT``, or the deprecated ``MODELSCOPE_DOMAIN``),
+           trust the user's configuration and return it directly (no probe).
         2. If ``MODELSCOPE_PREFER_AI_SITE=true``, check ``.ai`` first, then
            fall back to ``.cn``.
         3. Otherwise (default), check ``.cn`` first, then fall back to ``.ai``.
@@ -927,14 +931,11 @@ class HubApi:
         from .constants import (
             DEFAULT_ENDPOINT,
             DEFAULT_INTL_ENDPOINT,
-            ENV_MODELSCOPE_DOMAIN,
             ENV_PREFER_AI_SITE,
         )
 
-        domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
-        if domain:
-            endpoint = domain if domain.startswith("http") else f"https://{domain}"
-            return endpoint.rstrip("/")
+        if self._config._endpoint_overridden:
+            return self._config.endpoint
 
         effective_token = token or self._config.token
 
@@ -965,6 +966,16 @@ class HubApi:
     # ==================================================================
     # Files
     # ==================================================================
+    def upload_file_to_openapi(self, file: str | Path | BinaryIO) -> str:
+        """Upload a file (max 5 MiB) via OpenAPI and return the file ID.
+
+        This is a generic upload not tied to any repository.  The returned
+        ID can be used in subsequent API calls (e.g. ``skill_file`` when
+        creating a skill).
+        """
+        data = self.openapi.upload_file(file=file)
+        return data["id"]
+
     def upload_file(
         self,
         repo_id: str,
@@ -1053,6 +1064,7 @@ class HubApi:
         ignore_patterns: list[str] | None = None,
         max_workers: int | None = None,
         use_cache: bool = True,
+        disable_tqdm: bool = False,
     ) -> dict | list[dict] | None:
         """Upload an entire folder to a repository with resumable support.
 
@@ -1084,6 +1096,8 @@ class HubApi:
             Concurrency for parallel uploads. Defaults to adaptive.
         use_cache : bool, optional
             Use ``.ms_upload_cache`` for resumable uploads. Default True.
+        disable_tqdm : bool, optional
+            Disable progress bars. Default False.
 
         Returns
         -------
@@ -1117,6 +1131,7 @@ class HubApi:
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,
             use_cache=use_cache,
+            disable_tqdm=disable_tqdm,
         )
 
     def download_file(

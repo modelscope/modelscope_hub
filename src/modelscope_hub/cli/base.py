@@ -135,6 +135,30 @@ def parse_kv_pairs(values: Iterable[str]) -> dict[str, str]:
     return result
 
 
+def print_env_table() -> None:
+    """Print all configurable environment variables grouped by category."""
+    import os
+    from collections import defaultdict
+
+    from ..constants import CATEGORY_ORDER, ENV_REGISTRY
+
+    groups: dict[str, list] = defaultdict(list)
+    for entry in ENV_REGISTRY:
+        groups[entry.category].append(entry)
+
+    for cat in CATEGORY_ORDER:
+        entries = groups.get(cat)
+        if not entries:
+            continue
+        info(f"\n[{cat}]")
+        rows = []
+        for e in entries:
+            current = os.environ.get(e.name)
+            display = current if current is not None else "(not set)"
+            rows.append((e.name, display, e.default, e.description))
+        info(render_table(rows, headers=["Variable", "Current", "Default", "Description"]))
+
+
 __all__ = [
     "CLICommand",
     "add_repo_type_arg",
@@ -142,6 +166,7 @@ __all__ = [
     "info",
     "make_api",
     "parse_kv_pairs",
+    "print_env_table",
     "render_table",
     "success",
     "warn",

@@ -16,28 +16,11 @@ import time
 
 from ..api import HubApi
 from ..constants import RepoType
-from ..errors import NotExistError
-
-_ALREADY_EXISTS_CODES = {10020101001, 10010101001}
+from ..errors import NotExistError, is_repo_exists_error
 
 DEFAULT_DATASET_REVISION = "master"
 
 META_FILES_FORMAT = {'.json', '.csv', '.jsonl', '.tsv', '.py'}
-
-
-def _is_repo_exists_error(exc: BaseException) -> bool:
-    msg = str(exc).lower()
-    if "exist" in msg or "已被注册" in msg or "已存在" in msg:
-        return True
-    body = getattr(exc, "response_body", None)
-    if isinstance(body, dict):
-        code = body.get("Code")
-        try:
-            if int(code) in _ALREADY_EXISTS_CODES:
-                return True
-        except (TypeError, ValueError):
-            pass
-    return False
 
 
 class LegacyHubApi:
@@ -113,7 +96,7 @@ class LegacyHubApi:
                 **kwargs,
             )
         except Exception as exc:
-            if exist_ok and _is_repo_exists_error(exc):
+            if exist_ok and is_repo_exists_error(exc):
                 return
             raise
 
@@ -128,7 +111,7 @@ class LegacyHubApi:
                 chinese_name=kwargs.get("chinese_name"),
             )
         except Exception as exc:
-            if not _is_repo_exists_error(exc):
+            if not is_repo_exists_error(exc):
                 raise
         self._api.upload_folder(
             model_id,
@@ -153,7 +136,8 @@ class LegacyHubApi:
         """Resolve the best endpoint for read operations.
 
         Backward-compatible with the old SDK's ``get_endpoint_for_read()``.
-        Honors ``MODELSCOPE_DOMAIN`` and ``MODELSCOPE_PREFER_AI_SITE`` env vars.
+        Honors ``MODELSCOPE_ENDPOINT`` (or deprecated ``MODELSCOPE_DOMAIN``)
+        and ``MODELSCOPE_PREFER_AI_SITE`` env vars.
         """
         return self._api.resolve_endpoint_for_read(
             repo_id, repo_type=repo_type or "model", token=token,
