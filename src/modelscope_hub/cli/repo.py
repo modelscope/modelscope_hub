@@ -71,7 +71,13 @@ class CreateCommand(CLICommand):
         p.add_argument("--base-image", dest="base_image", default=None, help="Studio base image.")
         p.add_argument("--cover-image", dest="cover_image", default=None, help="Studio cover image URL.")
         p.add_argument("--hardware", dest="hardware", default=None, help="Studio hardware spec.")
-        p.add_argument("--category", dest="category", default=None, help="Skill category (required for skill repos).")
+        p.add_argument(
+            "--category", dest="category", default=None,
+            help="Skill category (required for skill repos). Options: "
+                 "skill-management, developer-tools, marketing-seo, "
+                 "frontend-development, ai-media, code-quality-testing, "
+                 "mobile-development, cloud-devops, other.",
+        )
         p.add_argument(
             "--skill-file", dest="skill_file", default=None,
             help="Local zip for skill (max 5 MB, root must contain exactly one "
