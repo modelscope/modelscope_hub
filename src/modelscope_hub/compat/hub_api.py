@@ -153,7 +153,8 @@ class LegacyHubApi:
         """Resolve the best endpoint for read operations.
 
         Backward-compatible with the old SDK's ``get_endpoint_for_read()``.
-        Honors ``MODELSCOPE_DOMAIN`` and ``MODELSCOPE_PREFER_AI_SITE`` env vars.
+        Honors ``MODELSCOPE_ENDPOINT`` (or deprecated ``MODELSCOPE_DOMAIN``)
+        and ``MODELSCOPE_PREFER_AI_SITE`` env vars.
         """
         return self._api.resolve_endpoint_for_read(
             repo_id, repo_type=repo_type or "model", token=token,

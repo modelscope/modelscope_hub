@@ -14,6 +14,7 @@ This separation keeps the SDK trivially testable: tests can supply a
 from __future__ import annotations
 
 import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,20 +62,27 @@ class HubConfig:
     )
     token: str | None = None
     _logged_out: bool = field(default=False, init=False, repr=False)
+    _endpoint_overridden: bool = field(default=False, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
     def __post_init__(self) -> None:
-        # MODELSCOPE_DOMAIN backward compat: if MODELSCOPE_ENDPOINT is not set
-        # but the old MODELSCOPE_DOMAIN env var is, use it as the endpoint.
-        if not os.environ.get(ENV_ENDPOINT):
+        if os.environ.get(ENV_ENDPOINT):
+            self._endpoint_overridden = True
+        elif not self._endpoint_overridden:
             domain = os.environ.get("MODELSCOPE_DOMAIN", "").strip()
             if domain:
+                warnings.warn(
+                    "Environment variable MODELSCOPE_DOMAIN is deprecated, "
+                    "use MODELSCOPE_ENDPOINT instead.",
+                    FutureWarning,
+                    stacklevel=2,
+                )
                 if not domain.startswith("http://") and not domain.startswith("https://"):
                     domain = f"https://{domain}"
                 self.endpoint = domain
-        # Strip trailing slash so URL composition stays predictable.
+                self._endpoint_overridden = True
         self.endpoint = self.endpoint.rstrip("/")
         if self.token is None:
             self.token = os.environ.get(ENV_TOKEN) or self.load_token()

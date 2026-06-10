@@ -146,6 +146,7 @@ class HubApi:
         self._config = base
         if endpoint is not None:
             self._config.endpoint = endpoint.rstrip("/")
+            self._config._endpoint_overridden = True
         if token is not None:
             self._config.token = token
 
@@ -900,8 +901,9 @@ class HubApi:
     ) -> str:
         """Resolve the best endpoint for read operations (download, list, get).
 
-        1. If ``MODELSCOPE_DOMAIN`` env var is set, trust the user's
-           configuration and return it directly (no probe).
+        1. If the endpoint was explicitly configured (via constructor arg,
+           ``MODELSCOPE_ENDPOINT``, or the deprecated ``MODELSCOPE_DOMAIN``),
+           trust the user's configuration and return it directly (no probe).
         2. If ``MODELSCOPE_PREFER_AI_SITE=true``, check ``.ai`` first, then
            fall back to ``.cn``.
         3. Otherwise (default), check ``.cn`` first, then fall back to ``.ai``.
@@ -927,14 +929,11 @@ class HubApi:
         from .constants import (
             DEFAULT_ENDPOINT,
             DEFAULT_INTL_ENDPOINT,
-            ENV_MODELSCOPE_DOMAIN,
             ENV_PREFER_AI_SITE,
         )
 
-        domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
-        if domain:
-            endpoint = domain if domain.startswith("http") else f"https://{domain}"
-            return endpoint.rstrip("/")
+        if self._config._endpoint_overridden:
+            return self._config.endpoint
 
         effective_token = token or self._config.token
 
