@@ -6,6 +6,7 @@ The legacy ``ms repo <action>`` form is preserved as a hidden alias.
 
 from __future__ import annotations
 
+import argparse
 from argparse import Action
 
 from ..constants import RepoType
@@ -174,10 +175,15 @@ class ListCommand(CLICommand):
             ],
         )
         p.add_argument("--owner", default=None)
-        p.add_argument("--search", default=None)
-        p.add_argument("--page", dest="page_number", type=int, default=1)
+        p.add_argument("--search", default=None, help=argparse.SUPPRESS)
+        paging = p.add_mutually_exclusive_group()
+        paging.add_argument("--all", dest="fetch_all", action="store_true", default=False,
+                            help="Fetch all pages automatically.")
+        paging.add_argument("--page", dest="page_number", type=int, default=1)
         p.add_argument("--page-size", dest="page_size", type=int, default=10)
         add_subcmd_token_endpoint(p)
+
+    _MAX_PAGE_SIZE = 50
 
     def execute(self) -> None:
         if self.args.envs:
@@ -190,16 +196,54 @@ class ListCommand(CLICommand):
             raise SystemExit(2)
 
         api = make_api(self.args)
-        result = api.list_repos(
-            self.args.repo_type,
-            owner=self.args.owner,
-            search=self.args.search,
-            page_number=self.args.page_number,
-            page_size=self.args.page_size,
-        )
-        if not result.items:
-            info("(no repositories found)")
-            return
+
+        if getattr(self.args, "fetch_all", False):
+            all_items = self._fetch_all_pages(api)
+            if not all_items:
+                info("(no repositories found)")
+                return
+            self._render_table(all_items)
+            info(f"\ntotal {len(all_items)} repos")
+        else:
+            result = api.list_repos(
+                self.args.repo_type,
+                owner=self.args.owner,
+                search=self.args.search,
+                page_number=self.args.page_number,
+                page_size=self.args.page_size,
+            )
+            if not result.items:
+                info("(no repositories found)")
+                return
+            self._render_table(result.items)
+            info(
+                f"\npage {result.page_number} / total {result.total_count} "
+                f"(page_size={result.page_size})"
+            )
+
+    def _fetch_all_pages(self, api) -> list[RepoInfo]:
+        page_size = min(self.args.page_size, self._MAX_PAGE_SIZE)
+        all_items: list[RepoInfo] = []
+        page_number = 1
+        while True:
+            result = api.list_repos(
+                self.args.repo_type,
+                owner=self.args.owner,
+                search=self.args.search,
+                page_number=page_number,
+                page_size=page_size,
+            )
+            all_items.extend(result.items)
+            if not result.has_next or not result.items:
+                break
+            page_number += 1
+            if page_number * page_size > 3000:
+                info(f"\n(stopped at page {page_number - 1}: server offset limit reached)")
+                break
+        return all_items
+
+    @staticmethod
+    def _render_table(items: list[RepoInfo]) -> None:
         rows = [
             (
                 r.repo_id or "-",
@@ -208,13 +252,9 @@ class ListCommand(CLICommand):
                 r.likes,
                 r.license or "-",
             )
-            for r in result.items
+            for r in items
         ]
         info(render_table(rows, headers=["repo_id", "visibility", "downloads", "likes", "license"]))
-        info(
-            f"\npage {result.page_number} / total {result.total_count} "
-            f"(page_size={result.page_size})"
-        )
 
 
 # ---------------------------------------------------------------------------

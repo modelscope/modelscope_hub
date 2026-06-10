@@ -18,7 +18,7 @@ from modelscope_hub.cli.repo import (
     InfoCommand,
     ListCommand,
 )
-from modelscope_hub.types import PagedResult
+from modelscope_hub.types import PagedResult, RepoInfo
 
 from .conftest import run_cli
 
@@ -451,6 +451,41 @@ class TestListExecute:
         mock_api.list_repos.assert_called_once_with(
             "dataset", owner=None, search="qwen", page_number=1, page_size=10,
         )
+
+    def test_list_all_paginates(self, parser, mock_api, capsys):
+        page1 = PagedResult(
+            items=[RepoInfo(id=1, owner="o", name="m1", repo_type="model", downloads=10, likes=1)],
+            total_count=2, page_number=1, page_size=1,
+        )
+        page2 = PagedResult(
+            items=[RepoInfo(id=2, owner="o", name="m2", repo_type="model", downloads=5, likes=0)],
+            total_count=2, page_number=2, page_size=1,
+        )
+        mock_api.list_repos.side_effect = [page1, page2]
+        args = parser.parse_args([
+            "list", "--repo-type", "model", "--all", "--page-size", "1",
+        ])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            ListCommand(args).execute()
+        assert mock_api.list_repos.call_count == 2
+        out = capsys.readouterr().out
+        assert "o/m1" in out
+        assert "o/m2" in out
+        assert "total 2 repos" in out
+
+    def test_list_all_empty(self, parser, mock_api, capsys):
+        mock_api.list_repos.return_value = PagedResult(
+            items=[], total_count=0, page_number=1, page_size=50,
+        )
+        args = parser.parse_args(["list", "--repo-type", "model", "--all"])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            ListCommand(args).execute()
+        out = capsys.readouterr().out
+        assert "no repositories found" in out
+
+    def test_list_all_and_page_mutually_exclusive(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["list", "--repo-type", "model", "--all", "--page", "2"])
 
 
 @pytest.mark.mock_only
