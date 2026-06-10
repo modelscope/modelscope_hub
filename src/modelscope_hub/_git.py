@@ -7,6 +7,7 @@ used by :class:`~._repository.Repository` for clone/pull/push/lfs ops.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 from urllib.parse import urlparse, urlunparse
@@ -25,6 +26,9 @@ class GitError(HubError):
     suggestion = "Git operation failed. Please check network and repo permissions."
 
 
+_CREDENTIAL_RE = re.compile(r"://oauth2:[^@]+@")
+
+
 class GitCommand:
     """Minimal Git CLI wrapper for repository operations.
 
@@ -41,6 +45,11 @@ class GitCommand:
     # ------------------------------------------------------------------
     # Core subprocess runner
     # ------------------------------------------------------------------
+    @staticmethod
+    def _redact(text: str) -> str:
+        """Strip embedded OAuth credentials from arbitrary text."""
+        return _CREDENTIAL_RE.sub("://***@", text)
+
     @classmethod
     def _run(cls, *args: str, cwd: Path | str | None = None) -> subprocess.CompletedProcess[str]:
         """Execute a git command and return the CompletedProcess.
@@ -51,7 +60,7 @@ class GitCommand:
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
 
-        logger.debug("git %s (cwd=%s)", " ".join(args), cwd or ".")
+        logger.debug("git %s (cwd=%s)", cls._redact(" ".join(args)), cwd or ".")
 
         result = subprocess.run(
             cmd,
@@ -65,12 +74,12 @@ class GitCommand:
         if result.returncode != 0:
             stderr = result.stderr.strip()
             stdout = result.stdout.strip()
-            # "nothing to commit" is benign
             if "nothing to commit" in stdout:
                 logger.debug("Nothing to commit — repo is up to date")
                 return result
-            logger.error("git %s failed: %s", args[0], stderr or stdout)
-            raise GitError(f"git {args[0]} failed: {stderr or stdout}")
+            detail = cls._redact(stderr or stdout)
+            logger.error("git %s failed: %s", args[0], detail)
+            raise GitError(f"git {args[0]} failed: {detail}")
 
         return result
 

@@ -642,6 +642,18 @@ class LegacyHubApi:
 
         return local_paths, dataset_formation
 
+    def get_file_base_path(
+        self,
+        repo_id: str,
+        endpoint: str | None = None,
+    ) -> str:
+        """Return the base URL prefix for dataset file downloads."""
+        if "/" not in repo_id:
+            raise ValueError(f"Invalid repo_id format, expected 'namespace/name': {repo_id!r}")
+        namespace, dataset_name = repo_id.split("/", 1)
+        ep = endpoint or self._endpoint or self._api._config.endpoint
+        return f"{ep}/api/v1/datasets/{namespace}/{dataset_name}/repo?"
+
     def get_dataset_file_url(
         self,
         file_name: str,
