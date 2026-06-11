@@ -36,7 +36,7 @@ from urllib3.util.retry import Retry
 
 from .constants import (
     DOWNLOAD_CHUNK_SIZE,
-    DOWNLOAD_PARALLEL_THRESHOLD_MB,
+    DOWNLOAD_PARALLEL_THRESHOLD,
     DOWNLOAD_PARALLELS,
     DOWNLOAD_PART_SIZE,
     DOWNLOAD_RETRY_TIMES,
@@ -372,14 +372,14 @@ class DownloadManager:
         self,
         user_agent: dict | str | None = None,
     ) -> dict[str, str]:
-        from .constants import _env_bool
+        from .constants import _env, _env_bool
 
         headers: dict[str, str] = {
             "user-agent": self._build_user_agent(user_agent),
             "snapshot-identifier": uuid.uuid4().hex,
         }
         if _env_bool(ENV_INTRA_CLOUD_ACCELERATION, True):
-            region = os.environ.get(ENV_INTRA_CLOUD_REGION, "").strip()
+            region = (_env(ENV_INTRA_CLOUD_REGION, "INTRA_CLOUD_ACCELERATION_REGION") or "").strip()
             if not region:
                 try:
                     region = self._detect_region()
@@ -758,7 +758,7 @@ class DownloadManager:
         """Download a file with HTTP Range resume support and retry."""
         use_parallel = (
             file_size is not None
-            and file_size > DOWNLOAD_PARALLEL_THRESHOLD_MB * 1_000_000
+            and file_size > DOWNLOAD_PARALLEL_THRESHOLD
             and DOWNLOAD_PARALLELS > 1
         )
 

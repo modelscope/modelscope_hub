@@ -24,6 +24,7 @@ from .constants import (
     CREDENTIALS_DIR_NAME,
     DEFAULT_CACHE_DIR_NAME,
     DEFAULT_ENDPOINT,
+    ENV_CACHE,
     ENV_MODELSCOPE_DOMAIN,
     GIT_TOKEN_FILE_NAME,
     SESSION_FILE_NAME,
@@ -33,7 +34,6 @@ from .errors import CacheError, InvalidParameter
 
 # Environment variable names — kept module-level for discoverability.
 ENV_ENDPOINT = "MODELSCOPE_ENDPOINT"
-ENV_CACHE = "MODELSCOPE_CACHE"
 ENV_TOKEN = "MODELSCOPE_API_TOKEN"
 ENV_HOME = "MODELSCOPE_HOME"
 

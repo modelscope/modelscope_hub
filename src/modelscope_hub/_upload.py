@@ -1421,8 +1421,8 @@ class UploadManager:
             fsize = path.stat().st_size
             if fsize > UPLOAD_MAX_FILE_SIZE:
                 raise InvalidParameter(
-                    f"File too large: {path} ({fsize} bytes), "
-                    f"max allowed: {UPLOAD_MAX_FILE_SIZE}"
+                    f"File too large: {path} ({fsize / 1024 / 1024:.1f} MB), "
+                    f"max allowed: {UPLOAD_MAX_FILE_SIZE / 1024 / 1024:.0f} MB"
                 )
             total_size += fsize
             if not _is_lfs(str(path), fsize, repo_type):
