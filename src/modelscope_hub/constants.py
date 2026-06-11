@@ -145,10 +145,11 @@ def _env_int(
     *deprecated_names: str,
 ) -> int:
     """Read a positive integer from the environment and register it."""
+    all_deprecated = deprecated_names or _DEPRECATED_LOOKUP.get(name, ())
     if description and category:
         _env_register(name, str(default), description, category,
-                      deprecated_names=deprecated_names)
-    raw = _env(name, *deprecated_names)
+                      deprecated_names=all_deprecated)
+    raw = _env(name, *all_deprecated)
     if raw is None or raw.strip() == "":
         return default
     try:
@@ -156,6 +157,50 @@ def _env_int(
     except ValueError:
         return default
     return value if value > 0 else default
+
+
+def _env_int_mb(
+    name: str,
+    default_mb: int,
+    description: str = "",
+    category: str = "",
+    *deprecated_byte_names: str,
+) -> int:
+    """Read a size env var (new name in MB, deprecated names in bytes). Returns bytes.
+
+    Handles migration from byte-based deprecated env vars to MB-based new names.
+    If a deprecated byte-based name is set, the value is used directly (already bytes).
+    If the new name is set, the value is treated as MB and converted to bytes.
+    """
+    all_deprecated = deprecated_byte_names or _DEPRECATED_LOOKUP.get(name, ())
+    if description and category:
+        _env_register(name, str(default_mb), description, category,
+                      deprecated_names=all_deprecated)
+    # Check the new name first (value in MB)
+    raw = os.environ.get(name)
+    if raw is not None and raw.strip():
+        try:
+            value = int(raw)
+        except ValueError:
+            return default_mb * 1024 * 1024
+        return value * 1024 * 1024 if value > 0 else default_mb * 1024 * 1024
+    # Fall back to deprecated names (value already in bytes)
+    for old in all_deprecated:
+        raw = os.environ.get(old)
+        if raw is not None and raw.strip():
+            import warnings
+            warnings.warn(
+                f"Environment variable {old!r} is deprecated, "
+                f"use {name!r} instead. Note: {name!r} expects a value in MB.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            try:
+                value = int(raw)
+            except ValueError:
+                return default_mb * 1024 * 1024
+            return value if value > 0 else default_mb * 1024 * 1024
+    return default_mb * 1024 * 1024
 
 
 def _env_bool(
@@ -201,6 +246,7 @@ def _env_register(
 _env_register("MODELSCOPE_API_TOKEN", "-", "API authentication token", "Core")
 _env_register("MODELSCOPE_ENDPOINT", DEFAULT_ENDPOINT, "API endpoint URL", "Core")
 _env_register("MODELSCOPE_CACHE", "~/.cache/modelscope", "Local cache directory", "Core")
+ENV_CACHE: str = "MODELSCOPE_CACHE"
 _env_register("MODELSCOPE_HOME", "~/.modelscope", "SDK config directory", "Core")
 
 
@@ -239,16 +285,16 @@ DEFAULT_INTL_ENDPOINT: str = "https://www.modelscope.ai"
 # ---------------------------------------------------------------------------
 # Download tunables
 # ---------------------------------------------------------------------------
-DOWNLOAD_CHUNK_SIZE: int = _env_int(
+DOWNLOAD_CHUNK_SIZE: int = _env_int_mb(
     "MODELSCOPE_DOWNLOAD_CHUNK_SIZE_MB", 1,
     "Streaming chunk size (MB)", "Download",
     "DOWNLOAD_CHUNK_SIZE",
-) * 1024 * 1024
+)
 
 DOWNLOAD_PARALLEL_THRESHOLD: int = _env_int(
     "MODELSCOPE_DOWNLOAD_PARALLEL_THRESHOLD_MB", 500,
     "Parallel download threshold (MB)", "Download",
-    "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD",
+    "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB",
 ) * 1024 * 1024
 
 DOWNLOAD_PARALLELS: int = _env_int(
@@ -269,11 +315,11 @@ DOWNLOAD_TIMEOUT: int = _env_int(
     "DOWNLOAD_TIMEOUT",
 )
 
-DOWNLOAD_PART_SIZE: int = _env_int(
+DOWNLOAD_PART_SIZE: int = _env_int_mb(
     "MODELSCOPE_DOWNLOAD_PART_SIZE_MB", 160,
     "Parallel range chunk size (MB)", "Download",
     "DOWNLOAD_PART_SIZE",
-) * 1024 * 1024
+)
 
 TEMPORARY_FOLDER_NAME: str = "._____temp"
 """Temporary folder name used during downloads."""
@@ -354,11 +400,11 @@ UPLOAD_CACHE_FILE: str = ".ms_upload_cache"
 UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 
 # Upload: limits
-UPLOAD_MAX_FILE_SIZE: int = _env_int(
+UPLOAD_MAX_FILE_SIZE: int = _env_int_mb(
     "MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB", 100 * 1024,
     "Max single file size (MB, default 100 GB)", "Upload",
     "UPLOAD_MAX_FILE_SIZE",
-) * 1024 * 1024
+)
 UPLOAD_MAX_FILE_COUNT: int = _env_int(
     "MODELSCOPE_UPLOAD_MAX_FILE_COUNT", 100_000,
     "Max total files per upload", "Upload",
@@ -445,6 +491,7 @@ __all__ = [
     "DOWNLOAD_RETRY_TIMES",
     "DOWNLOAD_TIMEOUT",
     "ENV_FILE_LOCK",
+    "ENV_CACHE",
     "ENV_INTRA_CLOUD_ACCELERATION",
     "ENV_INTRA_CLOUD_REGION",
     "ENV_MODELSCOPE_DOMAIN",

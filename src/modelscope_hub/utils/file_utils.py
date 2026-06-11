@@ -8,8 +8,7 @@ import os
 from pathlib import Path
 from typing import IO, Union
 
-from ..config import ENV_CACHE
-from ..constants import DEFAULT_CACHE_DIR_NAME, DOWNLOAD_CHUNK_SIZE
+from ..constants import DEFAULT_CACHE_DIR_NAME, DOWNLOAD_CHUNK_SIZE, ENV_CACHE
 from ..errors import FileIntegrityError
 
 PathLike = Union[str, os.PathLike[str], Path]
