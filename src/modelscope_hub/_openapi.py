@@ -25,7 +25,7 @@ from urllib.parse import urljoin
 import requests
 
 from .config import HubConfig, get_default_config
-from .constants import API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX
+from .constants import API_CONNECT_TIMEOUT, API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX
 from .errors import (
     AuthenticationError,
     InvalidParameter,
@@ -76,7 +76,8 @@ class OpenAPIClient:
         Optional pre-configured :class:`requests.Session`. Useful for tests
         and for sharing a connection pool across multiple clients.
     timeout:
-        Per-request timeout in seconds. Defaults to :data:`API_TIMEOUT`.
+        Per-request read timeout in seconds. When omitted, uses
+        ``(API_CONNECT_TIMEOUT, API_TIMEOUT)`` as ``(connect, read)`` tuple.
     max_retries:
         Maximum number of retry attempts for transient failures.
     """
@@ -91,7 +92,10 @@ class OpenAPIClient:
     ) -> None:
         self._config = config or get_default_config()
         self._session = session or requests.Session()
-        self._timeout = float(timeout) if timeout is not None else float(API_TIMEOUT)
+        self._timeout: float | tuple[float, float] = (
+            float(timeout) if timeout is not None
+            else (float(API_CONNECT_TIMEOUT), float(API_TIMEOUT))
+        )
         self._max_retries = int(max_retries) if max_retries is not None else int(API_MAX_RETRIES)
 
     # ------------------------------------------------------------------

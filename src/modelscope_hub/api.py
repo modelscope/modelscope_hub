@@ -926,12 +926,11 @@ class HubApi:
         NotExistError
             If the repo is not found on any checked endpoint.
         """
-        import os
-
         from .constants import (
             DEFAULT_ENDPOINT,
             DEFAULT_INTL_ENDPOINT,
             ENV_PREFER_AI_SITE,
+            _env_bool,
         )
 
         if self._config._endpoint_overridden:
@@ -939,9 +938,7 @@ class HubApi:
 
         effective_token = token or self._config.token
 
-        prefer_ai = (
-            os.environ.get(ENV_PREFER_AI_SITE, "").strip().lower() == "true"
-        )
+        prefer_ai = _env_bool(ENV_PREFER_AI_SITE, False)
         primary = DEFAULT_INTL_ENDPOINT if prefer_ai else DEFAULT_ENDPOINT
         fallback = DEFAULT_ENDPOINT if prefer_ai else DEFAULT_INTL_ENDPOINT
 
