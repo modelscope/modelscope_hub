@@ -279,6 +279,16 @@ class LegacyHubApi:
                     return item
             return None
 
+        def _created_at(tag: dict) -> int:
+            """Safely coerce CreatedAt to int (handles str, None, invalid)."""
+            raw = tag.get("CreatedAt")
+            if raw is None:
+                return 0
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                return 0
+
         # --- Dev mode or no release_timestamp ---------------------------------
         if release_timestamp is None or release_timestamp > int(time.time()) + _ONE_YEAR:
             if revision is None:
@@ -307,10 +317,10 @@ class LegacyHubApi:
         if revision is None:
             candidates = [
                 t for t in tags_detail
-                if (t.get("CreatedAt") or 0) <= release_timestamp
+                if _created_at(t) <= release_timestamp
             ]
             if candidates:
-                return max(candidates, key=lambda t: t.get("CreatedAt") or 0)
+                return max(candidates, key=_created_at)
             return _find(branches_detail, "master") or {"Revision": "master"}
 
         # Explicit revision
