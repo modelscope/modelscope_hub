@@ -748,8 +748,8 @@ class LegacyHubApi:
 
         # Get visibility
         data = api.legacy.get_repo_info(f"{namespace}/{dataset_name}", RepoType.DATASET)
-        visibility_map = {1: "public", 2: "private"}
-        visibility = visibility_map.get(data.get("Visibility", 1), "public")
+        visibility_map = {1: "private", 3: "internal", 5: "public"}
+        visibility = visibility_map.get(data.get("Visibility", 5), "public")
 
         # Get STS token
         resp = api.legacy._request(
