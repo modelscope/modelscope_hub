@@ -280,14 +280,18 @@ class LegacyHubApi:
             return None
 
         def _created_at(tag: dict) -> int:
-            """Safely coerce CreatedAt to int (handles str, None, invalid)."""
+            """Safely coerce CreatedAt to epoch seconds (handles str, float, ms, None)."""
             raw = tag.get("CreatedAt")
             if raw is None:
                 return 0
             try:
-                return int(raw)
+                ts = int(float(raw))
             except (TypeError, ValueError):
                 return 0
+            # Normalize millisecond timestamps to seconds
+            if ts > 9_999_999_999:
+                ts = ts // 1000
+            return ts
 
         # --- Dev mode or no release_timestamp ---------------------------------
         if release_timestamp is None or release_timestamp > int(time.time()) + _ONE_YEAR:
