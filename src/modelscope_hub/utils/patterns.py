@@ -28,19 +28,19 @@ def _flatten(items: Iterable[str]) -> list[str]:
 
 
 def normalize_patterns(
-    raw_input: str | list[str] | None,
+    raw_input: str | Iterable[str] | None,
 ) -> list[str] | None:
     """Normalize glob pattern input into a clean list or None.
 
-    Accepts None, a single string (optionally comma-separated), or a list of
-    strings whose elements may also be comma-separated. Returns None when the
-    input yields no usable patterns.
+    Accepts None, a single string (optionally comma-separated), or any iterable
+    of strings (list, tuple, etc.) whose elements may also be comma-separated.
+    Returns None when the input yields no usable patterns.
     """
     if raw_input is None:
         return None
     if isinstance(raw_input, str):
         patterns = _split_inline(raw_input)
-    elif isinstance(raw_input, list):
+    elif isinstance(raw_input, Iterable):
         patterns = _flatten(raw_input)
     else:
         return None

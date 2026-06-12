@@ -86,6 +86,8 @@ class LegacyHubApi:
         api = self._api
         if token or endpoint:
             api = HubApi(token=token, endpoint=endpoint or self._endpoint)
+        if create_default_config:
+            kwargs["create_default_config"] = True
         try:
             api.create_repo(
                 repo_id,
@@ -117,10 +119,14 @@ class LegacyHubApi:
             model_id,
             RepoType.MODEL,
             model_dir,
-            path_in_repo="",
+            path_in_repo=kwargs.get("path_in_repo", ""),
             commit_message=kwargs.get("commit_message"),
+            commit_description=kwargs.get("commit_description"),
             revision=kwargs.get("revision"),
+            allow_patterns=kwargs.get("allow_patterns"),
+            ignore_patterns=kwargs.get("ignore_patterns"),
             max_workers=kwargs.get("max_workers", 4),
+            use_cache=kwargs.get("use_cache", True),
         )
 
     # ------------------------------------------------------------------
@@ -190,12 +196,12 @@ class LegacyHubApi:
     # Studio operations
     # ------------------------------------------------------------------
     def deploy_studio(self, studio_id: str, **kwargs: Any) -> dict:
-        self._api.deploy_repo(studio_id, RepoType.STUDIO)
-        return {"status": "deploying"}
+        return self._api.deploy_repo(
+            studio_id, RepoType.STUDIO, payload=kwargs.get("payload"),
+        )
 
     def stop_studio(self, studio_id: str, **kwargs: Any) -> dict:
-        self._api.stop_repo(studio_id, RepoType.STUDIO)
-        return {"status": "stopping"}
+        return self._api.stop_repo(studio_id, RepoType.STUDIO)
 
     def get_studio_logs(self, studio_id: str, **kwargs: Any) -> dict:
         return self._api.get_repo_logs(studio_id, RepoType.STUDIO, **kwargs)
@@ -273,6 +279,20 @@ class LegacyHubApi:
                     return item
             return None
 
+        def _created_at(tag: dict) -> int:
+            """Safely coerce CreatedAt to epoch seconds (handles str, float, ms, None)."""
+            raw = tag.get("CreatedAt")
+            if raw is None:
+                return 0
+            try:
+                ts = int(float(raw))
+            except (TypeError, ValueError):
+                return 0
+            # Normalize millisecond timestamps to seconds
+            if ts > 9_999_999_999:
+                ts = ts // 1000
+            return ts
+
         # --- Dev mode or no release_timestamp ---------------------------------
         if release_timestamp is None or release_timestamp > int(time.time()) + _ONE_YEAR:
             if revision is None:
@@ -301,10 +321,10 @@ class LegacyHubApi:
         if revision is None:
             candidates = [
                 t for t in tags_detail
-                if (t.get("CreatedAt") or 0) <= release_timestamp
+                if _created_at(t) <= release_timestamp
             ]
             if candidates:
-                return max(candidates, key=lambda t: t.get("CreatedAt") or 0)
+                return max(candidates, key=_created_at)
             return _find(branches_detail, "master") or {"Revision": "master"}
 
         # Explicit revision
@@ -732,8 +752,8 @@ class LegacyHubApi:
 
         # Get visibility
         data = api.legacy.get_repo_info(f"{namespace}/{dataset_name}", RepoType.DATASET)
-        visibility_map = {1: "public", 2: "private"}
-        visibility = visibility_map.get(data.get("Visibility", 1), "public")
+        visibility_map = {1: "private", 3: "internal", 5: "public"}
+        visibility = visibility_map.get(data.get("Visibility", 5), "public")
 
         # Get STS token
         resp = api.legacy._request(

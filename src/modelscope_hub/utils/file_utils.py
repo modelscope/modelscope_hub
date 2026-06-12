@@ -38,6 +38,8 @@ def compute_hash(
     FileIntegrityError
         If ``file_path`` is missing or the algorithm is unsupported.
     """
+    if chunk_size < 1:
+        raise ValueError(f"chunk_size must be >= 1, got {chunk_size}")
     path = Path(file_path)
     if not path.is_file():
         raise FileIntegrityError(f"Cannot hash non-existent file: {path}")
