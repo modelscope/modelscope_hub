@@ -78,7 +78,7 @@ def parse_timestamp(
     if isinstance(value, datetime):
         if value.tzinfo is None:
             return value.replace(tzinfo=target_tz)
-        return value
+        return value.astimezone(target_tz)
 
     # bool is a subclass of int; reject it explicitly to avoid silent coercion.
     if isinstance(value, bool):

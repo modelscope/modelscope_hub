@@ -94,7 +94,11 @@ def tabulate(
 
     Columns auto-size to their widest cell; cells longer than ``max_width`` are
     truncated with an ellipsis. ``None`` values render as ``-``.
+
+    Raises :class:`ValueError` if ``max_width`` is less than 1.
     """
+    if max_width < 1:
+        raise ValueError(f"max_width must be >= 1, got {max_width}")
     ncols = len(headers)
     str_rows: list[list[str]] = [
         [_cell(row[i] if i < len(row) else "", max_width) for i in range(ncols)]
