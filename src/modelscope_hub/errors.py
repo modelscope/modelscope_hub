@@ -491,7 +491,7 @@ def is_repo_exists_error(exc: BaseException) -> bool:
         return True
     body = getattr(exc, "response_body", None)
     if isinstance(body, dict):
-        code = body.get("Code")
+        code = body.get("Code") or body.get("code")
         try:
             if int(code) in _ALREADY_EXISTS_CODES:
                 return True
