@@ -58,9 +58,17 @@ class LegacyHubApi:
     # ------------------------------------------------------------------
     # Repository operations
     # ------------------------------------------------------------------
-    def get_model(self, model_id: str) -> dict:
-        """Get model info as a raw dict."""
-        info = self._api.get_repo(model_id, RepoType.MODEL)
+    def get_model(self, model_id: str, revision: str | None = None) -> dict:
+        """Get model info as a raw dict.
+
+        Parameters
+        ----------
+        model_id : str
+            Model identifier, e.g. ``"owner/model_name"``.
+        revision : str, optional
+            Branch or tag to query. Reserved for future use.
+        """
+        info = self._api.get_repo(model_id, RepoType.MODEL, revision=revision)
         return _repo_info_to_dict(info)
 
     def get_model_files(self, model_id: str, recursive: bool = True) -> list[dict]:
