@@ -325,6 +325,10 @@ ms list --repo-type model --owner my-org --page-size 20
 ms delete my-org/my-model --repo-type model --yes
 ```
 
+> **Deprecation notice:** `delete_repo` / `ms delete` emits a `DeprecationWarning` — programmatic repo deletion is restricted for security reasons and will be restored once token-scoped auth is available. Use the [web console](https://modelscope.cn) to delete repos.
+>
+> `delete_files` requires cookie-based session auth; API tokens may receive a 401 error.
+
 <details>
 <summary><code>ms create</code> options</summary>
 
@@ -467,14 +471,14 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | **Repo** | `create_repo(repo_id, repo_type, ...)` | Create a repository |
 | | `get_repo(repo_id, repo_type)` | Get repository metadata |
 | | `list_repos(repo_type, ...)` | Paginated listing |
-| | `delete_repo(repo_id, repo_type)` | Delete a repository |
+| | `delete_repo(repo_id, repo_type)` | Delete a repository *(deprecated — see note below)* |
 | | `repo_exists(repo_id, repo_type)` | Check existence |
 | **Files** | `upload_file(repo_id, repo_type, local, remote)` | Upload a single file |
 | | `upload_folder(repo_id, repo_type, folder, ...)` | Upload a directory |
 | | `download_file(repo_id, repo_type, file, ...)` | Download a single file (with retry, resume, offline mode) |
 | | `download_repo(repo_id, repo_type, ...)` | Download full snapshot (parallel, file lock, progress callbacks) |
 | | `list_repo_files(repo_id, repo_type)` | List files in a repo |
-| | `delete_files(repo_id, repo_type, paths)` | Remove files |
+| | `delete_files(repo_id, repo_type, paths)` | Remove files *(cookie-auth only)* |
 | **Version** | `list_repo_revisions(repo_id, repo_type)` | List branches and tags |
 | | `create_repo_tag(repo_id, repo_type, tag)` | Create a tag |
 | **Deploy** | `deploy_repo(repo_id, repo_type)` | Deploy Studio or MCP |
@@ -491,6 +495,10 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `undeploy_mcp_server(server_id)` | Undeploy an MCP server |
 | **Cache** | `scan_cache(cache_dir)` | Inspect local cache |
 | | `clear_cache(cache_dir, ...)` | Free disk space |
+
+> **Deletion restrictions:**
+> - `delete_repo` is deprecated for security reasons (emits `DeprecationWarning`). Will be restored with token-scoped auth. Use the [web console](https://modelscope.cn) instead.
+> - `delete_files` requires cookie-based session auth; API tokens (`ms-...`) may receive a 401 error.
 
 </details>
 
