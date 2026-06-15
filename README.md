@@ -33,6 +33,11 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.0.9** (2026-06-12)
+- **Feature**: `get_model` support `revision`; expanded param passthrough for repo/model ops
+- **Fix**: Pattern normalization accepts iterable inputs (tuple, etc.)
+- **Fix**: `parse_timestamp` robust timezone conversion for ISO 8601, floats, milliseconds
+
 **v0.0.8** (2026-06-10)
 - **Feature**: `ms list --all` auto-pagination; `ms create --skill-file` zip upload; `ms list --envs`
 - **Fix**: Download per-file lock & stale detection & atomic merge; `--disable-tqdm` for folder upload
