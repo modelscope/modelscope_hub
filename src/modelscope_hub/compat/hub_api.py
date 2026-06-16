@@ -465,12 +465,12 @@ class LegacyHubApi:
         endpoint: str | None = None,
         token: str | None = None,
     ) -> dict:
-        """Get dataset information via the legacy datahub API."""
+        """Get dataset information via OpenAPI."""
         api = self._api
         if token:
             api = HubApi(endpoint=endpoint or self._endpoint, token=token)
-        data = api.legacy.get_repo_info(dataset_id, RepoType.DATASET)
-        return data
+        info = api.get_repo(dataset_id, RepoType.DATASET, revision=revision)
+        return _repo_info_to_dict(info)
 
     def delete_model(
         self,

@@ -726,10 +726,7 @@ class HubApi:
             except NotExistError:
                 data = self.legacy.get_repo_info(repo_id, str(rt))
         elif rt is RepoType.DATASET:
-            try:
-                data = self.openapi.get_dataset(owner, name)
-            except NotExistError:
-                data = self.legacy.get_repo_info(repo_id, str(rt))
+            data = self.openapi.get_dataset(owner, name)
         elif rt is RepoType.STUDIO:
             data = self.openapi.get_studio(owner, name)
         elif rt is RepoType.SKILL:
@@ -808,17 +805,11 @@ class HubApi:
                 filters=clean_filters or None,
             )
         elif rt is RepoType.DATASET:
-            if search or sort or clean_filters:
-                payload = self.openapi.list_datasets(
-                    search=search, owner=owner, sort=sort,
-                    page_number=page_number, page_size=page_size,
-                    filters=clean_filters or None,
-                )
-            else:
-                payload = self.legacy.list_datasets(
-                    owner=owner,
-                    page_number=page_number, page_size=page_size,
-                )
+            payload = self.openapi.list_datasets(
+                search=search, owner=owner, sort=sort,
+                page_number=page_number, page_size=page_size,
+                filters=clean_filters or None,
+            )
         elif rt is RepoType.SKILL:
             if owner:
                 clean_filters.setdefault("owner", owner)
