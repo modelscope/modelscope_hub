@@ -64,7 +64,7 @@ class TestOpenAPIDatasets:
         import json
 
         result = openapi.list_datasets(page_size=3, owner="modelscope")
-        print(f"Datasets result: {json.dumps(result, indent=2)}")
+        print(f"Datasets result:\n{json.dumps(result, indent=2, ensure_ascii=False)}")
         assert isinstance(result, dict)
         datasets = result.get("Datasets") or result.get("datasets") or result.get("Data") or []
         assert isinstance(datasets, list)
