@@ -76,7 +76,19 @@ class Visibility(IntEnum):
 
     @classmethod
     def from_label(cls, label: str) -> "Visibility":
-        """Resolve a visibility from its lowercase label."""
+        """Resolve a visibility from its lowercase label or numeric string.
+
+        Supports both label strings ('private', 'internal', 'public') and
+        numeric strings ('1', '3', '5') for backward compatibility.
+        """
+        # Support numeric strings for backward compatibility: '1' → PRIVATE, '3' → INTERNAL, '5' → PUBLIC
+        if isinstance(label, str) and label.isdigit():
+            numeric = int(label)
+            for member in cls:
+                if member.value == numeric:
+                    return member
+            raise ValueError(f"Unknown visibility label: {label!r}")
+        # Standard label lookup: 'private' → PRIVATE
         try:
             return cls[label.upper()]
         except KeyError as exc:

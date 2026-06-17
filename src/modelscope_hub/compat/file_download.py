@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import warnings
 
+import requests as _requests
+
 from ..api import HubApi
 from ..constants import RepoType
+from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
 from .constants import DEFAULT_DATASET_REVISION
 
 
@@ -41,16 +44,21 @@ def model_file_download(
             api = HubApi(token=token, endpoint=endpoint)
         except Exception:
             pass
-    result = api.download_file(
-        model_id,
-        repo_type=RepoType.MODEL,
-        file_path=file_path,
-        revision=revision,
-        cache_dir=cache_dir,
-        local_dir=local_dir,
-        local_files_only=local_files_only,
-        user_agent=user_agent,
-    )
+    try:
+        result = api.download_file(
+            model_id,
+            repo_type=RepoType.MODEL,
+            file_path=file_path,
+            revision=revision,
+            cache_dir=cache_dir,
+            local_dir=local_dir,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
+        )
+    except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
+        raise _requests.exceptions.HTTPError(
+            str(e), response=getattr(e, 'response', None)
+        ) from e
     return str(result)
 
 
@@ -82,14 +90,19 @@ def dataset_file_download(
             api = HubApi(token=token, endpoint=endpoint)
         except Exception:
             pass
-    result = api.download_file(
-        dataset_id,
-        repo_type=RepoType.DATASET,
-        file_path=file_path,
-        revision=revision or DEFAULT_DATASET_REVISION,
-        cache_dir=cache_dir,
-        local_dir=local_dir,
-        local_files_only=local_files_only,
-        user_agent=user_agent,
-    )
+    try:
+        result = api.download_file(
+            dataset_id,
+            repo_type=RepoType.DATASET,
+            file_path=file_path,
+            revision=revision or DEFAULT_DATASET_REVISION,
+            cache_dir=cache_dir,
+            local_dir=local_dir,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
+        )
+    except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
+        raise _requests.exceptions.HTTPError(
+            str(e), response=getattr(e, 'response', None)
+        ) from e
     return str(result)

@@ -104,7 +104,7 @@ class UploadCommand(CLICommand):
         local = Path(local_path).expanduser()
 
         if not local.exists():
-            error(f"Local path not found: {local}")
+            error(f"'{local}' is not a valid local path")
             raise SystemExit(2)
 
         if local.is_file():

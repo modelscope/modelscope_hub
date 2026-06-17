@@ -216,12 +216,12 @@ class HubApi:
         """Split a canonical ``owner/name`` identifier into its two halves."""
         if not repo_id or "/" not in repo_id:
             raise InvalidParameter(
-                f"Invalid repo_id {repo_id!r}: expected 'owner/name' format."
+                f"repo_id {repo_id!r} should be in format of 'owner/name'."
             )
         owner, _, name = repo_id.partition("/")
         if not owner or not name:
             raise InvalidParameter(
-                f"Invalid repo_id {repo_id!r}: owner and name must both be non-empty."
+                f"repo_id {repo_id!r} should be in format of 'owner/name': owner and name must both be non-empty."
             )
         return owner, name
 
