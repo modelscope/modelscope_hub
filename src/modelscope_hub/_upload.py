@@ -36,6 +36,7 @@ from .constants import (
     DEFAULT_MAX_WORKERS,
     MODEL_LFS_SUFFIX,
     UPLOAD_ADAPTIVE_BATCH_SIZE,
+    UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT,
     UPLOAD_BLOB_MAX_RETRIES,
     UPLOAD_BLOB_RETRY_BACKOFF,
     UPLOAD_BLOB_RETRY_MAX_WAIT,
@@ -43,6 +44,7 @@ from .constants import (
     UPLOAD_CACHE_FILE,
     UPLOAD_COMMIT_BATCH_SIZE,
     UPLOAD_COMMIT_MAX_RETRIES,
+    UPLOAD_COMMIT_MAX_TOTAL_WAIT,
     UPLOAD_FAILED_FILE_MAX_RETRIES,
     UPLOAD_LEGACY_PROGRESS_FILE,
     UPLOAD_LFS_ENFORCE_THRESHOLD,
@@ -860,6 +862,7 @@ class UploadManager:
                             pv = True
                     executor.submit(_upload_worker, file_idx, file_info, pv)
 
+                consecutive_failures = 0
                 for batch_idx in tqdm(
                     range(num_batches),
                     desc="[Committing batches]",
@@ -917,6 +920,7 @@ class UploadManager:
                             batch_idx + 1, num_batches, len(results),
                         )
                         self._track_committed_batch(tracker, results)
+                        consecutive_failures = 0
                     except Exception as e:
                         logger.error(
                             "Batch %d/%d commit failed: %s",
@@ -937,6 +941,7 @@ class UploadManager:
                                 batch_idx + 1, num_batches,
                                 category, len(results),
                             )
+                            consecutive_failures += 1
                         else:
                             for r in results:
                                 total_failed_files.append(
@@ -950,6 +955,13 @@ class UploadManager:
                                 "queue (error_category=%s).",
                                 batch_idx + 1, num_batches,
                                 len(results), category,
+                            )
+                            consecutive_failures += 1
+
+                        if consecutive_failures >= UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT:
+                            raise RuntimeError(
+                                f"Upload aborted: {consecutive_failures} consecutive batch commits failed. "
+                                f"Last error: {e}"
                             )
         finally:
             tracker.save()
@@ -1254,6 +1266,7 @@ class UploadManager:
         max_retries: int = UPLOAD_COMMIT_MAX_RETRIES,
     ) -> dict:
         last_error = None
+        start_time = time.monotonic()
         for attempt in range(max_retries):
             try:
                 return self._client.create_commit(
@@ -1276,6 +1289,14 @@ class UploadManager:
                 last_error = e
 
             wait = min(2**attempt, 60)
+            elapsed = time.monotonic() - start_time
+            if elapsed + wait > UPLOAD_COMMIT_MAX_TOTAL_WAIT:
+                logger.error(
+                    "Commit total wait time would exceed %ds (already %.1fs elapsed), aborting retries.",
+                    UPLOAD_COMMIT_MAX_TOTAL_WAIT,
+                    elapsed,
+                )
+                break
             logger.warning(
                 "Commit attempt %d/%d failed: %s, retrying in %ds ...",
                 attempt + 1, max_retries, last_error, wait,

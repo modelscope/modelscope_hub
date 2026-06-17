@@ -17,6 +17,9 @@ import time
 from ..api import HubApi
 from ..constants import RepoType
 from ..errors import NotExistError, is_repo_exists_error
+from ..utils.logger import get_logger
+
+logger = get_logger("compat")
 
 DEFAULT_DATASET_REVISION = "master"
 
@@ -112,6 +115,21 @@ class LegacyHubApi:
 
     def push_model(self, model_id: str, model_dir: str, **kwargs: Any) -> None:
         """Upload a model directory (legacy signature)."""
+        # Pre-validate model_dir
+        if not os.path.isdir(model_dir):
+            raise ValueError(
+                f"model_dir '{model_dir}' does not exist or is not a directory."
+            )
+        config_files = ("configuration.json", "configuration.yaml", "configuration.yml")
+        if not any(os.path.isfile(os.path.join(model_dir, f)) for f in config_files):
+            logger.warning(
+                "No model configuration file found in '%s'. "
+                "Expected one of: %s. The upload will proceed, "
+                "but the directory may not contain a valid model.",
+                model_dir,
+                ", ".join(config_files),
+            )
+
         try:
             self._api.create_repo(
                 model_id,

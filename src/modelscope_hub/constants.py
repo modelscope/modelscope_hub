@@ -374,6 +374,20 @@ UPLOAD_VALIDATE_BLOB_BATCH_SIZE: int = _env_int("UPLOAD_VALIDATE_BLOB_BATCH_SIZE
 
 # Upload: commit retry
 UPLOAD_COMMIT_MAX_RETRIES: int = _env_int("UPLOAD_COMMIT_MAX_RETRIES", 5)
+UPLOAD_COMMIT_MAX_TOTAL_WAIT: int = _env_int(
+    "MODELSCOPE_UPLOAD_COMMIT_MAX_TOTAL_WAIT",
+    300,
+    "Maximum total wait time (seconds) for commit retries in _commit_with_retry",
+    "Upload",
+)
+
+# Upload: consecutive batch failure limit
+UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT: int = _env_int(
+    "MODELSCOPE_UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",
+    3,
+    "Maximum consecutive batch commit failures before aborting upload_folder",
+    "Upload",
+)
 
 # Upload: failed file retry & ReAct
 UPLOAD_FAILED_FILE_MAX_RETRIES: int = _env_int("UPLOAD_FAILED_FILE_MAX_RETRIES", 3)
@@ -516,7 +530,9 @@ __all__ = [
     "UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD",
     "UPLOAD_CACHE_FILE",
     "UPLOAD_COMMIT_BATCH_SIZE",
+    "UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",
     "UPLOAD_COMMIT_MAX_RETRIES",
+    "UPLOAD_COMMIT_MAX_TOTAL_WAIT",
     "UPLOAD_FAILED_FILE_MAX_RETRIES",
     "UPLOAD_LEGACY_PROGRESS_FILE",
     "UPLOAD_LFS_ENFORCE_THRESHOLD",
