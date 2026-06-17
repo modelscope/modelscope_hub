@@ -669,7 +669,7 @@ class UploadManager:
         max_workers: int | None = None,
         use_cache: bool = UPLOAD_USE_CACHE,
         disable_tqdm: bool = False,
-        sync_remote_repo: bool = True,
+        sync_remote_repo: bool = False,
     ) -> dict | list[dict] | None:
         """Upload a folder with resumable support, adaptive batching, and retry."""
         start_time = time.time()
@@ -718,6 +718,20 @@ class UploadManager:
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
         )
+
+        # For sync mode: collect ALL local files (unfiltered) to avoid
+        # treating pattern-excluded files as remote orphans.
+        if sync_remote_repo:
+            all_local_files_in_repo = self._prepare_upload_folder(
+                folder_path=folder_path,
+                path_in_repo=path_in_repo,
+                repo_type=repo_type,
+                allow_patterns=None,
+                ignore_patterns=None,
+            )
+            all_local_paths_in_repo = {p for p, _ in all_local_files_in_repo}
+        else:
+            all_local_paths_in_repo = set()
 
         if not sorted_files:
             raise InvalidParameter(f"No files to upload in the folder: {folder_path} !")
@@ -990,13 +1004,12 @@ class UploadManager:
         # Sync: delete remote orphan files
         deleted_count = 0
         if sync_remote_repo and not total_failed_files:
-            local_paths_in_repo = {p for p, _ in sorted_files}
             prefix = path_in_repo.strip("/") if path_in_repo else ""
             orphans = self._compute_remote_orphans(
                 repo_id=repo_id,
                 repo_type=repo_type,
                 revision=revision,
-                local_paths_in_repo=local_paths_in_repo,
+                local_paths_in_repo=all_local_paths_in_repo,
                 path_in_repo_prefix=prefix,
             )
             if orphans:

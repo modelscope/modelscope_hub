@@ -1053,7 +1053,7 @@ class HubApi:
         max_workers: int | None = None,
         use_cache: bool = True,
         disable_tqdm: bool = False,
-        sync_remote_repo: bool = True,
+        sync_remote_repo: bool = False,
     ) -> dict | list[dict] | None:
         """Upload an entire folder to a repository with resumable support.
 
@@ -1089,7 +1089,7 @@ class HubApi:
             Disable progress bars. Default False.
         sync_remote_repo : bool, optional
             If True, delete remote files that are not present locally after
-            a successful upload (sync semantics). Default True.
+            a successful upload (sync semantics). Default False.
 
         Returns
         -------
