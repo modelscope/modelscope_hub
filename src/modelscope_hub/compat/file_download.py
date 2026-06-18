@@ -35,7 +35,7 @@ def _resolve_legacy_paths(
     if local_dir is not None:
         # User explicitly controls the output directory — pass through.
         return cache_dir, local_dir
-    base = Path(cache_dir) if cache_dir else api._config.cache_dir
+    base = Path(cache_dir) if cache_dir else Path(api._config.cache_dir)
     return None, str(base / repo_id)
 
 
