@@ -1053,6 +1053,7 @@ class HubApi:
         max_workers: int | None = None,
         use_cache: bool = True,
         disable_tqdm: bool = False,
+        sync_remote_repo: bool = False,
     ) -> dict | list[dict] | None:
         """Upload an entire folder to a repository with resumable support.
 
@@ -1086,6 +1087,9 @@ class HubApi:
             Use ``.ms_upload_cache`` for resumable uploads. Default True.
         disable_tqdm : bool, optional
             Disable progress bars. Default False.
+        sync_remote_repo : bool, optional
+            If True, delete remote files that are not present locally after
+            a successful upload (sync semantics). Default False.
 
         Returns
         -------
@@ -1120,6 +1124,7 @@ class HubApi:
             max_workers=max_workers,
             use_cache=use_cache,
             disable_tqdm=disable_tqdm,
+            sync_remote_repo=sync_remote_repo,
         )
 
     def download_file(
