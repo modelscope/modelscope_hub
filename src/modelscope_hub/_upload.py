@@ -671,6 +671,7 @@ class UploadManager:
         max_workers: int | None = None,
         use_cache: bool = UPLOAD_USE_CACHE,
         disable_tqdm: bool = False,
+        sync_remote_repo: bool = False,
     ) -> dict | list[dict] | None:
         """Upload a folder with resumable support, adaptive batching, and retry."""
         start_time = time.time()
@@ -719,6 +720,20 @@ class UploadManager:
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
         )
+
+        # For sync mode: collect ALL local files (unfiltered) to avoid
+        # treating pattern-excluded files as remote orphans.
+        if sync_remote_repo:
+            all_local_files_in_repo = self._prepare_upload_folder(
+                folder_path=folder_path,
+                path_in_repo=path_in_repo,
+                repo_type=repo_type,
+                allow_patterns=None,
+                ignore_patterns=None,
+            )
+            all_local_paths_in_repo = {p for p, _ in all_local_files_in_repo}
+        else:
+            all_local_paths_in_repo = set()
 
         if not sorted_files:
             raise InvalidParameter(f"No files to upload in the folder: {folder_path} !")
@@ -998,6 +1013,40 @@ class UploadManager:
 
         tracker.save()
 
+        # Sync: delete remote orphan files
+        deleted_count = 0
+        if sync_remote_repo and not total_failed_files:
+            prefix = path_in_repo.strip("/") if path_in_repo else ""
+            orphans = self._compute_remote_orphans(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                revision=revision,
+                local_paths_in_repo=all_local_paths_in_repo,
+                path_in_repo_prefix=prefix,
+            )
+            if orphans:
+                delete_ops = self._build_delete_operations(orphans)
+                delete_commit_message = (
+                    f"{commit_message} "
+                    f"(sync: delete {len(orphans)} orphan file(s))"
+                )
+                try:
+                    delete_commit = self._commit_with_retry(
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        operations=delete_ops,
+                        commit_message=delete_commit_message,
+                        revision=revision,
+                    )
+                    commit_infos.append(delete_commit)
+                    deleted_count = len(orphans)
+                    logger.info(
+                        "Sync: deleted %d orphan file(s) from remote.",
+                        deleted_count,
+                    )
+                except Exception as e:
+                    logger.error("Sync delete commit failed: %s", e)
+
         # Upload report
         elapsed = time.time() - start_time
         total_files = len(sorted_files)
@@ -1015,6 +1064,7 @@ class UploadManager:
         print(f"  Failed           : {failed_count}")
         committed_count = reused_count + uploaded_count
         print(f"  Committed        : {committed_count}")
+        print(f"  Deleted (sync)   : {deleted_count}")
         print(f"  Elapsed          : {elapsed:.1f}s")
         print("=" * 60)
 
@@ -1036,6 +1086,72 @@ class UploadManager:
             return None
 
         return commit_infos[0] if len(commit_infos) == 1 else commit_infos
+
+    # ------------------------------------------------------------------
+    # Internal: remote orphan detection and deletion
+    # ------------------------------------------------------------------
+    def _compute_remote_orphans(
+        self,
+        repo_id: str,
+        repo_type: str,
+        revision: str,
+        local_paths_in_repo: set[str],
+        path_in_repo_prefix: str,
+    ) -> list[str]:
+        """Compute remote files that are not present locally (orphans).
+
+        Only files under ``path_in_repo_prefix`` are considered.
+        Returns a list of remote file paths to delete.
+        """
+        logger.info("Sync: fetching remote file list for orphan detection ...")
+        raw_items = self._client.list_repo_files(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            revision=revision,
+            recursive=True,
+        )
+
+        remote_paths: list[str] = []
+        for item in raw_items:
+            item_type = item.get("Type") or item.get("type") or "blob"
+            if item_type == "tree":
+                continue
+            path = (
+                item.get("Path") or item.get("path") or item.get("Name") or ""
+            )
+            if not path:
+                continue
+            remote_paths.append(path)
+
+        # Filter by prefix scope
+        if path_in_repo_prefix:
+            scope_prefix = path_in_repo_prefix + "/"
+            remote_paths = [
+                p for p in remote_paths if p.startswith(scope_prefix)
+            ]
+
+        orphans = [p for p in remote_paths if p not in local_paths_in_repo]
+        logger.info(
+            "Sync: %d remote file(s) in scope, %d orphan(s) detected.",
+            len(remote_paths), len(orphans),
+        )
+        return orphans
+
+    @staticmethod
+    def _build_delete_operations(orphan_paths: list[str]) -> list[dict]:
+        """Build delete operations for orphan remote files."""
+        return [
+            {
+                "action": "delete",
+                "path": p,
+                "type": "normal",
+                "size": 0,
+                "sha256": "",
+                "content": "",
+                "encoding": "",
+            }
+            for p in orphan_paths
+        ]
 
     # ------------------------------------------------------------------
     # Internal: single file upload with retry
