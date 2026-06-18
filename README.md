@@ -33,6 +33,13 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.1.0** (2026-06-18)
+- **Feature**: Configurable upload failure thresholds (consecutive failures & total wait time)
+- **Fix**: compatibility && error handling
+  - Legacy cache path compatibility — compat layer preserves flat `{cache_dir}/{owner}/{name}/` layout
+  - Type safety in legacy path resolution (handle both `str` and `Path` config values)
+  - Improved error handling and response normalization in compatibility APIs
+
 **v0.0.9** (2026-06-12)
 - **Feature**: `get_model` support `revision`; expanded param passthrough for repo/model ops
 - **Fix**: Pattern normalization accepts iterable inputs (tuple, etc.)
