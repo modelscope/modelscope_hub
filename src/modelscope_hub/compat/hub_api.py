@@ -9,14 +9,26 @@ from __future__ import annotations
 import os
 import warnings
 from collections import defaultdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 import time
 
 from ..api import HubApi
 from ..constants import RepoType
-from ..errors import NotExistError, is_repo_exists_error
+from ..errors import (
+    AuthenticationError,
+    InvalidParameter,
+    NotExistError,
+    PermissionDeniedError,
+    is_repo_exists_error,
+)
+from ..utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from ..types import RepoInfo
+
+logger = get_logger("compat")
 
 DEFAULT_DATASET_REVISION = "master"
 
@@ -43,10 +55,19 @@ class LegacyHubApi:
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------
-    def login(self, token: str) -> tuple[str, None]:
-        """Login with token (old style returns ``(token, cookie)``)."""
+    def login(self, token: str) -> tuple[str | None, Any]:
+        """Login with token (old style returns ``(git_token, cookies)``).
+
+        Preserves the legacy return contract: a 2-tuple of
+        ``(git_access_token, cookies)`` so that existing callers doing
+        ``token, cookies = api.login(...)`` continue to work.
+        """
+        if not token:
+            return (None, None)
         self._api.login(token)
-        return (token, None)
+        git_token = self._api._config.load_git_token() or token
+        cookies = self._api.get_cookies()
+        return (git_token, cookies)
 
     def get_cookies(self, access_token: str | None = None, cookies_required: bool = False):
         """Get cookies for legacy API authentication.
@@ -89,7 +110,7 @@ class LegacyHubApi:
         create_default_config: bool = False,
         endpoint: str | None = None,
         **kwargs: Any,
-    ) -> None:
+    ) -> "RepoInfo | None":
         """Create a repository (legacy signature)."""
         api = self._api
         if token or endpoint:
@@ -97,7 +118,7 @@ class LegacyHubApi:
         if create_default_config:
             kwargs["create_default_config"] = True
         try:
-            api.create_repo(
+            return api.create_repo(
                 repo_id,
                 repo_type=repo_type,
                 visibility=visibility,
@@ -107,35 +128,82 @@ class LegacyHubApi:
             )
         except Exception as exc:
             if exist_ok and is_repo_exists_error(exc):
-                return
+                return None
             raise
+
+    def create_model(self, model_id: str, **kwargs: Any) -> str:
+        """Create a model repo (legacy signature).
+
+        Returns the model repository URL for backward compatibility.
+        Converts authentication errors to ``ValueError`` for legacy callers.
+        """
+        # Pre-normalize: convert numeric string to int for backward compatibility
+        visibility = kwargs.get("visibility")
+        if isinstance(visibility, str) and visibility.isdigit():
+            kwargs["visibility"] = int(visibility)
+        try:
+            self.create_repo(model_id, repo_type="model", **kwargs)
+        except (AuthenticationError, InvalidParameter) as e:
+            if _is_auth_related(e):
+                raise ValueError(
+                    "Token does not exist, please login first."
+                ) from e
+            raise
+        ep = self._endpoint or self._api._config.endpoint
+        return f"{ep}/models/{model_id}"
 
     def push_model(self, model_id: str, model_dir: str, **kwargs: Any) -> None:
         """Upload a model directory (legacy signature)."""
-        try:
-            self._api.create_repo(
-                model_id,
-                repo_type=RepoType.MODEL,
-                visibility=kwargs.get("visibility"),
-                license=kwargs.get("license"),
-                chinese_name=kwargs.get("chinese_name"),
+        # Pre-validate model_dir
+        if not os.path.isdir(model_dir):
+            raise ValueError(
+                f"model_dir '{model_dir}' does not exist or is not a directory."
             )
-        except Exception as exc:
-            if not is_repo_exists_error(exc):
-                raise
-        self._api.upload_folder(
-            model_id,
-            RepoType.MODEL,
-            model_dir,
-            path_in_repo=kwargs.get("path_in_repo", ""),
-            commit_message=kwargs.get("commit_message"),
-            commit_description=kwargs.get("commit_description"),
-            revision=kwargs.get("revision"),
-            allow_patterns=kwargs.get("allow_patterns"),
-            ignore_patterns=kwargs.get("ignore_patterns"),
-            max_workers=kwargs.get("max_workers", 4),
-            use_cache=kwargs.get("use_cache", True),
-        )
+        config_files = ("configuration.json", "configuration.yaml", "configuration.yml")
+        if not any(os.path.isfile(os.path.join(model_dir, f)) for f in config_files):
+            logger.warning(
+                "No model configuration file found in '%s'. "
+                "Expected one of: %s. The upload will proceed, "
+                "but the directory may not contain a valid model.",
+                model_dir,
+                ", ".join(config_files),
+            )
+
+        # Pre-normalize: convert numeric string to int for backward compatibility
+        visibility = kwargs.get("visibility")
+        if isinstance(visibility, str) and visibility.isdigit():
+            kwargs["visibility"] = int(visibility)
+        try:
+            try:
+                self._api.create_repo(
+                    model_id,
+                    repo_type=RepoType.MODEL,
+                    visibility=kwargs.get("visibility"),
+                    license=kwargs.get("license"),
+                    chinese_name=kwargs.get("chinese_name"),
+                )
+            except Exception as exc:
+                if not is_repo_exists_error(exc):
+                    raise
+            self._api.upload_folder(
+                model_id,
+                RepoType.MODEL,
+                model_dir,
+                path_in_repo=kwargs.get("path_in_repo", ""),
+                commit_message=kwargs.get("commit_message"),
+                commit_description=kwargs.get("commit_description"),
+                revision=kwargs.get("revision"),
+                allow_patterns=kwargs.get("allow_patterns"),
+                ignore_patterns=kwargs.get("ignore_patterns"),
+                max_workers=kwargs.get("max_workers", 4),
+                use_cache=kwargs.get("use_cache", True),
+            )
+        except (AuthenticationError, InvalidParameter) as e:
+            if _is_auth_related(e):
+                raise ValueError(
+                    "Token does not exist, please login first."
+                ) from e
+            raise
 
     # ------------------------------------------------------------------
     # Endpoint resolution
@@ -191,13 +259,20 @@ class LegacyHubApi:
         local_dir: str | None = None,
     ) -> str:
         """Download a model snapshot."""
-        result = self._api.download_repo(
-            model_id,
-            repo_type=RepoType.MODEL,
-            revision=revision,
-            cache_dir=cache_dir,
-            local_dir=local_dir,
-        )
+        import requests as _requests
+
+        try:
+            result = self._api.download_repo(
+                model_id,
+                repo_type=RepoType.MODEL,
+                revision=revision,
+                cache_dir=cache_dir,
+                local_dir=local_dir,
+            )
+        except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
+            raise _requests.exceptions.HTTPError(
+                str(e), response=getattr(e, 'response', None)
+            ) from e
         return str(result)
 
     # ------------------------------------------------------------------
@@ -824,3 +899,11 @@ def _repo_info_to_dict(info: Any) -> dict:
     else:
         return {}
     return {_LEGACY_KEY_MAP.get(k, k): v for k, v in raw.items()}
+
+
+def _is_auth_related(exc: Exception) -> bool:
+    """Return True if the exception is authentication/login related."""
+    if isinstance(exc, AuthenticationError):
+        return True
+    msg = str(exc).lower()
+    return any(kw in msg for kw in ("login", "logged", "token", "unauthorized", "未登录"))

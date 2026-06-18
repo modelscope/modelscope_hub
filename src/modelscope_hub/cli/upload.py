@@ -91,6 +91,13 @@ class UploadCommand(CLICommand):
             default=False,
             help="Disable progress bars.",
         )
+        p.add_argument(
+            "--sync",
+            dest="sync_remote_repo",
+            action="store_true",
+            default=False,
+            help="Delete remote files not present locally after upload (sync mode).",
+        )
 
         # Legacy compat
         add_subcmd_token_endpoint(p)
@@ -104,7 +111,7 @@ class UploadCommand(CLICommand):
         local = Path(local_path).expanduser()
 
         if not local.exists():
-            error(f"Local path not found: {local}")
+            error(f"'{local}' is not a valid local path")
             raise SystemExit(2)
 
         if local.is_file():
@@ -138,6 +145,7 @@ class UploadCommand(CLICommand):
             max_workers=self.args.max_workers,
             use_cache=self.args.use_cache,
             disable_tqdm=self.args.disable_tqdm,
+            sync_remote_repo=self.args.sync_remote_repo,
         )
         if result is None:
             success("All files already committed, nothing to upload.")
