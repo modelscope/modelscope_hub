@@ -10,10 +10,14 @@ from __future__ import annotations
 import warnings
 from typing import Sequence
 
+import requests as _requests
+
 from ..api import HubApi
 from ..constants import RepoType
+from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
 from ..utils.patterns import normalize_patterns
 from .constants import DEFAULT_DATASET_REVISION
+from .file_download import _resolve_legacy_paths
 
 
 def snapshot_download(
@@ -66,18 +70,26 @@ def snapshot_download(
             api = HubApi(token=token, endpoint=endpoint)
         except Exception:
             pass
-    result = api.download_repo(
-        effective_id,
-        repo_type=effective_type,
-        revision=revision,
-        cache_dir=cache_dir,
-        local_dir=local_dir,
-        allow_patterns=include,
-        ignore_patterns=exclude,
-        max_workers=max_workers,
-        local_files_only=local_files_only,
-        user_agent=user_agent,
+    effective_cache, effective_local = _resolve_legacy_paths(
+        effective_id, cache_dir, local_dir, api,
     )
+    try:
+        result = api.download_repo(
+            effective_id,
+            repo_type=effective_type,
+            revision=revision,
+            cache_dir=effective_cache,
+            local_dir=effective_local,
+            allow_patterns=include,
+            ignore_patterns=exclude,
+            max_workers=max_workers,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
+        )
+    except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
+        raise _requests.exceptions.HTTPError(
+            str(e), response=getattr(e, 'response', None)
+        ) from e
     return str(result)
 
 
@@ -116,18 +128,26 @@ def dataset_snapshot_download(
             api = HubApi(token=token, endpoint=endpoint)
         except Exception:
             pass
-    result = api.download_repo(
-        dataset_id,
-        repo_type=RepoType.DATASET,
-        revision=revision or DEFAULT_DATASET_REVISION,
-        cache_dir=cache_dir,
-        local_dir=local_dir,
-        allow_patterns=include,
-        ignore_patterns=exclude,
-        max_workers=max_workers,
-        local_files_only=local_files_only,
-        user_agent=user_agent,
+    effective_cache, effective_local = _resolve_legacy_paths(
+        dataset_id, cache_dir, local_dir, api,
     )
+    try:
+        result = api.download_repo(
+            dataset_id,
+            repo_type=RepoType.DATASET,
+            revision=revision or DEFAULT_DATASET_REVISION,
+            cache_dir=effective_cache,
+            local_dir=effective_local,
+            allow_patterns=include,
+            ignore_patterns=exclude,
+            max_workers=max_workers,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
+        )
+    except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
+        raise _requests.exceptions.HTTPError(
+            str(e), response=getattr(e, 'response', None)
+        ) from e
     return str(result)
 
 

@@ -76,7 +76,19 @@ class Visibility(IntEnum):
 
     @classmethod
     def from_label(cls, label: str) -> "Visibility":
-        """Resolve a visibility from its lowercase label."""
+        """Resolve a visibility from its lowercase label or numeric string.
+
+        Supports both label strings ('private', 'internal', 'public') and
+        numeric strings ('1', '3', '5') for backward compatibility.
+        """
+        # Support numeric strings for backward compatibility: '1' → PRIVATE, '3' → INTERNAL, '5' → PUBLIC
+        if isinstance(label, str) and label.isdigit():
+            numeric = int(label)
+            for member in cls:
+                if member.value == numeric:
+                    return member
+            raise ValueError(f"Unknown visibility label: {label!r}")
+        # Standard label lookup: 'private' → PRIVATE
         try:
             return cls[label.upper()]
         except KeyError as exc:
@@ -374,6 +386,20 @@ UPLOAD_VALIDATE_BLOB_BATCH_SIZE: int = _env_int("UPLOAD_VALIDATE_BLOB_BATCH_SIZE
 
 # Upload: commit retry
 UPLOAD_COMMIT_MAX_RETRIES: int = _env_int("UPLOAD_COMMIT_MAX_RETRIES", 5)
+UPLOAD_COMMIT_MAX_TOTAL_WAIT: int = _env_int(
+    "MODELSCOPE_UPLOAD_COMMIT_MAX_TOTAL_WAIT",
+    300,
+    "Maximum total wait time (seconds) for commit retries in _commit_with_retry",
+    "Upload",
+)
+
+# Upload: consecutive batch failure limit
+UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT: int = _env_int(
+    "MODELSCOPE_UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",
+    3,
+    "Maximum consecutive batch commit failures before aborting upload_folder",
+    "Upload",
+)
 
 # Upload: failed file retry & ReAct
 UPLOAD_FAILED_FILE_MAX_RETRIES: int = _env_int("UPLOAD_FAILED_FILE_MAX_RETRIES", 3)
@@ -516,7 +542,9 @@ __all__ = [
     "UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD",
     "UPLOAD_CACHE_FILE",
     "UPLOAD_COMMIT_BATCH_SIZE",
+    "UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",
     "UPLOAD_COMMIT_MAX_RETRIES",
+    "UPLOAD_COMMIT_MAX_TOTAL_WAIT",
     "UPLOAD_FAILED_FILE_MAX_RETRIES",
     "UPLOAD_LEGACY_PROGRESS_FILE",
     "UPLOAD_LFS_ENFORCE_THRESHOLD",
