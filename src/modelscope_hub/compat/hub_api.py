@@ -479,33 +479,58 @@ class LegacyHubApi:
 
     def list_datasets(
         self,
-        owner_or_group: str,
-        *,
+        owner: str | None = None,
+        page_size: int = 50,
         page_number: int = 1,
-        page_size: int = 10,
+        *,
+        owner_or_group: str | None = None,
         sort: str | None = None,
         search: str | None = None,
         endpoint: str | None = None,
         token: str | None = None,
-    ) -> dict:
-        """List datasets owned by a user/org."""
+    ) -> "PagedResult":
+        """List datasets owned by a user/org.
+
+        .. deprecated::
+            Use ``list_repos(owner, repo_type='dataset')`` instead.
+
+        Parameters
+        ----------
+        owner : str, optional
+            Filter by owner (aligned with ``list_repos``'s ``owner`` param).
+        page_size : int, optional
+            Items per page. Default is 50.
+        page_number : int, optional
+            1-based page index. Default is 1.
+        owner_or_group : str, optional
+            **Deprecated** alias for ``owner``. Kept for backward compatibility.
+        sort : str, optional
+            Sort key (e.g. ``"downloads"``).
+        search : str, optional
+            Free-text search query.
+        endpoint : str, optional
+            Override API endpoint.
+        token : str, optional
+            Override API token.
+        """
+        warnings.warn(
+            "list_datasets() is deprecated, use list_repos(owner, repo_type='dataset') instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        # Resolve owner: explicit 'owner' takes precedence over deprecated alias
+        actual_owner = owner or owner_or_group
         api = self._api
         if token:
             api = HubApi(endpoint=endpoint or self._endpoint, token=token)
-        page = api.list_repos(
+        return api.list_repos(
             RepoType.DATASET,
-            owner=owner_or_group,
+            owner=actual_owner,
             search=search,
             sort=sort,
             page_number=page_number,
             page_size=min(page_size, self._OPENAPI_MAX_PAGE_SIZE),
         )
-        return {
-            "datasets": [_repo_info_to_dict(r) for r in page.items],
-            "total_count": page.total_count,
-            "page_number": page.page_number,
-            "page_size": page.page_size,
-        }
 
     def create_dataset(
         self,
@@ -536,16 +561,36 @@ class LegacyHubApi:
     def get_dataset(
         self,
         dataset_id: str,
-        revision: str | None = DEFAULT_DATASET_REVISION,
+        revision: str | None = None,
+        *,
         endpoint: str | None = None,
         token: str | None = None,
-    ) -> dict:
-        """Get dataset information via OpenAPI."""
+    ) -> "RepoInfo":
+        """Get dataset information via OpenAPI.
+
+        .. deprecated::
+            Use ``get_repo(repo_id, repo_type='dataset')`` instead.
+
+        Parameters
+        ----------
+        dataset_id : str
+            Dataset identifier (corresponds to ``repo_id`` in ``get_repo``).
+        revision : str, optional
+            Branch or tag to query (aligned with ``get_repo``'s ``revision``).
+        endpoint : str, optional
+            Override API endpoint.
+        token : str, optional
+            Override API token.
+        """
+        warnings.warn(
+            "get_dataset() is deprecated, use get_repo(repo_id, repo_type='dataset') instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         api = self._api
         if token:
             api = HubApi(endpoint=endpoint or self._endpoint, token=token)
-        info = api.get_repo(dataset_id, RepoType.DATASET, revision=revision)
-        return _repo_info_to_dict(info)
+        return api.get_repo(dataset_id, RepoType.DATASET, revision=revision)
 
     def delete_model(
         self,
