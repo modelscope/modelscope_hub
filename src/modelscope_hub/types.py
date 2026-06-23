@@ -74,9 +74,16 @@ class RepoInfo(_FromDictMixin):
     downloads: int = 0
     likes: int = 0
     created_at: datetime | str | int | None = None
-    updated_at: datetime | str | int | None = None
+    last_modified: datetime | str | int | None = None
     license: str | None = None
     tags: list[str] = field(default_factory=list)
+    # OpenAPI native fields
+    display_name: str | None = None
+    file_size: int | None = None
+    tasks: list[str] = field(default_factory=list)
+    private: bool | None = None
+    gated: bool | None = None
+    login_required: bool | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.repo_type, str):
@@ -90,21 +97,27 @@ class RepoInfo(_FromDictMixin):
             except ValueError:
                 pass
         self.created_at = _coerce_datetime(self.created_at) or self.created_at
-        self.updated_at = _coerce_datetime(self.updated_at) or self.updated_at
+        self.last_modified = _coerce_datetime(self.last_modified) or self.last_modified
 
     def to_dict(self) -> dict:
-        """Convert this RepoInfo to a plain dictionary.
+        """Convert to OpenAPI-compatible dictionary.
 
-        Enum values are converted to their underlying value,
-        datetime objects are converted to ISO 8601 strings.
+        Excludes SDK-internal fields (owner, name, repo_type, visibility)
+        and formats datetimes with Z suffix to match OpenAPI spec.
         """
+        _INTERNAL_FIELDS = {"owner", "name", "repo_type", "visibility"}
         result = {}
         for f in fields(self):  # type: ignore[arg-type]
+            if f.name in _INTERNAL_FIELDS:
+                continue
             val = getattr(self, f.name)
+            if val is None and f.name in ("display_name", "file_size", "private", "gated", "login_required"):
+                continue  # skip None optional OpenAPI fields
             if isinstance(val, Enum):
                 val = val.value
             elif isinstance(val, datetime):
-                val = val.isoformat()
+                # OpenAPI uses Z suffix, not +00:00
+                val = val.strftime("%Y-%m-%dT%H:%M:%SZ") if val.tzinfo else val.isoformat()
             elif isinstance(val, list):
                 val = list(val)  # shallow copy
             result[f.name] = val
@@ -162,6 +175,7 @@ class PagedResult(Generic[T]):
     total_count: int = 0
     page_number: int = 1
     page_size: int = 0
+    collection_key: str = field(default="items", repr=False)
 
     @property
     def has_next(self) -> bool:
@@ -170,12 +184,12 @@ class PagedResult(Generic[T]):
         return self.page_number * self.page_size < self.total_count
 
     def to_dict(self) -> dict:
-        """Convert this PagedResult to a plain dictionary.
+        """Convert to OpenAPI-compatible dictionary.
 
-        Items with a to_dict() method will be recursively converted.
+        Uses collection_key for the items array name (e.g. 'datasets', 'models').
         """
         return {
-            "items": [
+            self.collection_key: [
                 item.to_dict() if hasattr(item, "to_dict") else item
                 for item in self.items
             ],

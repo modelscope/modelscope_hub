@@ -331,9 +331,10 @@ class HubApi:
             "Downloads": "downloads",
             "Likes": "likes",
             "CreatedAt": "created_at",
-            "UpdatedAt": "updated_at",
-            "LastModified": "updated_at",
-            "last_modified": "updated_at",
+            "UpdatedAt": "last_modified",
+            "LastModified": "last_modified",
+            "last_modified": "last_modified",
+            "updated_at": "last_modified",
             "Tags": "tags",
         }
         for key, value in data.items():
@@ -343,8 +344,8 @@ class HubApi:
         # optional ``gated`` flag) instead of the legacy ``Visibility`` integer.
         # Translate it so downstream code sees a uniform ``Visibility`` enum.
         if normalised.get("visibility") is None:
-            private_flag = normalised.pop("private", None)
-            gated_flag = normalised.pop("gated", None)
+            private_flag = normalised.get("private")
+            gated_flag = normalised.get("gated")
             if isinstance(private_flag, bool):
                 if private_flag:
                     normalised["visibility"] = Visibility.PRIVATE
@@ -847,7 +848,15 @@ class HubApi:
             page = page_number
             size = page_size
         infos = [self._repo_info_from_payload(item, rt) for item in items]
-        return PagedResult(items=infos, total_count=total, page_number=page, page_size=size)
+        # Determine collection key for OpenAPI-aligned to_dict() output
+        _COLLECTION_KEYS = {
+            RepoType.MODEL: "models",
+            RepoType.DATASET: "datasets",
+            RepoType.SKILL: "skills",
+            RepoType.MCP: "servers",
+        }
+        key = _COLLECTION_KEYS.get(rt, "items")
+        return PagedResult(items=infos, total_count=total, page_number=page, page_size=size, collection_key=key)
 
     def delete_repo(self, repo_id: str, repo_type: RepoTypeLike) -> None:
         """Delete a repository.
