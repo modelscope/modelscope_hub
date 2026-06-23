@@ -223,6 +223,17 @@ class InvalidParameter(APIError, ValueError):
     suggestion = "Invalid request parameters. Please check and retry."
 
 
+class AlreadyExistsError(InvalidParameter):
+    """Resource already exists (e.g., repo name is taken).
+
+    Error code: E3026
+    """
+
+    error_code = "E3026"
+    retryable = False
+    suggestion = "Resource already exists. Use exist_ok=True to ignore."
+
+
 # -- Rate limiting (E1021) --------------------------------------------------
 class RateLimitError(APIError):
     """Raised on HTTP 429 -- client should back off and retry later."""
@@ -454,6 +465,24 @@ def raise_for_status(response: "Response") -> None:
     else:
         exc_cls = _STATUS_MAP.get(status, APIError)
 
+    # Detect "already exists" errors before falling back to InvalidParameter
+    if exc_cls is InvalidParameter and isinstance(body, dict):
+        code = body.get("Code") or body.get("code")
+        msg_text = (body.get("Message") or body.get("message")
+                    or body.get("msg") or body.get("Msg") or "").lower()
+        is_exists = False
+        if code is not None:
+            try:
+                if int(code) in _ALREADY_EXISTS_CODES:
+                    is_exists = True
+            except (TypeError, ValueError):
+                pass
+        if not is_exists:
+            if any(kw in msg_text for kw in _ALREADY_EXISTS_KEYWORDS):
+                is_exists = True
+        if is_exists:
+            exc_cls = AlreadyExistsError
+
     kwargs: dict[str, Any] = dict(
         status_code=status,
         request_id=request_id,
@@ -481,13 +510,36 @@ def raise_for_status(response: "Response") -> None:
 # ---------------------------------------------------------------------------
 # Repo-exists detection (shared by cli/repo.py and compat/hub_api.py)
 # ---------------------------------------------------------------------------
-_ALREADY_EXISTS_CODES = {10020101001, 10010101001}
+_ALREADY_EXISTS_CODES: set[int] = {
+    10020101001,   # 国内站 - 数据集已存在
+    10010101001,   # 国内站 - 模型已存在
+    10010202004,   # 国际站 - 名称已被使用
+}
+
+_ALREADY_EXISTS_KEYWORDS: frozenset[str] = frozenset({
+    "exist",
+    "already",
+    "can not be used",
+    "not available",
+    "已被注册",
+    "已存在",
+    "名称不可用",
+})
 
 
 def is_repo_exists_error(exc: BaseException) -> bool:
-    """Detect "repo already exists" regardless of locale or error format."""
+    """Detect "repo already exists" errors.
+
+    With the introduction of :class:`AlreadyExistsError`, this is now
+    primarily a simple ``isinstance`` check. The keyword/code fallback
+    is retained for backward compatibility with legacy exceptions that
+    pre-date the structured error hierarchy.
+    """
+    if isinstance(exc, AlreadyExistsError):
+        return True
+    # Fallback: legacy exceptions that may not be AlreadyExistsError
     msg = str(exc).lower()
-    if "exist" in msg or "已被注册" in msg or "已存在" in msg:
+    if any(kw in msg for kw in _ALREADY_EXISTS_KEYWORDS):
         return True
     body = getattr(exc, "response_body", None)
     if isinstance(body, dict):
@@ -510,6 +562,7 @@ __all__ = [
     # Resource / Validation
     "NotExistError",
     "InvalidParameter",
+    "AlreadyExistsError",
     # Rate limiting / Server
     "RateLimitError",
     "ServerError",
