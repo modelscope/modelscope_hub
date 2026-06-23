@@ -11,7 +11,7 @@ from argparse import Action
 from pathlib import Path
 
 from ..constants import RepoType
-from ..errors import is_repo_exists_error
+from ..errors import AlreadyExistsError, is_repo_exists_error
 from ..types import RepoInfo
 from .base import CLICommand, add_repo_type_arg, error, info, make_api, print_env_table, render_table, success
 from .compat import add_subcmd_token_endpoint
@@ -114,6 +114,11 @@ class CreateCommand(CLICommand):
                 **extra,
             )
             success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
+        except AlreadyExistsError:
+            if getattr(self.args, "exist_ok", False):
+                info(f"Repository already exists: {self.args.repo_id}")
+                return
+            raise
         except Exception as exc:
             if getattr(self.args, "exist_ok", False) and is_repo_exists_error(exc):
                 info(f"Repository already exists: {self.args.repo_id}")

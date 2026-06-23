@@ -17,6 +17,7 @@ import time
 from ..api import HubApi
 from ..constants import RepoType
 from ..errors import (
+    AlreadyExistsError,
     AuthenticationError,
     InvalidParameter,
     NotExistError,
@@ -129,6 +130,10 @@ class LegacyHubApi:
                 chinese_name=chinese_name,
                 **kwargs,
             )
+        except AlreadyExistsError:
+            if exist_ok:
+                return None
+            raise
         except Exception as exc:
             if exist_ok and is_repo_exists_error(exc):
                 return None
@@ -185,9 +190,12 @@ class LegacyHubApi:
                     license=kwargs.get("license"),
                     chinese_name=kwargs.get("chinese_name"),
                 )
+            except AlreadyExistsError:
+                logger.info("Repository '%s' already exists, proceeding with upload.", model_id)
             except Exception as exc:
                 if not is_repo_exists_error(exc):
                     raise
+                logger.info("Repository '%s' already exists, proceeding with upload.", model_id)
             self._api.upload_folder(
                 model_id,
                 RepoType.MODEL,
