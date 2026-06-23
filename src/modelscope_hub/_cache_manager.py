@@ -86,6 +86,40 @@ def scan_cache(cache_dir: Path | None = None) -> CacheInfo:
                 local_path=str(repo_dir),
             ))
 
+    # Scan flat layout (compat): {root}/{owner}/{name}/
+    # and legacy layout: {root}/hub/{owner}/{name}/
+    _scanned_paths = {r.local_path for r in repos}  # avoid double-counting
+
+    for prefix, prefix_path in [("", root), ("hub", root / "hub")]:
+        if not prefix_path.is_dir():
+            continue
+        for owner_dir in prefix_path.iterdir():
+            if not owner_dir.is_dir():
+                continue
+            # Skip known non-repo directories
+            if owner_dir.name in ("hub", "models", "datasets", "studios", "mcps", "skills"):
+                continue
+            for name_dir in owner_dir.iterdir():
+                if not name_dir.is_dir():
+                    continue
+                if str(name_dir) in _scanned_paths:
+                    continue
+
+                size = _dir_size(name_dir)
+                total_size += size
+                nb_files = sum(1 for f in name_dir.rglob("*") if f.is_file())
+                repo_id = f"{owner_dir.name}/{name_dir.name}"
+
+                repos.append(CachedRepoInfo(
+                    repo_id=repo_id,
+                    repo_type=RepoType.MODEL,  # assume model for flat layout
+                    revision=None,
+                    size_on_disk=size,
+                    nb_files=nb_files,
+                    last_accessed=None,
+                    local_path=str(name_dir),
+                ))
+
     return CacheInfo(
         repos=repos,
         total_size=total_size,
@@ -135,30 +169,42 @@ def clear_cache(
     freed = 0
 
     if repo_id and repo_type:
-        # Clear specific repo
-        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
-        safe_id = repo_id.replace("/", "--")
-        target = root / segment / safe_id
-        if target.is_dir():
-            freed = _dir_size(target)
+        # Clear specific repo — check all possible layout locations
+        targets = _resolve_cache_targets(root, repo_id, repo_type)
+        for target in targets:
+            size = _dir_size(target)
+            freed += size
             _safe_rmtree(target)
-            logger.info("Cleared cache for %s/%s (%d bytes)", repo_type, repo_id, freed)
+            logger.info("Cleared cache at %s (%d bytes)", target, size)
     elif repo_type:
-        # Clear all repos of this type
+        # Clear all repos of this type (standard layout)
         segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
         type_dir = root / segment
         if type_dir.is_dir():
-            freed = _dir_size(type_dir)
+            size = _dir_size(type_dir)
+            freed += size
             _safe_rmtree(type_dir)
-            logger.info("Cleared all %s caches (%d bytes)", repo_type, freed)
+            logger.info("Cleared %s standard cache (%d bytes)", repo_type, size)
+        # Also clear legacy hub layout
+        hub_dir = root / "hub"
+        if hub_dir.is_dir():
+            size = _dir_size(hub_dir)
+            freed += size
+            _safe_rmtree(hub_dir)
+            logger.info("Cleared legacy hub cache (%d bytes)", size)
     else:
-        # Clear everything
+        # Clear everything (standard + legacy layouts)
         for repo_t in _DEFAULT_SCAN_TYPES:
             segment = f"{repo_t}s"
             type_dir = root / segment
             if type_dir.is_dir():
                 freed += _dir_size(type_dir)
                 _safe_rmtree(type_dir)
+        # Legacy hub directory
+        hub_dir = root / "hub"
+        if hub_dir.is_dir():
+            freed += _dir_size(hub_dir)
+            _safe_rmtree(hub_dir)
         logger.info("Cleared all caches (%d bytes)", freed)
 
     return freed
@@ -167,6 +213,25 @@ def clear_cache(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _resolve_cache_targets(root: Path, repo_id: str, repo_type: str) -> list[Path]:
+    """Resolve all possible cache locations for a repo across layout formats.
+
+    Checks three path layouts:
+    - Standard:  {root}/{type}s/{owner}--{name}/
+    - Flat:      {root}/{owner}/{name}/
+    - Legacy:    {root}/hub/{owner}/{name}/
+    """
+    safe_id = repo_id.replace("/", "--")
+    segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+
+    candidates = [
+        root / segment / safe_id,    # standard: {cache}/models/owner--name/
+        root / repo_id,              # flat (compat): {cache}/owner/name/
+        root / "hub" / repo_id,      # legacy: {cache}/hub/owner/name/
+    ]
+    return [p for p in candidates if p.is_dir()]
+
+
 def _dir_size(path: Path) -> int:
     """Compute total size of all files under ``path`` recursively."""
     total = 0
