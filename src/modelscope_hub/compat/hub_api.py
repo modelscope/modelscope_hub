@@ -17,6 +17,7 @@ import time
 from ..api import HubApi
 from ..constants import RepoType
 from ..errors import (
+    AlreadyExistsError,
     AuthenticationError,
     InvalidParameter,
     NotExistError,
@@ -26,7 +27,7 @@ from ..errors import (
 from ..utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from ..types import RepoInfo
+    from ..types import PagedResult, RepoInfo
 
 logger = get_logger("compat")
 
@@ -41,6 +42,9 @@ class LegacyHubApi:
     Accepts the old constructor signature and maps method calls to the
     new HubApi implementation.
     """
+
+    _api: HubApi
+    _endpoint: str | None
 
     def __init__(
         self,
@@ -126,6 +130,10 @@ class LegacyHubApi:
                 chinese_name=chinese_name,
                 **kwargs,
             )
+        except AlreadyExistsError:
+            if exist_ok:
+                return None
+            raise
         except Exception as exc:
             if exist_ok and is_repo_exists_error(exc):
                 return None
@@ -182,9 +190,12 @@ class LegacyHubApi:
                     license=kwargs.get("license"),
                     chinese_name=kwargs.get("chinese_name"),
                 )
+            except AlreadyExistsError:
+                logger.info("Repository '%s' already exists, proceeding with upload.", model_id)
             except Exception as exc:
                 if not is_repo_exists_error(exc):
                     raise
+                logger.info("Repository '%s' already exists, proceeding with upload.", model_id)
             self._api.upload_folder(
                 model_id,
                 RepoType.MODEL,
@@ -247,6 +258,44 @@ class LegacyHubApi:
             if re_raise:
                 raise
             return False
+
+    def list_repos(
+        self,
+        repo_type: str | RepoType,
+        *,
+        owner: str | None = None,
+        search: str | None = None,
+        sort: str | None = None,
+        page_number: int = 1,
+        page_size: int = 10,
+        **filters: Any,
+    ) -> "PagedResult[RepoInfo]":
+        """List repositories of the given type.
+
+        Delegates to :meth:`HubApi.list_repos`.
+        """
+        return self._api.list_repos(
+            repo_type,
+            owner=owner,
+            search=search,
+            sort=sort,
+            page_number=page_number,
+            page_size=page_size,
+            **filters,
+        )
+
+    def get_repo(
+        self,
+        repo_id: str,
+        repo_type: str | RepoType,
+        *,
+        revision: str | None = None,
+    ) -> "RepoInfo":
+        """Get repository information.
+
+        Delegates to :meth:`HubApi.get_repo`.
+        """
+        return self._api.get_repo(repo_id, repo_type, revision=revision)
 
     # ------------------------------------------------------------------
     # Download operations
@@ -928,7 +977,8 @@ _LEGACY_KEY_MAP: dict[str, str] = {
     "downloads": "Downloads",
     "likes": "Likes",
     "created_at": "CreatedAt",
-    "updated_at": "UpdatedAt",
+    "updated_at": "UpdatedAt",  # backward compat if manually constructed
+    "last_modified": "UpdatedAt",
     "license": "License",
     "tags": "Tags",
 }
