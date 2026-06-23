@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Generic, Mapping, Type, TypedDict, TypeVar
 
 from .constants import RepoType, Visibility
@@ -91,6 +92,24 @@ class RepoInfo(_FromDictMixin):
         self.created_at = _coerce_datetime(self.created_at) or self.created_at
         self.updated_at = _coerce_datetime(self.updated_at) or self.updated_at
 
+    def to_dict(self) -> dict:
+        """Convert this RepoInfo to a plain dictionary.
+
+        Enum values are converted to their underlying value,
+        datetime objects are converted to ISO 8601 strings.
+        """
+        result = {}
+        for f in fields(self):  # type: ignore[arg-type]
+            val = getattr(self, f.name)
+            if isinstance(val, Enum):
+                val = val.value
+            elif isinstance(val, datetime):
+                val = val.isoformat()
+            elif isinstance(val, list):
+                val = list(val)  # shallow copy
+            result[f.name] = val
+        return result
+
     @property
     def repo_id(self) -> str | None:
         """Canonical ``owner/name`` identifier, when both parts are known."""
@@ -149,6 +168,21 @@ class PagedResult(Generic[T]):
         if self.page_size <= 0:
             return False
         return self.page_number * self.page_size < self.total_count
+
+    def to_dict(self) -> dict:
+        """Convert this PagedResult to a plain dictionary.
+
+        Items with a to_dict() method will be recursively converted.
+        """
+        return {
+            "items": [
+                item.to_dict() if hasattr(item, "to_dict") else item
+                for item in self.items
+            ],
+            "total_count": self.total_count,
+            "page_number": self.page_number,
+            "page_size": self.page_size,
+        }
 
     def __iter__(self):  # pragma: no cover - convenience iteration
         return iter(self.items)

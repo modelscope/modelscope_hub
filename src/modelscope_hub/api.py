@@ -332,6 +332,8 @@ class HubApi:
             "Likes": "likes",
             "CreatedAt": "created_at",
             "UpdatedAt": "updated_at",
+            "LastModified": "updated_at",
+            "last_modified": "updated_at",
             "Tags": "tags",
         }
         for key, value in data.items():
