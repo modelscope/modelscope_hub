@@ -112,10 +112,12 @@ class CreateCommand(CLICommand):
             file_id = api.upload_file_to_openapi(p)
             extra["skill_file"] = file_id
 
-        # --gated implies visibility=internal (Visibility=3 = gated/申请制)
+        # --gated implies private visibility + gated_mode=True
         visibility = self.args.visibility
-        if getattr(self.args, "gated", None) is True:
-            visibility = "internal"
+        gated_mode = getattr(self.args, "gated", None)
+        if gated_mode is True:
+            if visibility is None:
+                visibility = "private"
 
         try:
             repo = api.create_repo(
@@ -125,6 +127,7 @@ class CreateCommand(CLICommand):
                 license=self.args.license,
                 chinese_name=self.args.chinese_name,
                 description=getattr(self.args, "description", None),
+                gated_mode=gated_mode,
                 **extra,
             )
             success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
