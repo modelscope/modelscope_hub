@@ -288,7 +288,7 @@ class TestCreateExecute:
         mock_api.create_repo.assert_called_once_with(
             "owner/my-model", "model",
             visibility="private", license="apache-2.0",
-            chinese_name=None, description=None,
+            chinese_name=None, description=None, gated_mode=None,
         )
         out = capsys.readouterr().out
         assert "Created" in out
@@ -368,7 +368,7 @@ class TestCreateExecute:
         mock_api.create_repo.assert_called_once_with(
             "owner/my-dataset", "dataset",
             visibility="private", license="cc-by-4.0",
-            chinese_name=None, description="Test dataset",
+            chinese_name=None, description="Test dataset", gated_mode=None,
         )
         out = capsys.readouterr().out
         assert "Created" in out
@@ -398,7 +398,7 @@ class TestCreateExecute:
         mock_api.create_repo.assert_called_once_with(
             "owner/cn-dataset", "dataset",
             visibility=None, license=None,
-            chinese_name="测试数据集", description="这是一个测试数据集",
+            chinese_name="测试数据集", description="这是一个测试数据集", gated_mode=None,
         )
 
 

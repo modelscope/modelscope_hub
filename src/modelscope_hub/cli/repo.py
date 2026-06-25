@@ -60,6 +60,15 @@ class CreateCommand(CLICommand):
         p.add_argument("--exist-ok", "--exist_ok", dest="exist_ok",
                        action="store_true", default=False,
                        help="Do not error if repository already exists.")
+        gated_group = p.add_mutually_exclusive_group()
+        gated_group.add_argument(
+            "--gated", dest="gated", action="store_true", default=None,
+            help="Create a gated (application-required) repo. Implies private visibility.",
+        )
+        gated_group.add_argument(
+            "--no-gated", dest="gated", action="store_false",
+            help="Explicitly create a non-gated repo (default).",
+        )
         p.add_argument(
             "--sdk-type",
             dest="sdk_type",
@@ -103,14 +112,22 @@ class CreateCommand(CLICommand):
             file_id = api.upload_file_to_openapi(p)
             extra["skill_file"] = file_id
 
+        # --gated implies private visibility + gated_mode=True
+        visibility = self.args.visibility
+        gated_mode = getattr(self.args, "gated", None)
+        if gated_mode is True:
+            if visibility is None:
+                visibility = "private"
+
         try:
             repo = api.create_repo(
                 self.args.repo_id,
                 self.args.repo_type,
-                visibility=self.args.visibility,
+                visibility=visibility,
                 license=self.args.license,
                 chinese_name=self.args.chinese_name,
                 description=getattr(self.args, "description", None),
+                gated_mode=gated_mode,
                 **extra,
             )
             success(f"Created {self.args.repo_type}: {repo.repo_id or self.args.repo_id}")
