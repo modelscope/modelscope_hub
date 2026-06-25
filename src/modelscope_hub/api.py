@@ -550,6 +550,7 @@ class HubApi:
         license: str | None = None,
         chinese_name: str | None = None,
         description: str | None = None,
+        gated_mode: bool | None = None,
         **extra: Any,
     ) -> RepoInfo:
         """Create a new repository.
@@ -575,6 +576,10 @@ class HubApi:
             Chinese display name shown on the Hub UI.
         description : str, optional
             Short description of the repository.
+        gated_mode : bool, optional
+            Enable gated (application-based download) mode for private repos.
+            True = gated, False = normal private. Only effective when
+            visibility is PRIVATE; ignored otherwise.
         **extra : Any
             Additional fields forwarded verbatim to the underlying client.
 
@@ -603,6 +608,10 @@ class HubApi:
         ... )
         >>> info.repo_id
         'alice/llama-7b-finetuned'
+
+        Create a private gated dataset:
+
+        >>> api.create_repo("alice/my-data", "dataset", visibility="private", gated_mode=True)
 
         Create a public Studio space:
 
@@ -675,6 +684,14 @@ class HubApi:
             body["ChineseName"] = chinese_name
         if description is not None:
             body["Description"] = description
+
+        # gated_mode → ProtectedMode wire field (1=gated, 2=off)
+        if gated_mode is not None:
+            if vis != int(Visibility.PRIVATE):
+                logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
+            else:
+                body["ProtectedMode"] = 1 if gated_mode else 2
+
         body.update(extra)
 
         data = self.legacy.create_repo(repo_type=str(rt), body=body)
