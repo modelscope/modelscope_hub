@@ -340,19 +340,18 @@ class HubApi:
         for key, value in data.items():
             normalised[aliases.get(key, key)] = value
 
-        # The OpenAPI surface encodes visibility as a ``private`` bool (with an
-        # optional ``gated`` flag) instead of the legacy ``Visibility`` integer.
-        # Translate it so downstream code sees a uniform ``Visibility`` enum.
+        # The OpenAPI surface uses ``private`` bool for visibility.
+        # gated is orthogonal and does not affect visibility mapping.
         if normalised.get("visibility") is None:
             private_flag = normalised.get("private")
-            gated_flag = normalised.get("gated")
             if isinstance(private_flag, bool):
                 if private_flag:
                     normalised["visibility"] = Visibility.PRIVATE
-                elif gated_flag:
-                    normalised["visibility"] = Visibility.INTERNAL
                 else:
                     normalised["visibility"] = Visibility.PUBLIC
+            elif normalised.get("gated"):
+                # Rule 4: visibility unknown + gated=True → imply PRIVATE
+                normalised["visibility"] = Visibility.PRIVATE
 
         # The OpenAPI list endpoints return ``id`` as "owner/name".
         # Split it so the computed ``repo_id`` property works.
