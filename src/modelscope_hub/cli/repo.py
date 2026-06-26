@@ -112,12 +112,8 @@ class CreateCommand(CLICommand):
             file_id = api.upload_file_to_openapi(p)
             extra["skill_file"] = file_id
 
-        # --gated implies private visibility + gated_mode=True
         visibility = self.args.visibility
         gated_mode = getattr(self.args, "gated", None)
-        if gated_mode is True:
-            if visibility is None:
-                visibility = "private"
 
         try:
             repo = api.create_repo(

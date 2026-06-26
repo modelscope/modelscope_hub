@@ -90,6 +90,12 @@ _STUDIO_FIELD_RENAMES: dict[str, str] = {
     "cover_image": "coverImage",
 }
 
+# Allowed extra fields for create_repo (wire-protocol fields passable directly).
+# Owner/Name are always set by the method, so excluded here.
+_ALLOWED_EXTRA: frozenset[str] = frozenset(
+    {"ProtectedMode", "Visibility", "License", "ChineseName", "Description"}
+)
+
 
 class HubApi:
     """Unified client for ModelScope Hub operations.
@@ -340,19 +346,18 @@ class HubApi:
         for key, value in data.items():
             normalised[aliases.get(key, key)] = value
 
-        # The OpenAPI surface encodes visibility as a ``private`` bool (with an
-        # optional ``gated`` flag) instead of the legacy ``Visibility`` integer.
-        # Translate it so downstream code sees a uniform ``Visibility`` enum.
+        # The OpenAPI surface uses ``private`` bool for visibility.
+        # gated is orthogonal and does not affect visibility mapping.
         if normalised.get("visibility") is None:
             private_flag = normalised.get("private")
-            gated_flag = normalised.get("gated")
             if isinstance(private_flag, bool):
                 if private_flag:
                     normalised["visibility"] = Visibility.PRIVATE
-                elif gated_flag:
-                    normalised["visibility"] = Visibility.INTERNAL
                 else:
                     normalised["visibility"] = Visibility.PUBLIC
+            elif normalised.get("gated"):
+                # Rule 4: visibility unknown + gated=True → imply PRIVATE
+                normalised["visibility"] = Visibility.PRIVATE
 
         # The OpenAPI list endpoints return ``id`` as "owner/name".
         # Split it so the computed ``repo_id`` property works.
@@ -685,14 +690,36 @@ class HubApi:
         if description is not None:
             body["Description"] = description
 
-        # gated_mode → ProtectedMode wire field (1=gated, 2=off)
+        # gated_mode → ProtectedMode wire field (1=gated, 2=off).
+        # gated only effective with PRIVATE; when vis=None + gated=True,
+        # implicitly set visibility to PRIVATE (user intent: gated repo).
         if gated_mode is not None:
-            if vis != int(Visibility.PRIVATE):
-                logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
-            else:
+            if vis is None:
+                vis = int(Visibility.PRIVATE)
+                body["Visibility"] = vis
                 body["ProtectedMode"] = 1 if gated_mode else 2
+            elif vis == int(Visibility.PRIVATE):
+                body["ProtectedMode"] = 1 if gated_mode else 2
+            else:
+                logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
 
-        body.update(extra)
+        # Whitelist filtering + type validation for extra fields.
+        filtered: dict[str, Any] = {}
+        for k, v in extra.items():
+            if k not in _ALLOWED_EXTRA:
+                logger.warning(
+                    "Unknown extra field %r ignored; allowed: %s", k, _ALLOWED_EXTRA
+                )
+                continue
+            filtered[k] = v
+        if "ProtectedMode" in filtered:
+            pm = filtered["ProtectedMode"]
+            if not isinstance(pm, int) or isinstance(pm, bool) or pm not in (1, 2):
+                raise ValueError(
+                    "ProtectedMode must be int 1 (gated) or 2 (off); "
+                    "use gated_mode=True/False instead"
+                )
+        body.update(filtered)
 
         data = self.legacy.create_repo(repo_type=str(rt), body=body)
         return self._repo_info_from_payload(
