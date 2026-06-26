@@ -90,6 +90,12 @@ _STUDIO_FIELD_RENAMES: dict[str, str] = {
     "cover_image": "coverImage",
 }
 
+# Allowed extra fields for create_repo (wire-protocol fields passable directly).
+# Owner/Name are always set by the method, so excluded here.
+_ALLOWED_EXTRA: frozenset[str] = frozenset(
+    {"ProtectedMode", "Visibility", "License", "ChineseName", "Description"}
+)
+
 
 class HubApi:
     """Unified client for ModelScope Hub operations.
@@ -697,7 +703,23 @@ class HubApi:
             else:
                 logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
 
-        body.update(extra)
+        # Whitelist filtering + type validation for extra fields.
+        filtered: dict[str, Any] = {}
+        for k, v in extra.items():
+            if k not in _ALLOWED_EXTRA:
+                logger.warning(
+                    "Unknown extra field %r ignored; allowed: %s", k, _ALLOWED_EXTRA
+                )
+                continue
+            filtered[k] = v
+        if "ProtectedMode" in filtered:
+            pm = filtered["ProtectedMode"]
+            if not isinstance(pm, int) or isinstance(pm, bool) or pm not in (1, 2):
+                raise ValueError(
+                    "ProtectedMode must be int 1 (gated) or 2 (off); "
+                    "use gated_mode=True/False instead"
+                )
+        body.update(filtered)
 
         data = self.legacy.create_repo(repo_type=str(rt), body=body)
         return self._repo_info_from_payload(
