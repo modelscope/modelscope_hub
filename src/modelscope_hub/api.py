@@ -685,12 +685,18 @@ class HubApi:
         if description is not None:
             body["Description"] = description
 
-        # gated_mode → ProtectedMode wire field (1=gated, 2=off)
+        # gated_mode → ProtectedMode wire field (1=gated, 2=off).
+        # gated only effective with PRIVATE; when vis=None + gated=True,
+        # implicitly set visibility to PRIVATE (user intent: gated repo).
         if gated_mode is not None:
-            if vis != int(Visibility.PRIVATE):
-                logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
-            else:
+            if vis is None:
+                vis = int(Visibility.PRIVATE)
+                body["Visibility"] = vis
                 body["ProtectedMode"] = 1 if gated_mode else 2
+            elif vis == int(Visibility.PRIVATE):
+                body["ProtectedMode"] = 1 if gated_mode else 2
+            else:
+                logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
 
         body.update(extra)
 
