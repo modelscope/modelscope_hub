@@ -137,10 +137,8 @@ def _calculate_adaptive_batch_size(total_files: int) -> int:
     """Calculate optimal commit batch size based on total file count."""
     if total_files <= 0:
         return 1
-    if total_files <= 10:
-        return total_files
     if total_files <= 100:
-        return max(1, total_files // 10)
+        return total_files
     if total_files <= 10_000:
         return max(64, min(256, total_files // 80))
     return 512
