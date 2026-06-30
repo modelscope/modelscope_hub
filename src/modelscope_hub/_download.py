@@ -404,17 +404,22 @@ class DownloadManager:
         url: str,
         headers: dict[str, str],
         cookies: dict | None = None,
-    ) -> dict[str, str]:
+        peer_regions: list[str] | None = None,
+    ) -> tuple[dict[str, str], str]:
         """Probe peer regions and return headers with the best region for OSS internal download.
 
         Steps:
         1. Probe with current (local) region — if already OSS internal, return as-is.
         2. Try each peer region in order (skip duplicates of local) — first OSS internal hit wins.
-        3. If all miss, fall back to original headers (CDN).
+        3. If all miss, fall back to original headers (default path).
+
+        Returns:
+            (headers, source) where source is "local", "peer", or "default".
         """
-        peer_regions = self._get_inter_cloud_regions()
+        if peer_regions is None:
+            peer_regions = self._get_inter_cloud_regions()
         if not peer_regions:
-            return headers
+            return headers, "default"
 
         current_region = headers.get("x-aliyun-region-id", "").lower()
 
@@ -422,7 +427,7 @@ class DownloadManager:
         redirect_url = self._probe_redirect_url(url, headers, cookies)
         if self._is_oss_internal_url(redirect_url):
             logger.debug("Inter-region: local region already yields OSS internal URL, skipping.")
-            return headers
+            return headers, "local"
 
         # Step 2: Try each peer region in order
         for peer_region in peer_regions:
@@ -431,19 +436,15 @@ class DownloadManager:
             probe_headers = {**headers, "x-aliyun-region-id": peer_region}
             redirect_url = self._probe_redirect_url(url, probe_headers, cookies)
             if self._is_oss_internal_url(redirect_url):
-                logger.info(
+                logger.debug(
                     'Inter-region acceleration: using peer region "%s" (OSS internal).',
                     peer_region,
                 )
-                tqdm.write(
-                    f'Inter-region acceleration: '
-                    f'using peer region "{peer_region}" (OSS internal).'
-                )
-                return probe_headers
+                return probe_headers, "peer"
 
         # Step 3: All peers missed
-        logger.debug("Inter-region: no peer region yields OSS internal URL, falling back to CDN.")
-        return headers
+        logger.debug("Inter-region: no peer region yields OSS internal URL, using default path.")
+        return headers, "default"
 
     def _build_download_headers(
         self,
@@ -842,16 +843,23 @@ class DownloadManager:
         download_headers = self._build_download_headers(user_agent)
 
         # Inter-region acceleration: probe peer regions for OSS internal URL
-        if self._get_inter_cloud_regions():
+        # Progress bar prefix: "⚡ " = local OSS, "⇄ " = peer OSS, "  " = CDN, "" = not configured
+        source_prefix = ""
+        peer_regions = self._get_inter_cloud_regions()
+        if peer_regions:
             probe_url = self._client.get_download_url(
                 repo_id, repo_type, file_path, revision,
             )
             cookies = None
             if self._client.token:
                 cookies = {"m_session_id": self._client.token}
-            download_headers = self._resolve_inter_region_headers(
+            download_headers, source = self._resolve_inter_region_headers(
                 probe_url, download_headers, cookies,
+                peer_regions=peer_regions,
             )
+            source_prefix = {
+                "local": "\u26a1 ", "peer": "\u21c4 ", "default": "  ",
+            }[source]
 
         if use_parallel:
             url = self._client.get_download_url(
@@ -931,7 +939,7 @@ class DownloadManager:
                     initial=existing_size,
                     unit="B",
                     unit_scale=True,
-                    desc=Path(file_path).name,
+                    desc=f"{source_prefix}{Path(file_path).name}",
                     leave=False,
                 ) as pbar:
                     with open(tmp_path, mode) as fh:
