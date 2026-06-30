@@ -351,6 +351,10 @@ ENV_INTRA_CLOUD_REGION: str = "MODELSCOPE_DOWNLOAD_INTRA_CLOUD_REGION"
 _env_register(ENV_INTRA_CLOUD_REGION, "(auto)", "Override intra-cloud region ID", "Download",
               deprecated_names=("INTRA_CLOUD_ACCELERATION_REGION",))
 
+ENV_INTER_CLOUD_REGIONS: str = "MODELSCOPE_DOWNLOAD_INTER_CLOUD_REGIONS"
+_env_register(ENV_INTER_CLOUD_REGIONS, "",
+              "Comma-separated peer regions for cross-region internal acceleration", "Download")
+
 UPLOAD_LFS_THRESHOLD: int = _env_int("UPLOAD_LFS_THRESHOLD", 5 * 1024 * 1024)
 UPLOAD_LFS_ENFORCE_THRESHOLD: int = _env_int("UPLOAD_LFS_ENFORCE_THRESHOLD", 1 * 1024 * 1024)
 
@@ -520,6 +524,7 @@ __all__ = [
     "ENV_CACHE",
     "ENV_INTRA_CLOUD_ACCELERATION",
     "ENV_INTRA_CLOUD_REGION",
+    "ENV_INTER_CLOUD_REGIONS",
     "ENV_MODELSCOPE_DOMAIN",
     "ENV_PREFER_AI_SITE",
     "ENV_REGISTRY",

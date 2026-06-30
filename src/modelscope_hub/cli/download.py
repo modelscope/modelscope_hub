@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from argparse import Action
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -85,6 +86,15 @@ class DownloadCommand(CLICommand):
             help="Glob to exclude (snapshot mode). Repeatable.",
         )
         p.add_argument("--force", action="store_true", help="Re-download even if cached.")
+        p.add_argument(
+            "--inter-regions",
+            type=str,
+            default=None,
+            help="Comma-separated list of peer regions reachable via CEN/VPC "
+            "peering for cross-region internal acceleration. "
+            "Overrides env MODELSCOPE_DOWNLOAD_INTER_CLOUD_REGIONS. "
+            "Example: cn-hangzhou,cn-zhangjiakou,cn-wulanchabu",
+        )
 
         # Legacy compat (hidden from --help)
         add_legacy_download_args(p)
@@ -94,6 +104,10 @@ class DownloadCommand(CLICommand):
 
     def execute(self) -> None:
         normalize_download_args(self.args)
+
+        # Apply --inter-regions to env before download
+        if getattr(self.args, "inter_regions", None):
+            os.environ["MODELSCOPE_DOWNLOAD_INTER_CLOUD_REGIONS"] = self.args.inter_regions
 
         # Handle collection download separately
         if self.args.repo_type == "collection":
