@@ -25,10 +25,12 @@ import hashlib
 import io
 import os
 import time
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import requests
 from tqdm.auto import tqdm
@@ -44,6 +46,7 @@ from .constants import (
     ENV_FILE_LOCK,
     ENV_INTRA_CLOUD_ACCELERATION,
     ENV_INTRA_CLOUD_REGION,
+    ENV_INTER_CLOUD_REGIONS,
 )
 from .errors import (
     CacheNotFound,
@@ -367,6 +370,97 @@ class DownloadManager:
 
         self._cached_region = region_id
         return region_id
+
+    # OSS internal endpoint hostname pattern:
+    #   <prefix>.oss<region>-internal.aliyuncs.com
+    # e.g. modelhub-cn-hangzhou.oss-cn-hangzhou-internal.aliyuncs.com
+    _OSS_INTERNAL_RE = re.compile(
+        r".*\.oss.*-internal\.aliyuncs\.com$"
+    )
+
+    @staticmethod
+    def _is_oss_internal_url(url: str) -> bool:
+        """Check if a URL points to an OSS internal (intranet) endpoint.
+
+        Matches hostnames like:
+            modelhub-cn-hangzhou.oss-cn-hangzhou-internal.aliyuncs.com
+        """
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            return False
+        return bool(DownloadManager._OSS_INTERNAL_RE.match(host))
+
+    @staticmethod
+    def _probe_redirect_url(
+        url: str,
+        headers: dict[str, str],
+        cookies: dict | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        """Send a HEAD request without following redirects to get the 302 Location."""
+        try:
+            r = requests.head(
+                url, headers=headers, cookies=cookies,
+                allow_redirects=False, timeout=timeout,
+            )
+            if r.status_code in (301, 302, 303, 307, 308):
+                return r.headers.get("Location", "")
+        except requests.exceptions.RequestException:
+            pass
+        return ""
+
+    def _get_inter_cloud_regions(self) -> list[str]:
+        """Read the inter-cloud peer region list from the environment."""
+        from .constants import _env
+        raw = _env(ENV_INTER_CLOUD_REGIONS, "INTER_CLOUD_ACCELERATION_REGIONS") or ""
+        return [r.strip().lower() for r in raw.split(",") if r.strip()]
+
+    def _resolve_inter_region_headers(
+        self,
+        url: str,
+        headers: dict[str, str],
+        cookies: dict | None = None,
+    ) -> dict[str, str]:
+        """Probe peer regions and return headers with the best region for OSS internal download.
+
+        Steps:
+        1. Probe with current (local) region — if already OSS internal, return as-is.
+        2. Try each peer region in order (skip duplicates of local) — first OSS internal hit wins.
+        3. If all miss, fall back to original headers (CDN).
+        """
+        peer_regions = self._get_inter_cloud_regions()
+        if not peer_regions:
+            return headers
+
+        current_region = headers.get("x-aliyun-region-id", "").lower()
+
+        # Step 1: Probe with current (local) region
+        redirect_url = self._probe_redirect_url(url, headers, cookies)
+        if self._is_oss_internal_url(redirect_url):
+            logger.debug("Inter-region: local region already yields OSS internal URL, skipping.")
+            return headers
+
+        # Step 2: Try each peer region in order
+        for peer_region in peer_regions:
+            if peer_region == current_region:
+                continue
+            probe_headers = {**headers, "x-aliyun-region-id": peer_region}
+            redirect_url = self._probe_redirect_url(url, probe_headers, cookies)
+            if self._is_oss_internal_url(redirect_url):
+                logger.info(
+                    'Inter-region acceleration: using peer region "%s" (OSS internal).',
+                    peer_region,
+                )
+                tqdm.write(
+                    f'Inter-region acceleration: '
+                    f'using peer region "{peer_region}" (OSS internal).'
+                )
+                return probe_headers
+
+        # Step 3: All peers missed
+        logger.debug("Inter-region: no peer region yields OSS internal URL, falling back to CDN.")
+        return headers
 
     def _build_download_headers(
         self,
@@ -763,6 +857,28 @@ class DownloadManager:
         )
 
         download_headers = self._build_download_headers(user_agent)
+
+        # Inter-region acceleration: probe peer regions for OSS internal URL
+        # Progress bar prefix: "⚡ " = local OSS, "⇄ " = peer OSS, "  " = CDN, "" = not configured
+        source_prefix = ""
+        peer_regions = self._get_inter_cloud_regions()
+        if peer_regions:
+            try:
+                probe_url = self._client.get_download_url(
+                    repo_id, repo_type, file_path, revision,
+                )
+                cookies = None
+                if self._client.token:
+                    cookies = {"m_session_id": self._client.token}
+                download_headers, source = self._resolve_inter_region_headers(
+                    probe_url, download_headers, cookies,
+                    peer_regions=peer_regions,
+                )
+                source_prefix = {
+                    "local": "\u26a1 ", "peer": "\u21c4 ", "default": "  ",
+                }[source]
+            except Exception as exc:
+                logger.warning("Failed to resolve inter-region acceleration: %s. Falling back to default.", exc)
 
         if use_parallel:
             url = self._client.get_download_url(
