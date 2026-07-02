@@ -25,18 +25,28 @@ def _resolve_legacy_paths(
 ) -> tuple[str | None, str | None]:
     """Resolve cache_dir/local_dir for legacy path layout compatibility.
 
-    When ``local_dir`` is not explicitly set by the caller, computes
-    it from ``cache_dir`` (or the default) + ``repo_id`` to reproduce
-    the old flat ``{cache_dir}/{owner}/{name}/`` structure.  The returned
-    ``cache_dir`` is set to ``None`` so the new API uses ``local_dir`` mode.
+    Strategy:
+    - If ``local_dir`` is explicitly specified, use it directly.
+    - If legacy cache exists at old format path (``{cache_dir}/{owner}/{name}``),
+      reuse it to avoid re-downloading.
+    - Otherwise, pass ``cache_dir`` to let the new download engine use
+      HF-compatible format (``{cache_dir}/models/{owner}--{name}/snapshots/{rev}/``).
 
     Returns (effective_cache_dir, effective_local_dir).
     """
     if local_dir is not None:
         # User explicitly controls the output directory — pass through.
         return cache_dir, local_dir
+
     base = Path(cache_dir) if cache_dir else Path(api._config.cache_dir)
-    return None, str(base / repo_id)
+    legacy_path = base / repo_id  # Old format: {base}/{owner}/{name}
+
+    if legacy_path.exists():
+        # Legacy cache found — reuse old format path to avoid re-download.
+        return None, str(legacy_path)
+    else:
+        # Clean environment — let download engine use new HF-compatible format.
+        return str(base), None
 
 
 def model_file_download(
