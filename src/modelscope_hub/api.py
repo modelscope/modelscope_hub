@@ -90,10 +90,10 @@ _STUDIO_FIELD_RENAMES: dict[str, str] = {
     "cover_image": "coverImage",
 }
 
-# Allowed extra fields for create_repo (wire-protocol fields passable directly).
-# Owner/Name are always set by the method, so excluded here.
-_ALLOWED_EXTRA: frozenset[str] = frozenset(
-    {"ProtectedMode", "Visibility", "License", "ChineseName", "Description"}
+# Reserved fields that are controlled by create_repo method parameters.
+# These MUST NOT be overridden via extra kwargs to avoid silent conflicts.
+_RESERVED_EXTRA_FIELDS: frozenset[str] = frozenset(
+    {"Path", "Owner", "Name"}
 )
 
 
@@ -703,12 +703,12 @@ class HubApi:
             else:
                 logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
 
-        # Whitelist filtering + type validation for extra fields.
+        # Blocklist filtering: only reject fields controlled by method params.
         filtered: dict[str, Any] = {}
         for k, v in extra.items():
-            if k not in _ALLOWED_EXTRA:
+            if k in _RESERVED_EXTRA_FIELDS:
                 logger.warning(
-                    "Unknown extra field %r ignored; allowed: %s", k, _ALLOWED_EXTRA
+                    "Reserved field %r in extra ignored (controlled by method params)", k
                 )
                 continue
             filtered[k] = v
