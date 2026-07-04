@@ -1,0 +1,622 @@
+# Copyright (c) Alibaba, Inc. and its affiliates.
+"""Core command logic for agent workspace management.
+
+This module contains the business logic for agent upload, download, convert,
+watch, stop, and recover operations.  CLI adapters (``modelscope_hub.cli.agent``,
+``ultron.cli.commands``) call these functions to perform the actual work.
+"""
+import getpass
+import logging
+import os
+import sys
+import zipfile
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from ._workspace import (
+    FRAMEWORK_REGISTRY,
+    ALL_AGENT_NAME,
+    DEFAULT_AGENT_NAME,
+    GLOBAL_AGENT_NAME,
+    WorkspaceSpec,
+)
+from ._defaults import get_defaults
+from ._merge import merge_resources
+from ._api import AgentApi, ApiError
+
+logger = logging.getLogger("modelscope_hub.agent")
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _fail(message: str) -> int:
+    """Print an error and return exit code 1."""
+    print(f"Error: {message}", file=sys.stderr)
+    return 1
+
+
+def api_error_message(e: ApiError, action: str = "request") -> str:
+    """Return a user-friendly message based on the HTTP status code."""
+    if e.status == 401:
+        return "authentication failed. Please login again."
+    if e.status == 403:
+        return "permission denied. You do not have access to this resource."
+    if e.status == 404:
+        return "resource not found. Check the repository name and try again."
+    if e.status >= 500:
+        return "server encountered an issue. Please wait a moment and try again."
+    return f"{action} failed (HTTP {e.status}: {e.detail})"
+
+
+def repo_name(framework: str, name: str) -> str:
+    """Derive the remote repository name from framework and sub-agent name.
+
+    - name is "all" or empty: use framework alone
+    - Both provided: ``{framework}-{name}``
+    - Only one provided: use that value directly
+    - Neither provided: ``"default"``
+    """
+    fw = (framework or "").strip()
+    n = (name or "").strip()
+    if n == ALL_AGENT_NAME:
+        n = ""
+    if fw and n:
+        return f"{fw}-{n}"
+    if fw:
+        return fw
+    if n:
+        return n
+    return "default"
+
+
+def resolve_remote(
+    repo: Optional[str] = None,
+    name: Optional[str] = None,
+    framework: str = "",
+    username: str = "",
+) -> Tuple[str, str]:
+    """Resolve remote target as (group, repo_name).
+
+    - repo contains '/' -> split into (group, repo_name), ignore username
+    - repo without '/' -> (username, repo)
+    - repo is None/empty -> derive from name+framework using repo_name logic
+    """
+    if repo:
+        if "/" in repo:
+            parts = repo.split("/", 1)
+            return parts[0], parts[1]
+        return username, repo
+    derived = repo_name(framework, name or "")
+    return username, derived
+
+
+def resolve_local_name(name: Optional[str], framework: str, local_dir=None):
+    """Resolve local agent name when --name is omitted.
+
+    Returns (resolved_name, error_message).
+    - If name is given -> use it directly.
+    - If omitted -> check list_agents():
+      - 0 or only 'default' -> use GLOBAL_AGENT_NAME (shared files only)
+      - exactly 1 non-default agent -> auto-select it
+      - multiple -> return error
+    """
+    if name:
+        return name, None
+
+    spec_cls = FRAMEWORK_REGISTRY[framework]
+    local = Path(local_dir).expanduser() if local_dir else None
+    tmp_spec = spec_cls(agent_name=DEFAULT_AGENT_NAME, local_dir=local)
+    agents = tmp_spec.list_agents()
+
+    real_agents = [a for a in agents if a != DEFAULT_AGENT_NAME]
+
+    if len(real_agents) == 0:
+        return GLOBAL_AGENT_NAME, None
+    if len(real_agents) == 1:
+        return real_agents[0], None
+    return None, (
+        f"multiple sub-agents found: {', '.join(agents)}. "
+        f"Please specify --name to select one."
+    )
+
+
+def available_frameworks() -> str:
+    """Comma-separated list of registered frameworks."""
+    return ", ".join(sorted(FRAMEWORK_REGISTRY))
+
+
+def build_spec(framework: str, name: str, local_dir=None) -> WorkspaceSpec:
+    """Build a WorkspaceSpec instance for the given framework and agent name."""
+    spec_cls = FRAMEWORK_REGISTRY[framework]
+    local = Path(local_dir).expanduser() if local_dir else None
+    return spec_cls(agent_name=name, local_dir=local)
+
+
+def convert_resources(resources: dict, source_fw: str, target_fw: str) -> dict:
+    """Convert workspace resources from one framework format to another.
+
+    Reuses the cross-framework merge engine.  No-op when source == target.
+    """
+    if source_fw == target_fw:
+        return resources
+    result = merge_resources(
+        incoming=resources,
+        source_product=source_fw,
+        target_product=target_fw,
+        source_defaults=get_defaults(source_fw),
+        target_defaults=get_defaults(target_fw),
+    )
+    return result.merged_files
+
+
+# ---------------------------------------------------------------------------
+# Command implementations
+# ---------------------------------------------------------------------------
+
+def cmd_status(framework: str, local_dir=None) -> int:
+    """List discoverable sub-agents for a framework."""
+    if framework not in FRAMEWORK_REGISTRY:
+        return _fail(f"unknown framework '{framework}'. Available: {available_frameworks()}")
+
+    spec = build_spec(framework, DEFAULT_AGENT_NAME, local_dir)
+    agents = spec.list_agents()
+    print(f"Agents for {framework}:")
+    for a in agents:
+        tmp = build_spec(framework, a, local_dir)
+        files = tmp.collect_bytes()
+        print(f"  {a} — {len(files)} file(s), root: {tmp.workspace_root}")
+        for rel in sorted(files):
+            print(f"    {rel}")
+    return 0
+
+
+def cmd_upload(
+    framework: str,
+    name: Optional[str] = None,
+    local_dir=None,
+    repo: Optional[str] = None,
+    dry_run: bool = False,
+    *,
+    endpoint: Optional[str] = None,
+    token: Optional[str] = None,
+    username: Optional[str] = None,
+) -> int:
+    """Upload local agent files to remote."""
+    if framework not in FRAMEWORK_REGISTRY:
+        return _fail(f"unknown framework '{framework}'. Available: {available_frameworks()}")
+
+    local_name, err = resolve_local_name(name, framework, local_dir)
+    if err:
+        return _fail(err)
+
+    spec = build_spec(framework, local_name, local_dir)
+    root = spec.workspace_root
+    resources: Dict[str, bytes] = spec.collect_bytes()
+    if not resources:
+        display_name = local_name if local_name != GLOBAL_AGENT_NAME else "global"
+        return _fail(
+            f"no files found for {framework}/{display_name} under {root}. "
+            f"Check the path or pass --local_dir."
+        )
+
+    total_bytes = sum(len(v) for v in resources.values())
+    print(f"Found {len(resources)} file(s) ({total_bytes} bytes) under {root}:")
+    for rel in sorted(resources):
+        print(f"  {rel} ({len(resources[rel])} B)")
+
+    if dry_run:
+        print("\n[dry-run] nothing uploaded.")
+        return 0
+
+    if not endpoint or not token:
+        return _fail("not logged in. Provide endpoint and token.")
+    if not username:
+        return _fail("missing username.")
+
+    client = AgentApi(endpoint=endpoint, token=token)
+
+    effective_name = local_name if local_name != GLOBAL_AGENT_NAME else None
+    group, repo_n = resolve_remote(
+        repo=repo, name=effective_name, framework=framework, username=username,
+    )
+
+    try:
+        file_id = client.upload_file(resources)
+        client.create_repo(group, repo_n, framework, system_prompt_files=file_id)
+    except ApiError as e:
+        return _fail(api_error_message(e, "upload"))
+
+    print(f"\nUploaded {len(resources)} file(s) to {group}/{repo_n}.")
+    return 0
+
+
+def cmd_download(
+    framework: str,
+    repo: str,
+    name: Optional[str] = None,
+    target: Optional[str] = None,
+    local_dir=None,
+    dry_run: bool = False,
+    *,
+    endpoint: Optional[str] = None,
+    token: Optional[str] = None,
+    username: Optional[str] = None,
+) -> int:
+    """Download remote agent files to local."""
+    if not repo:
+        return _fail("--repo is required for download (the remote repository name)")
+    if framework not in FRAMEWORK_REGISTRY:
+        return _fail(f"unknown framework '{framework}'. Available: {available_frameworks()}")
+
+    if not endpoint or not token:
+        return _fail("not logged in. Provide endpoint and token.")
+    if not username:
+        return _fail("missing username.")
+
+    group, repo_n = resolve_remote(
+        repo=repo, name=name, framework=framework, username=username,
+    )
+
+    client = AgentApi(endpoint=endpoint, token=token)
+    try:
+        info = client.repo_info(group, repo_n)
+        if info is None:
+            return _fail(f"repository {group}/{repo_n} not found.")
+        paths = client.list_repo_files(group, repo_n)
+        if not paths:
+            return _fail(f"repository {group}/{repo_n} has no files.")
+        resources = {p: client.download_repo_file(group, repo_n, p) for p in paths}
+    except ApiError as e:
+        return _fail(api_error_message(e, "download"))
+
+    # Optional format conversion.
+    target_fw = target or framework
+    if target_fw not in FRAMEWORK_REGISTRY:
+        return _fail(f"unknown target framework '{target_fw}'. Available: {available_frameworks()}")
+    if target_fw != framework:
+        resources = convert_resources(resources, framework, target_fw)
+        print(f"Converted {framework} -> {target_fw} ({len(resources)} file(s)).")
+
+    local_name = name or DEFAULT_AGENT_NAME
+    spec = build_spec(target_fw, local_name, local_dir)
+    root = spec.workspace_root
+
+    patterns = spec.resolved_patterns()
+    filtered = {k: v for k, v in resources.items() if spec.matches(k, patterns)}
+    skipped = set(resources.keys()) - set(filtered.keys())
+    if skipped:
+        print(f"Skipped {len(skipped)} file(s) not matching workspace spec:")
+        for s in sorted(skipped):
+            print(f"  [skip] {s}")
+
+    if not filtered:
+        return _fail("no downloaded files match the local workspace spec patterns.")
+
+    print(f"{len(filtered)} file(s) for {group}/{repo_n} (framework={target_fw}):")
+    for rel in sorted(filtered):
+        print(f"  {rel} -> {root / rel}")
+
+    if dry_run:
+        print("\n[dry-run] nothing written.")
+        return 0
+
+    written = spec.apply(filtered)
+    print(f"\nWrote {len(written)} file(s) under {root}.")
+    return 0
+
+
+def convert_workspace(
+    src_spec: WorkspaceSpec,
+    source_fw: str,
+    target_fw: str,
+    dst_spec: WorkspaceSpec,
+    dry_run: bool = False,
+) -> int:
+    """Shared convert logic: merge -> filter defaults -> backup -> write.
+
+    Returns 0 on success, 1 on failure.
+    """
+    src_root = src_spec.workspace_root
+    resources = src_spec.collect()
+    if not resources:
+        return _fail(f"no {source_fw} files found under {src_root}.")
+
+    if source_fw == target_fw:
+        converted = resources
+        default_paths: set = set()
+    else:
+        result = merge_resources(
+            incoming=resources,
+            source_product=source_fw,
+            target_product=target_fw,
+            source_defaults=get_defaults(source_fw),
+            target_defaults=get_defaults(target_fw),
+        )
+        default_paths = {a.path for a in result.actions if a.action == "default"}
+        converted = result.merged_files
+
+    dst_root = dst_spec.workspace_root
+    effective = {k: v for k, v in converted.items() if k not in default_paths}
+    skipped_defaults = sorted(default_paths & set(converted.keys()))
+
+    print(
+        f"Convert {source_fw}/{src_spec.agent_name} ({src_root}) -> "
+        f"{target_fw}/{dst_spec.agent_name} ({dst_root}): "
+        f"{len(resources)} in, {len(effective)} out"
+    )
+    for rel in sorted(effective):
+        print(f"  {rel} -> {dst_root / rel}")
+    if skipped_defaults:
+        print(f"  ({len(skipped_defaults)} default template(s) skipped: "
+              f"{', '.join(skipped_defaults)})")
+
+    if dry_run:
+        print("\n[dry-run] nothing written.")
+        return 0
+
+    if not effective:
+        print("\nNo effective files to write (all were default templates).")
+        return 0
+
+    # Backup existing target files before overwriting
+    from ._sync import backup_local
+    existing = dst_spec.collect()
+    if existing:
+        backup_path = backup_local(dst_spec, f"{target_fw}_{dst_spec.agent_name}")
+        print(f"  Backup: {backup_path}")
+
+    written = dst_spec.apply(effective)
+    print(f"\nWrote {len(written)} file(s) under {dst_root}.")
+    return 0
+
+
+def cmd_convert(
+    source_fw: str,
+    target_fw: str,
+    name: Optional[str] = None,
+    local_dir=None,
+    out_dir=None,
+    dry_run: bool = False,
+) -> int:
+    """Local-only format conversion: read a workspace, convert, write it out."""
+    for fw, label in ((source_fw, "--from"), (target_fw, "--to")):
+        if fw not in FRAMEWORK_REGISTRY:
+            return _fail(f"unknown framework '{fw}' for {label}. Available: {available_frameworks()}")
+
+    agent_name = name or "default"
+    src_spec = build_spec(source_fw, agent_name, local_dir)
+    dst_spec = build_spec(target_fw, agent_name, out_dir)
+    return convert_workspace(src_spec, source_fw, target_fw, dst_spec, dry_run=dry_run)
+
+
+def cmd_watch(
+    framework: str,
+    name: Optional[str] = None,
+    local_dir=None,
+    repo: Optional[str] = None,
+    pull: bool = False,
+    *,
+    endpoint: Optional[str] = None,
+    token: Optional[str] = None,
+    username: Optional[str] = None,
+) -> int:
+    """Start background bidirectional sync for agent files."""
+    from ._cache import pid_file
+    from ._watcher import daemonize, watch_loop
+
+    if framework not in FRAMEWORK_REGISTRY:
+        return _fail(f"unknown framework '{framework}'. Available: {available_frameworks()}")
+
+    if name:
+        local_name, err = resolve_local_name(name, framework, local_dir)
+        if err:
+            return _fail(err)
+    else:
+        local_name = ALL_AGENT_NAME
+
+    if not endpoint or not token:
+        return _fail("not logged in. Provide endpoint and token.")
+    if not username:
+        return _fail("missing username.")
+
+    # Ensure no stale watch processes are running.
+    pf = pid_file()
+    if pf.exists():
+        from ._watcher import stop_daemon
+        stop_daemon()
+
+    spec = build_spec(framework, local_name, local_dir)
+    client = AgentApi(endpoint=endpoint, token=token)
+
+    # Guard: file-per-agent frameworks with a specific agent name.
+    if (not spec.supports_individual_watch
+            and local_name not in (GLOBAL_AGENT_NAME, ALL_AGENT_NAME, DEFAULT_AGENT_NAME)):
+        return _fail(
+            f"'{framework}' has shared files across sub-agents; "
+            f"watch only supports global/default mode to avoid sync conflicts. "
+            f"Use upload/download -n {local_name} for individual sub-agent operations."
+        )
+
+    # Resolve remote target.
+    effective_name = name if name else None
+    group, repo_n = resolve_remote(
+        repo=repo, name=effective_name, framework=framework, username=username,
+    )
+
+    # Guard: check remote repo framework matches local.
+    try:
+        info = client.repo_info(group, repo_n)
+        if info:
+            remote_fw = info.get("Framework", "")
+            if remote_fw and remote_fw != framework:
+                return _fail(
+                    f"framework mismatch: local={framework}, remote={remote_fw}. "
+                    f"Use convert or download --target for cross-framework sync."
+                )
+    except ApiError as e:
+        if e.status in (403, 401):
+            return _fail(api_error_message(e, "watch"))
+
+    interval = 120
+    push_only = not pull
+    print(f"Starting sync for {group}/{repo_n} (interval={interval}s)...")
+    print(f"  Framework: {framework}")
+    print(f"  Root: {spec.workspace_root}")
+    if push_only:
+        print("  Mode: push-only (local -> remote)")
+    else:
+        print("  Mode: bidirectional (local <-> remote)")
+    print(f"  Stop: ms agent stop")
+
+    daemonize(watch_loop, spec, client, username, repo_n, framework, interval, push_only=push_only)
+    print(f"  Watch started (PID file: {pf}).")
+    return 0
+
+
+def cmd_stop() -> int:
+    """Stop the background watch process."""
+    from ._watcher import stop_daemon
+
+    stopped = stop_daemon()
+    if stopped:
+        print("Watch process stopped.")
+    else:
+        print("No watch process running.")
+    return 0
+
+
+def cmd_recover(
+    target: Optional[str] = None,
+    framework: Optional[str] = None,
+    name: Optional[str] = None,
+    local_dir=None,
+    list_backups: bool = False,
+) -> int:
+    """Restore agent files from a backup zip."""
+    import datetime as _dt
+    from ._cache import cache_dir
+
+    cdir = cache_dir()
+
+    backups = sorted(
+        (f for f in cdir.iterdir() if f.suffix == ".zip" and f.is_file()),
+        key=lambda f: f.stat().st_mtime,
+    )
+
+    # --list mode
+    if list_backups:
+        fw_filter = framework
+        name_filter = name
+        if fw_filter or name_filter:
+            filtered = []
+            for f in backups:
+                parts = f.stem.rsplit("_", 2)
+                prefix = parts[0] if len(parts) >= 3 else f.stem
+                if fw_filter and not prefix.startswith(fw_filter):
+                    continue
+                if name_filter and f"_{name_filter}_" not in f.stem:
+                    continue
+                filtered.append(f)
+            backups = filtered
+
+        if not backups:
+            print("No backups found.")
+            return 0
+        print(f"Backups in {cdir}:\n")
+        last = backups[-1]
+        for f in backups:
+            mtime = _dt.datetime.fromtimestamp(f.stat().st_mtime)
+            marker = "  [LAST]" if f == last else ""
+            print(f"  {f.name}  ({mtime:%Y-%m-%d %H:%M:%S}){marker}")
+        print(f"\n{len(backups)} backup(s) total.")
+        return 0
+
+    # Restore mode
+    if not target:
+        return _fail("specify a target: 'last' or a backup filename. Use --list to see available backups.")
+
+    fw_filter = framework
+    name_filter = name
+    if fw_filter or name_filter:
+        filtered = []
+        for f in backups:
+            if fw_filter and not f.stem.startswith(fw_filter):
+                continue
+            if name_filter and f"_{name_filter}_" not in f.stem:
+                continue
+            filtered.append(f)
+        backups = filtered
+
+    if target == "last":
+        if not backups:
+            return _fail("no backups found.")
+        zip_path = backups[-1]
+    else:
+        fname = target if target.endswith(".zip") else f"{target}.zip"
+        zip_path = cdir / fname
+        if not zip_path.exists():
+            zip_path = Path(target)
+        if not zip_path.exists():
+            return _fail(f"backup not found: {fname} (looked in {cdir})")
+
+    if framework and framework not in FRAMEWORK_REGISTRY:
+        return _fail(f"unknown framework '{framework}'. Available: {available_frameworks()}")
+
+    if not name:
+        stem = zip_path.stem
+        parts = stem.rsplit("_", 2)
+        name = parts[0] if len(parts) >= 3 else stem
+
+    if not framework:
+        if name in FRAMEWORK_REGISTRY:
+            framework = name
+        else:
+            return _fail("cannot infer framework. Pass --framework explicitly.")
+
+    spec = build_spec(framework, "all", local_dir)
+    root = spec.workspace_root
+
+    # Backup current local files
+    from ._sync import backup_local
+    current_resources = spec.collect()
+    if current_resources:
+        pre_restore_backup = backup_local(spec, name)
+        print(f"Pre-restore backup: {pre_restore_backup.name}")
+    else:
+        print("No existing files to backup.")
+
+    # Determine which files are in the zip
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zip_entries = set(info.filename for info in zf.infolist() if not info.is_dir())
+
+    # Delete local files not in the zip
+    deleted = 0
+    for rel in sorted(current_resources.keys()):
+        if rel not in zip_entries:
+            target_file = root / rel
+            if target_file.exists():
+                target_file.unlink()
+                print(f"  Removed: {rel}")
+                deleted += 1
+
+    # Extract zip
+    resolved_root = root.resolve()
+    print(f"Restoring {zip_path.name} -> {resolved_root}")
+    restored = 0
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for info in zf.infolist():
+            if info.is_dir():
+                continue
+            file_target = (resolved_root / info.filename).resolve()
+            if not file_target.is_relative_to(resolved_root):
+                print(f"  Skipped (path traversal): {info.filename}")
+                continue
+            file_target.parent.mkdir(parents=True, exist_ok=True)
+            file_target.write_bytes(zf.read(info.filename))
+            print(f"  Restored: {info.filename}")
+            restored += 1
+
+    print(f"\nRestored {restored} file(s), removed {deleted} extra file(s).")
+    return 0
