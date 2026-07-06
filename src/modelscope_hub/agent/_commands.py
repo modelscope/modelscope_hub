@@ -230,6 +230,8 @@ def cmd_upload(
         client.create_repo(group, repo_n, framework, system_prompt_files=file_id)
     except APIError as e:
         return _fail(api_error_message(e, "upload"))
+    except Exception as e:
+        return _fail(f"upload failed: {e}")
 
     print(f"\nUploaded {len(resources)} file(s) to {group}/{repo_n}.")
     return 0
@@ -247,16 +249,30 @@ def cmd_download(
     token: str | None = None,
     username: str | None = None,
 ) -> int:
-    """Download remote agent files to local."""
+    """Download remote agent files to local.
+
+    Token is optional for public repos.  However, when *repo* does not
+    contain ``/`` we need *username* to derive the group, which requires
+    authentication.
+    """
     if not repo:
         return _fail("--repo is required for download (the remote repository name)")
     if framework not in FRAMEWORK_REGISTRY:
         return _fail(f"unknown framework '{framework}'. Available: {available_frameworks()}")
 
-    if not endpoint or not token:
-        return _fail("not logged in. Provide endpoint and token.")
+    if not endpoint:
+        return _fail("not logged in. Provide endpoint.")
+
+    # Token is optional for download (public repos don't require auth).
+    # But if --repo doesn't contain '/', we need username to derive group.
+    if '/' not in repo and not token:
+        return _fail(
+            f"--repo '{repo}' requires login to resolve owner. "
+            f"Use 'owner/name' format or run 'ms login' first.")
+    if not token:
+        token = ''
     if not username:
-        return _fail("missing username.")
+        username = ''
 
     group, repo_n = resolve_remote(
         repo=repo, name=name, framework=framework, username=username,
@@ -273,6 +289,8 @@ def cmd_download(
         resources = {p: client.download_repo_file(group, repo_n, p) for p in paths}
     except APIError as e:
         return _fail(api_error_message(e, "download"))
+    except Exception as e:
+        return _fail(f"download failed: {e}")
 
     # Optional format conversion.
     target_fw = target or framework
@@ -378,19 +396,21 @@ def convert_workspace(
 def cmd_convert(
     source_fw: str,
     target_fw: str,
-    name: str | None = None,
+    from_name: str | None = None,
+    target_name: str | None = None,
     local_dir=None,
     out_dir=None,
     dry_run: bool = False,
 ) -> int:
     """Local-only format conversion: read a workspace, convert, write it out."""
-    for fw, label in ((source_fw, "--from"), (target_fw, "--to")):
+    for fw, label in ((source_fw, "--from-framework"), (target_fw, "--target-framework")):
         if fw not in FRAMEWORK_REGISTRY:
             return _fail(f"unknown framework '{fw}' for {label}. Available: {available_frameworks()}")
 
-    agent_name = name or "default"
-    src_spec = build_spec(source_fw, agent_name, local_dir)
-    dst_spec = build_spec(target_fw, agent_name, out_dir)
+    src_name = from_name or DEFAULT_AGENT_NAME
+    dst_name = target_name or src_name
+    src_spec = build_spec(source_fw, src_name, local_dir)
+    dst_spec = build_spec(target_fw, dst_name, out_dir)
     return convert_workspace(src_spec, source_fw, target_fw, dst_spec, dry_run=dry_run)
 
 
@@ -426,9 +446,8 @@ def cmd_watch(
 
     # Ensure no stale watch processes are running.
     pf = pid_file()
-    if pf.exists():
-        from ._watcher import stop_daemon
-        stop_daemon()
+    from ._watcher import stop_daemon
+    stop_daemon(extra_patterns=['ms agent watch', 'modelscope agent watch'])
 
     spec = build_spec(framework, local_name, local_dir)
     client = AgentApi(endpoint=endpoint, token=token)
@@ -461,6 +480,12 @@ def cmd_watch(
     except APIError as e:
         if e.status_code in (403, 401):
             return _fail(api_error_message(e, "watch"))
+        elif e.status_code == 404:
+            pass  # repo not found — first push will create it
+        else:
+            return _fail(f"failed to get repository info (HTTP {e.status_code}: {e.message})")
+    except Exception as e:
+        return _fail(f"failed to get repository info: {e}")
 
     interval = 120
     push_only = not pull
@@ -468,13 +493,15 @@ def cmd_watch(
     print(f"  Framework: {framework}")
     print(f"  Root: {spec.workspace_root}")
     if push_only:
-        print("  Mode: push-only (local -> remote)")
+        print("  Mode: push-only (local -> remote, will NOT pull remote changes)")
     else:
-        print("  Mode: bidirectional (local <-> remote)")
+        print("  Mode: bidirectional (local <-> remote, WILL pull remote changes)")
     print(f"  Stop: ms agent stop")
 
     daemonize(watch_loop, spec, client, username, repo_n, framework, interval, push_only=push_only)
+    from ._cache import log_file
     print(f"  Watch started (PID file: {pf}).")
+    print(f"  Log: {log_file()}")
     return 0
 
 
@@ -623,4 +650,82 @@ def cmd_recover(
             restored += 1
 
     print(f"\nRestored {restored} file(s), removed {deleted} extra file(s).")
+    return 0
+
+
+# Aliases: cmd_restore = cmd_recover, cmd_backups extracted from list_backups mode.
+
+def cmd_restore(
+    target: str | None = None,
+    framework: str | None = None,
+    name: str | None = None,
+    local_dir=None,
+) -> int:
+    """Restore agent files from a backup zip (alias for cmd_recover without list mode)."""
+    return cmd_recover(target=target, framework=framework, name=name, local_dir=local_dir, list_backups=False)
+
+
+def cmd_backups(
+    framework: str | None = None,
+    name: str | None = None,
+    local_dir=None,
+) -> int:
+    """List available backups."""
+    return cmd_recover(target=None, framework=framework, name=name, local_dir=local_dir, list_backups=True)
+
+
+def cmd_list(
+    owner: str | None = None,
+    page_number: int = 1,
+    page_size: int = 10,
+    *,
+    endpoint: str | None = None,
+    token: str | None = None,
+) -> int:
+    """List remote agent repositories."""
+    if not endpoint:
+        return _fail("not logged in. Provide endpoint.")
+    if not token:
+        token = ''
+
+    client = AgentApi(endpoint=endpoint, token=token)
+    try:
+        result = client.list_agents(owner=owner, page_number=page_number, page_size=page_size)
+    except APIError as e:
+        return _fail(api_error_message(e, "list"))
+    except Exception as e:
+        return _fail(f"list failed: {e}")
+
+    items = result.get("items") or []
+    total = result.get("total_count", len(items))
+
+    if not items:
+        print("(no agent repositories found)")
+        return 0
+
+    headers = ['repo_id', 'framework', 'visibility', 'updated']
+    rows = []
+    for item in items:
+        owner_name = item.get('Path') or item.get('path') or ''
+        repo_name = item.get('Name') or item.get('name') or ''
+        repo_id = f'{owner_name}/{repo_name}' if owner_name else repo_name
+        fw = item.get('Framework') or item.get('framework') or '-'
+        vis = item.get('Visibility') or item.get('visibility') or '-'
+        updated = item.get('LastUpdatedDate') or item.get('last_updated_date') or '-'
+        if isinstance(updated, str) and 'T' in updated:
+            updated = updated.split('T')[0]
+        rows.append((repo_id, fw, vis, updated))
+
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, val in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(val)))
+
+    fmt = '  '.join(f'{{:<{w}}}' for w in col_widths)
+    print(fmt.format(*headers))
+    print(fmt.format(*['-' * w for w in col_widths]))
+    for row in rows:
+        print(fmt.format(*[str(v) for v in row]))
+
+    print(f'\npage {page_number} / total {total} (page_size={page_size})')
     return 0

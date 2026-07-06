@@ -90,6 +90,9 @@ class HubConfig:
                 self._endpoint_overridden = True
             else:
                 self.endpoint = DEFAULT_ENDPOINT
+        # Ensure endpoint always has a scheme
+        if self.endpoint and not self.endpoint.startswith(("http://", "https://")):
+            self.endpoint = f"https://{self.endpoint}"
         self.endpoint = self.endpoint.rstrip("/")
         if self.token is None:
             self.token = os.environ.get(ENV_TOKEN) or self.load_token()
