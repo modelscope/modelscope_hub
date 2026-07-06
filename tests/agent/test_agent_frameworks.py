@@ -23,7 +23,8 @@ import unittest
 
 import pytest
 
-from modelscope_hub.agent._api import AgentApi, ApiError
+from modelscope_hub.agent._api import AgentApi
+from modelscope_hub.errors import APIError
 from modelscope_hub.agent._defaults import get_defaults
 from modelscope_hub.agent._merge import merge_resources
 
@@ -47,8 +48,8 @@ def _log_429(fn, *args, **kwargs):
     """Call fn; on 429 log which API was rate-limited and re-raise."""
     try:
         return fn(*args, **kwargs)
-    except ApiError as e:
-        if e.status == 429:
+    except APIError as e:
+        if e.status_code == 429:
             print(f"    [429 RATE LIMITED] {fn.__name__}()", file=sys.stderr)
         raise
 
@@ -181,7 +182,7 @@ class TestClientIntegration(unittest.TestCase):
 
     def test_02_login_invalid_token(self):
         bad = AgentApi(SERVER)
-        with self.assertRaises(ApiError):
+        with self.assertRaises(APIError):
             bad.login("invalid-token-xyz")
 
     # -----------------------------------------------------------------------
@@ -269,7 +270,7 @@ class TestClientIntegration(unittest.TestCase):
         self.__class__.file_list = files
 
     def test_10_list_files_nonexistent_repo(self):
-        with self.assertRaises(ApiError):
+        with self.assertRaises(APIError):
             self.client.list_repo_files(self.username, "nonexistent-repo-xyz-99999")
 
     # -----------------------------------------------------------------------
@@ -283,13 +284,13 @@ class TestClientIntegration(unittest.TestCase):
             self.assertGreater(len(content), 0)
 
     def test_12_download_nonexistent_file(self):
-        with self.assertRaises(ApiError):
+        with self.assertRaises(APIError):
             self.client.download_repo_file(
                 self.username, AGENT_NAME, "no-such-file-xyz.txt"
             )
 
     def test_13_download_nonexistent_repo(self):
-        with self.assertRaises(ApiError):
+        with self.assertRaises(APIError):
             self.client.download_repo_file(
                 self.username, "nonexistent-repo-xyz-99999", "README.md"
             )
@@ -347,8 +348,8 @@ class TestClientIntegration(unittest.TestCase):
                         visibility="public", system_prompt_files=fid,
                     )
                     self.assertIsInstance(result, dict)
-                except ApiError as e:
-                    self.fail(f"upload {fw} failed: status={e.status} {e.detail}")
+                except APIError as e:
+                    self.fail(f"upload {fw} failed: status={e.status_code} {e.message}")
                 _wait_server(REQUEST_INTERVAL)
 
     # -----------------------------------------------------------------------
@@ -367,7 +368,7 @@ class TestClientIntegration(unittest.TestCase):
                         path=self.username, name=agent, framework=source_fw,
                         visibility="public", system_prompt_files=fid,
                     )
-                except ApiError:
+                except APIError:
                     pass  # may already exist
 
                 _wait_server(3)
@@ -381,7 +382,7 @@ class TestClientIntegration(unittest.TestCase):
                         resources[fp] = self.client.download_repo_file(
                             self.username, agent, fp
                         )
-                    except ApiError:
+                    except APIError:
                         pass
 
                 self.assertTrue(resources)
@@ -413,7 +414,7 @@ class TestClientIntegration(unittest.TestCase):
     def test_18_empty_zip(self):
         try:
             fid = _log_429(self.client.upload_file, {})
-        except ApiError:
+        except APIError:
             pass  # server may reject empty uploads
 
     # -----------------------------------------------------------------------
@@ -493,7 +494,7 @@ class TestClientIntegration(unittest.TestCase):
                         path=self.username, name=agent, framework=fw,
                         visibility="public", system_prompt_files=fid,
                     )
-                except ApiError:
+                except APIError:
                     pass
 
                 _wait_server(REQUEST_INTERVAL)

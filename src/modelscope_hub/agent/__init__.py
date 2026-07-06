@@ -12,7 +12,7 @@ Public API
 Built-in frameworks (auto-registered on import):
   qoder, qwenpaw, openclaw, hermes, nanobot, openhuman
 """
-from ._api import AgentApi, ApiError
+from ._api import AgentApi
 from ._workspace import (
     DEFAULT_AGENT_NAME,
     ALL_AGENT_NAME,
@@ -53,7 +53,6 @@ from . import frameworks as _frameworks  # noqa: F401
 
 __all__ = [
     "AgentApi",
-    "ApiError",
     "WorkspaceSpec",
     "FRAMEWORK_REGISTRY",
     "register_framework",

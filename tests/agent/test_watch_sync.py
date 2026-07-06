@@ -33,7 +33,8 @@ from pathlib import Path
 
 import pytest
 
-from modelscope_hub.agent._api import AgentApi, ApiError
+from modelscope_hub.agent._api import AgentApi
+from modelscope_hub.errors import APIError
 from modelscope_hub.agent._cache import load_sync_state, save_sync_state, sync_state_file
 from modelscope_hub.agent._commands import cmd_watch
 from modelscope_hub.agent._workspace import (

@@ -33,7 +33,8 @@ from pathlib import Path
 
 import pytest
 
-from modelscope_hub.agent._api import AgentApi, ApiError
+from modelscope_hub.agent._api import AgentApi
+from modelscope_hub.errors import APIError
 from modelscope_hub.agent._commands import (
     cmd_download,
     cmd_status,
@@ -65,8 +66,8 @@ def _log_429(fn, *args, **kwargs):
     """Call fn; on 429 log which API was rate-limited and re-raise."""
     try:
         return fn(*args, **kwargs)
-    except ApiError as e:
-        if e.status == 429:
+    except APIError as e:
+        if e.status_code == 429:
             print(f"    [429 RATE LIMITED] {fn.__name__}()", file=sys.stderr)
         raise
 

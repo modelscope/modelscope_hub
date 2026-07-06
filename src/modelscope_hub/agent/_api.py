@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import requests
 
 from ..config import HubConfig
-from ..errors import HubError, NotExistError
+from ..errors import APIError, HubError, NotExistError
 from .._openapi import OpenAPIClient
 
 logger = logging.getLogger("modelscope_hub.agent")
@@ -31,33 +31,6 @@ class RemoteFileInfo:
     path: str
     sha256: str
     committed_date: int  # unix timestamp
-
-
-class ApiError(HubError):
-    """Raised for non-2xx API responses; carries the HTTP status code.
-
-    Inherits from :class:`~modelscope_hub.errors.HubError` so callers can
-    catch the SDK-wide base exception uniformly.
-    """
-
-    error_code = "E9001"
-    retryable = False
-    suggestion = "Check the server endpoint and credentials."
-
-    def __init__(self, status: int, detail: str):
-        super().__init__(detail)
-        self.status = status
-        self.status_code = status  # alias for HubError convention
-        self.detail = detail
-
-    def __str__(self) -> str:
-        return f"HTTP {self.status}: {self.detail}"
-
-
-def _wrap(exc: HubError) -> ApiError:
-    """Convert a modelscope_hub error into an ApiError."""
-    status = getattr(exc, "status_code", None) or 0
-    return ApiError(status, str(exc.message))
 
 
 class AgentApi:
@@ -78,20 +51,14 @@ class AgentApi:
 
     def login(self, token: str) -> str:
         """Validate token via GET /openapi/v1/users/me, return username."""
-        try:
-            self._config.token = token
-            self.token = token
-            data = self._openapi.get_current_user()
-        except HubError as exc:
-            raise _wrap(exc) from exc
+        self._config.token = token
+        self.token = token
+        data = self._openapi.get_current_user()
         return data.get("username") or data.get("Username") or ""
 
     def get_username(self) -> str:
         """Return the current authenticated username."""
-        try:
-            data = self._openapi.get_current_user()
-        except HubError as exc:
-            raise _wrap(exc) from exc
+        data = self._openapi.get_current_user()
         return data.get("username") or data.get("Username") or ""
 
     # ---- repository ----
@@ -102,8 +69,6 @@ class AgentApi:
             return self._openapi.request("GET", f"/agents/{path}/{name}")
         except NotExistError:
             return None
-        except HubError as exc:
-            raise _wrap(exc) from exc
 
     def check_repo(self, path: str, name: str) -> bool:
         """True if the repo exists, False on 404."""
@@ -118,11 +83,8 @@ class AgentApi:
         params = {"page_number": page_number, "page_size": page_size}
         if owner:
             params["owner"] = owner
-        try:
-            data = self._openapi.request(
-                "GET", "/agents", params=params, require_token=False)
-        except HubError as exc:
-            raise _wrap(exc) from exc
+        data = self._openapi.request(
+            "GET", "/agents", params=params, require_token=False)
         if isinstance(data, list):
             return {"items": data, "total_count": len(data)}
         if isinstance(data, dict):
@@ -149,10 +111,7 @@ class AgentApi:
         }
         if system_prompt_files:
             body["system_prompt_files"] = system_prompt_files
-        try:
-            return self._openapi.request("POST", "/agents", json_body=body)
-        except HubError as exc:
-            raise _wrap(exc) from exc
+        return self._openapi.request("POST", "/agents", json_body=body)
 
     def list_repo_files(self, path: str, name: str, revision: str = 'master') -> list[str]:
         """All file paths in the repo, recursing into sub-directories."""
@@ -181,18 +140,15 @@ class AgentApi:
         all_entries: list[dict] = []
 
         while True:
-            try:
-                data = self._openapi.request(
-                    "GET", f"/agents/{path}/{name}/repo/files",
-                    params={
-                        "recursive": "true",
-                        "page_size": str(page_size),
-                        "page": str(page),
-                        "revision": revision,
-                    },
-                )
-            except HubError as exc:
-                raise _wrap(exc) from exc
+            data = self._openapi.request(
+                "GET", f"/agents/{path}/{name}/repo/files",
+                params={
+                    "recursive": "true",
+                    "page_size": str(page_size),
+                    "page": str(page),
+                    "revision": revision,
+                },
+            )
 
             raw = []
             if isinstance(data, dict):
@@ -230,10 +186,7 @@ class AgentApi:
         Uses :meth:`OpenAPIClient.request_url` for retry and error handling.
         """
         url = f"{self.server}/agents/{path}/{name}/resolve/{revision}/{file_path}"
-        try:
-            resp = self._openapi.request_url("GET", url)
-        except HubError as exc:
-            raise _wrap(exc) from exc
+        resp = self._openapi.request_url("GET", url)
         return resp.content if binary else resp.text
 
     # ---- upload (two-step OSS) ----
@@ -241,17 +194,17 @@ class AgentApi:
     def _request_upload_urls(self, filenames: list[str]) -> dict:
         """Step 1: POST /api/v1/agents/repo/files/upload -> {Gid, Urls}."""
         url = f"{self.server}/api/v1/agents/repo/files/upload"
-        try:
-            resp = self._openapi.request_url(
-                "POST", url,
-                json_body={"FileNames": filenames},
-                headers={"Content-Type": "application/json"},
-            )
-        except HubError as exc:
-            raise _wrap(exc) from exc
+        resp = self._openapi.request_url(
+            "POST", url,
+            json_body={"FileNames": filenames},
+            headers={"Content-Type": "application/json"},
+        )
         body = resp.json()
         if not body.get("Success"):
-            raise ApiError(body.get("Code", 0), body.get("Message", "upload credential failed"))
+            raise APIError(
+                body.get("Message", "upload credential failed"),
+                status_code=body.get("Code", 0),
+            )
         return body["Data"]
 
     @staticmethod
@@ -269,19 +222,16 @@ class AgentApi:
     def _upload_to_oss(self, signed_url: str, data: bytes) -> None:
         """Step 2: PUT raw bytes to signed OSS URL."""
         url = self._normalize_oss_url(signed_url)
-        try:
-            self._openapi.request_url(
-                "PUT", url,
-                data=data,
-                headers={
-                    "Content-Type": "application/octet-stream",
-                    "x-oss-meta-author": "aliy",
-                },
-                require_token=False,
-                timeout=max(self.timeout, 300),
-            )
-        except HubError as exc:
-            raise _wrap(exc) from exc
+        self._openapi.request_url(
+            "PUT", url,
+            data=data,
+            headers={
+                "Content-Type": "application/octet-stream",
+                "x-oss-meta-author": "aliy",
+            },
+            require_token=False,
+            timeout=max(self.timeout, 300),
+        )
 
     def upload_file(self, resources: dict[str, bytes]) -> str:
         """Two-step upload: get signed URLs -> PUT to OSS -> return Gid.
@@ -298,10 +248,10 @@ class AgentApi:
         for fname, content in resources.items():
             signed_url = url_map.get(fname)
             if not signed_url:
-                raise ApiError(
-                    0,
+                raise APIError(
                     f"Server did not return a signed URL for '{fname}'. "
                     f"Available: {list(url_map.keys())}",
+                    status_code=0,
                 )
             self._upload_to_oss(signed_url, content)
         return gid
@@ -312,8 +262,5 @@ class AgentApi:
                      revision: str = "master", commit_message: str = "sync") -> dict:
         """Commit file changes via POST /openapi/v1/agents/{path}/{name}/commit/{revision}."""
         body = {"commit_message": commit_message, "actions": actions}
-        try:
-            return self._openapi.request(
-                "POST", f"/agents/{path}/{name}/commit/{revision}", json_body=body)
-        except HubError as exc:
-            raise _wrap(exc) from exc
+        return self._openapi.request(
+            "POST", f"/agents/{path}/{name}/commit/{revision}", json_body=body)

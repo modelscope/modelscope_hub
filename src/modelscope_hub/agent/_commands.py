@@ -23,7 +23,8 @@ from ._workspace import (
 )
 from ._defaults import get_defaults
 from ._merge import merge_resources
-from ._api import AgentApi, ApiError
+from ._api import AgentApi
+from ..errors import APIError
 
 logger = get_logger("agent")
 
@@ -38,17 +39,18 @@ def _fail(message: str) -> int:
     return 1
 
 
-def api_error_message(e: ApiError, action: str = "request") -> str:
+def api_error_message(e: APIError, action: str = "request") -> str:
     """Return a user-friendly message based on the HTTP status code."""
-    if e.status == 401:
+    status = e.status_code or 0
+    if status == 401:
         return "authentication failed. Please login again."
-    if e.status == 403:
+    if status == 403:
         return "permission denied. You do not have access to this resource."
-    if e.status == 404:
+    if status == 404:
         return "resource not found. Check the repository name and try again."
-    if e.status >= 500:
+    if status >= 500:
         return "server encountered an issue. Please wait a moment and try again."
-    return f"{action} failed (HTTP {e.status}: {e.detail})"
+    return f"{action} failed (HTTP {status}: {e.message})"
 
 
 def repo_name(framework: str, name: str) -> str:
@@ -226,7 +228,7 @@ def cmd_upload(
     try:
         file_id = client.upload_file(resources)
         client.create_repo(group, repo_n, framework, system_prompt_files=file_id)
-    except ApiError as e:
+    except APIError as e:
         return _fail(api_error_message(e, "upload"))
 
     print(f"\nUploaded {len(resources)} file(s) to {group}/{repo_n}.")
@@ -269,7 +271,7 @@ def cmd_download(
         if not paths:
             return _fail(f"repository {group}/{repo_n} has no files.")
         resources = {p: client.download_repo_file(group, repo_n, p) for p in paths}
-    except ApiError as e:
+    except APIError as e:
         return _fail(api_error_message(e, "download"))
 
     # Optional format conversion.
@@ -456,8 +458,8 @@ def cmd_watch(
                     f"framework mismatch: local={framework}, remote={remote_fw}. "
                     f"Use convert or download --target for cross-framework sync."
                 )
-    except ApiError as e:
-        if e.status in (403, 401):
+    except APIError as e:
+        if e.status_code in (403, 401):
             return _fail(api_error_message(e, "watch"))
 
     interval = 120

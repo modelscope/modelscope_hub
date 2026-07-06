@@ -13,7 +13,7 @@ from logging.handlers import RotatingFileHandler
 
 from ..utils.logger import get_logger
 from ._cache import load_sync_state, log_file, pid_file, save_sync_state, stop_file
-from ._api import ApiError
+from ..errors import APIError
 from ._sync import (
     backup_local,
     detect_local_changes,
@@ -88,8 +88,8 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
         # ---- Fetch remote file list ----
         try:
             remote_files = client.list_repo_files_detail(username, repo)
-        except ApiError as e:
-            if e.status in (404, 500):
+        except APIError as e:
+            if e.status_code in (404, 500):
                 remote_files = []
             else:
                 logger.error("Failed to list remote files: %s", e)
@@ -190,8 +190,8 @@ def _refresh_baseline(client, username: str, name: str, local_resources: dict, s
             state["last_commit_date"] = max((f.committed_date for f in fresh), default=0)
             state["remote_files"] = {f.path: f.sha256 for f in fresh if f.path in managed}
             return
-        except ApiError as e:
-            if e.status == 500 and attempt < 2:
+        except APIError as e:
+            if e.status_code == 500 and attempt < 2:
                 time.sleep(3)
                 continue
             logger.error("Failed to refresh baseline: %s", e)
