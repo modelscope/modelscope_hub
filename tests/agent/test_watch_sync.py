@@ -75,7 +75,7 @@ def _watch_process_target(
     push_only: bool = True,
 ):
     """Run watch_loop in a child process. Stopped by SIGTERM."""
-    os.environ["MODELSCOPE_AGENT_CACHE"] = data_dir
+    os.environ["MODELSCOPE_CACHE"] = data_dir
 
     from modelscope_hub.agent._api import AgentApi
     from modelscope_hub.agent._watcher import watch_loop
@@ -110,11 +110,11 @@ class TestWatchSync(unittest.TestCase):
         assert cls.username, "login failed"
         print(f"    Logged in as {cls.username}")
         cls._data_dir = tempfile.mkdtemp(prefix="agent_test_watch_data_")
-        os.environ["MODELSCOPE_AGENT_CACHE"] = cls._data_dir
+        os.environ["MODELSCOPE_CACHE"] = cls._data_dir
 
     @classmethod
     def tearDownClass(cls):
-        os.environ.pop("MODELSCOPE_AGENT_CACHE", None)
+        os.environ.pop("MODELSCOPE_CACHE", None)
         shutil.rmtree(cls._data_dir, ignore_errors=True)
 
     def setUp(self):

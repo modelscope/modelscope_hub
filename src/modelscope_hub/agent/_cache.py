@@ -11,13 +11,11 @@ Cache layout (under ``~/.cache/modelscope/agent/``)::
     ├── logs/watch.log           # runtime logs
     └── watch.pid                # background process PID
 
-Environment variable priority:
-  MODELSCOPE_AGENT_CACHE > HubConfig.cache_dir/agent > ~/.cache/modelscope/agent
+Honours ``MODELSCOPE_CACHE`` via :class:`~modelscope_hub.config.HubConfig`.
 """
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 __all__ = [
@@ -32,15 +30,9 @@ __all__ = [
 
 
 def _agent_home() -> Path:
-    """Agent data root directory."""
+    """Agent data root directory (derives from HubConfig.cache_dir)."""
     from ..config import get_default_config
 
-    # Priority 1: explicit agent cache env
-    explicit = os.environ.get("MODELSCOPE_AGENT_CACHE", "").strip()
-    if explicit:
-        return Path(os.path.expanduser(explicit))
-
-    # Priority 2: derive from HubConfig.cache_dir (honours MODELSCOPE_CACHE)
     return get_default_config().cache_dir / "agent"
 
 
