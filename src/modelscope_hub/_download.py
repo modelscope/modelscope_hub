@@ -26,6 +26,9 @@ import io
 import os
 import time
 import re
+import threading
+
+_RESOLVED_REGIONS_LOCK = threading.Lock()
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
