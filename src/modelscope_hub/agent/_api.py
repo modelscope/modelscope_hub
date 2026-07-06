@@ -188,21 +188,21 @@ class AgentApi:
         """Download one repo file.
 
         Returns bytes when *binary=True*, otherwise str.
-        Uses :meth:`OpenAPIClient.request_url` for retry and error handling.
         """
-        url = f"{self.server}/agents/{path}/{name}/resolve/{revision}/{file_path}"
-        resp = self._openapi.request_url("GET", url)
+        dl_url = f"{self.server}/agents/{path}/{name}/resolve/{revision}/{file_path}"
+        resp = self._openapi.request("GET", url=dl_url, unwrap=False)
         return resp.content if binary else resp.text
 
     # ---- upload (two-step OSS) ----
 
     def _request_upload_urls(self, filenames: list[str]) -> dict:
         """Step 1: POST /api/v1/agents/repo/files/upload -> {Gid, Urls}."""
-        url = f"{self.server}/api/v1/agents/repo/files/upload"
-        resp = self._openapi.request_url(
-            "POST", url,
+        upload_url = f"{self.server}/api/v1/agents/repo/files/upload"
+        resp = self._openapi.request(
+            "POST", url=upload_url,
             json_body={"FileNames": filenames},
             headers={"Content-Type": "application/json"},
+            unwrap=False,
         )
         body = resp.json()
         if not body.get("Success"):
@@ -226,15 +226,16 @@ class AgentApi:
 
     def _upload_to_oss(self, signed_url: str, data: bytes) -> None:
         """Step 2: PUT raw bytes to signed OSS URL."""
-        url = self._normalize_oss_url(signed_url)
-        self._openapi.request_url(
-            "PUT", url,
+        oss_url = self._normalize_oss_url(signed_url)
+        self._openapi.request(
+            "PUT", url=oss_url,
             data=data,
             headers={
                 "Content-Type": "application/octet-stream",
                 "x-oss-meta-author": "aliy",
             },
             require_token=False,
+            unwrap=False,
             timeout=max(self.timeout, 300),
         )
 
