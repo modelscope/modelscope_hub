@@ -1,7 +1,8 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """OpenClaw workspace specification (root-per-agent)."""
+from __future__ import annotations
+
 from pathlib import Path
-from typing import List
 
 from .._workspace import WorkspaceSpec, register_framework, DEFAULT_AGENT_NAME
 
@@ -31,7 +32,7 @@ class OpenclawWorkspace(WorkspaceSpec):
         return base / f"workspace-{self.agent_name}"
 
     @property
-    def patterns(self) -> List[str]:
+    def patterns(self) -> list[str]:
         return [
             "AGENTS.md",
             "SOUL.md",
@@ -48,14 +49,14 @@ class OpenclawWorkspace(WorkspaceSpec):
             "skills/*/scripts/*",
         ]
 
-    def _effective_patterns(self) -> List[str]:
+    def _effective_patterns(self) -> list[str]:
         if self._is_all():
             return [f"workspace*/{p}" for p in self.patterns]
         return self.patterns
 
-    def list_agents(self) -> List[str]:
+    def list_agents(self) -> list[str]:
         base = Path.home() / ".openclaw"
-        agents: List[str] = []
+        agents: list[str] = []
         if (base / "workspace").is_dir():
             agents.append(DEFAULT_AGENT_NAME)
         if base.is_dir():

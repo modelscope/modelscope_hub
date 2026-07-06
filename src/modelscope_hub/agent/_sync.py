@@ -1,23 +1,35 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """Core sync logic: backup, zip, bidirectional sync helpers."""
+from __future__ import annotations
+
 import base64
 import hashlib
 import io
-import logging
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Union
+from typing import TYPE_CHECKING
 
+from ..utils.logger import get_logger
 from ._cache import cache_dir
 
 if TYPE_CHECKING:
     from ._api import AgentApi, RemoteFileInfo
 
-logger = logging.getLogger("modelscope_hub.agent")
+__all__ = [
+    "zip_resources",
+    "backup_local",
+    "sha256_content",
+    "detect_local_changes",
+    "push_resources",
+    "push_incremental",
+    "pull_incremental",
+]
+
+logger = get_logger("agent")
 
 
-def zip_resources(resources: Dict[str, Union[str, bytes]], wrapper: str = "agent") -> bytes:
+def zip_resources(resources: dict[str, str | bytes], wrapper: str = "agent") -> bytes:
     """Pack resources into a deterministic in-memory zip.
 
     The server always strips the first directory level from zip entries, so we
@@ -35,7 +47,7 @@ def backup_local(spec, name: str) -> Path:
 
     Returns the path to the created zip file.
     """
-    resources: Dict[str, bytes] = spec.collect_bytes()
+    resources: dict[str, bytes] = spec.collect_bytes()
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     zip_path = cache_dir() / f"{name}_{timestamp}.zip"
     zip_path.write_bytes(zip_resources(resources))
@@ -44,7 +56,7 @@ def backup_local(spec, name: str) -> Path:
 
 # ---- Bidirectional sync helpers ----
 
-def sha256_content(content: Union[str, bytes]) -> str:
+def sha256_content(content: str | bytes) -> str:
     """Compute sha256 of content (accepts str or bytes)."""
     if isinstance(content, str):
         content = content.encode("utf-8")
@@ -52,16 +64,16 @@ def sha256_content(content: Union[str, bytes]) -> str:
 
 
 def detect_local_changes(
-    local_resources: Dict[str, bytes],
-    baseline_sha256: Dict[str, str],
-) -> Dict[str, Union[bytes, None]]:
+    local_resources: dict[str, bytes],
+    baseline_sha256: dict[str, str],
+) -> dict[str, bytes | None]:
     """Compare local files against the sync baseline sha256 map.
 
     Returns a dict of files that differ:
       - key present with bytes value: content changed or file is new locally
       - key present with None value: file was deleted locally
     """
-    changed: Dict[str, Union[bytes, None]] = {}
+    changed: dict[str, bytes | None] = {}
     for rel, content in local_resources.items():
         local_sha = sha256_content(content)
         if baseline_sha256.get(rel) != local_sha:
@@ -77,7 +89,7 @@ def push_resources(
     username: str,
     name: str,
     framework: str,
-    resources: Dict[str, bytes],
+    resources: dict[str, bytes],
 ) -> None:
     """Full upload via two-step OSS, then create/update agent repo.
 
@@ -100,14 +112,14 @@ def push_incremental(
     client: "AgentApi",
     username: str,
     name: str,
-    changed: Dict[str, Union[bytes, None]],
+    changed: dict[str, bytes | None],
     remote_paths: set,
 ) -> None:
     """Incremental push via commit interface.
 
     Builds create/update/delete actions and commits in one request.
     """
-    actions: List[dict] = []
+    actions: list[dict] = []
     for fpath, content in changed.items():
         if content is None:
             actions.append({"action": "delete", "file_path": fpath})
@@ -133,8 +145,8 @@ def pull_incremental(
     username: str,
     name: str,
     spec,
-    remote_files: "List[RemoteFileInfo]",
-    local_resources: Dict[str, bytes],
+    remote_files: "list[RemoteFileInfo]",
+    local_resources: dict[str, bytes],
 ) -> int:
     """Incrementally pull remote changes to local workspace.
 

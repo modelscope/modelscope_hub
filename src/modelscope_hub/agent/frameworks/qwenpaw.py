@@ -1,7 +1,8 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """QwenPaw workspace specification (root-per-agent)."""
+from __future__ import annotations
+
 from pathlib import Path
-from typing import List
 
 from .._workspace import WorkspaceSpec, register_framework, DEFAULT_AGENT_NAME
 
@@ -29,7 +30,7 @@ class QwenpawWorkspace(WorkspaceSpec):
         return base / self.agent_name
 
     @property
-    def patterns(self) -> List[str]:
+    def patterns(self) -> list[str]:
         return [
             "AGENTS.md",
             "SOUL.md",
@@ -43,12 +44,12 @@ class QwenpawWorkspace(WorkspaceSpec):
             "skills/*/scripts/*",
         ]
 
-    def _effective_patterns(self) -> List[str]:
+    def _effective_patterns(self) -> list[str]:
         if self._is_all():
             return [f"*/{p}" for p in self.patterns]
         return self.patterns
 
-    def list_agents(self) -> List[str]:
+    def list_agents(self) -> list[str]:
         base = Path.home() / ".qwenpaw" / "workspaces"
         if not base.is_dir():
             return [DEFAULT_AGENT_NAME]

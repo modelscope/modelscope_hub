@@ -1,7 +1,8 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """Nanobot workspace specification (file-per-agent + shared)."""
+from __future__ import annotations
+
 from pathlib import Path
-from typing import List
 
 from .._workspace import WorkspaceSpec, register_framework
 
@@ -22,7 +23,7 @@ class NanobotWorkspace(WorkspaceSpec):
         return Path.home() / ".nanobot" / "workspace"
 
     @property
-    def patterns(self) -> List[str]:
+    def patterns(self) -> list[str]:
         return [
             "AGENTS.md",
             "SOUL.md",
@@ -40,7 +41,7 @@ class NanobotWorkspace(WorkspaceSpec):
             "skills/*/boundaries.md",
         ]
 
-    def list_agents(self) -> List[str]:
+    def list_agents(self) -> list[str]:
         return self._list_agents_from_dir(self.workspace_root / "agents")
 
 

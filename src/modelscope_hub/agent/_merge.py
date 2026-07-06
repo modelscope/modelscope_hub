@@ -1,12 +1,13 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """Section-level Markdown merge engine for cross-framework workspace migration."""
+from __future__ import annotations
 
 import re
-import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
-logger = logging.getLogger("modelscope_hub.agent")
+from ..utils.logger import get_logger
+
+logger = get_logger("agent")
 
 
 @dataclass
@@ -28,14 +29,14 @@ class MergeAction:
 class MergeResult:
     """Result of merging a single file."""
     content: str
-    actions: List[MergeAction] = field(default_factory=list)
+    actions: list[MergeAction] = field(default_factory=list)
 
 
 @dataclass
 class FullMergeResult:
     """Result of merging an entire resource set."""
-    merged_files: Dict[str, str] = field(default_factory=dict)
-    actions: List[MergeAction] = field(default_factory=list)
+    merged_files: dict[str, str] = field(default_factory=dict)
+    actions: list[MergeAction] = field(default_factory=list)
 
 
 class SectionMerger:
@@ -48,12 +49,12 @@ class SectionMerger:
     # ---- Parsing ----
 
     @staticmethod
-    def parse_sections(content: str) -> List[Section]:
+    def parse_sections(content: str) -> list[Section]:
         """Split markdown into sections by ``## `` headings."""
         lines = content.split("\n")
-        sections: List[Section] = []
+        sections: list[Section] = []
         current_title = ""
-        current_lines: List[str] = []
+        current_lines: list[str] = []
 
         for line in lines:
             if re.match(r"^## ", line):
@@ -73,7 +74,7 @@ class SectionMerger:
         return sections
 
     @staticmethod
-    def sections_to_content(sections: List[Section]) -> str:
+    def sections_to_content(sections: list[Section]) -> str:
         """Reconstruct markdown from sections."""
         parts = []
         for sec in sections:
@@ -94,7 +95,7 @@ class SectionMerger:
         self,
         user_content: str,
         source_default: str,
-    ) -> Tuple[List[Section], List[Section], List[Section]]:
+    ) -> tuple[list[Section], list[Section], list[Section]]:
         """Compare user content against source default.
 
         Returns:
@@ -103,7 +104,7 @@ class SectionMerger:
         user_secs = self.parse_sections(user_content)
         default_secs = self.parse_sections(source_default)
 
-        default_map: Dict[str, str] = {}
+        default_map: dict[str, str] = {}
         for sec in default_secs:
             if sec.title:
                 default_map[sec.title] = self._normalize(sec.body)
@@ -208,7 +209,7 @@ class HeartbeatMerger(SectionMerger):
 
     ACTIVE_TASKS_TITLE = "## Active Tasks"
 
-    def _extract_task_lines(self, body: str) -> List[str]:
+    def _extract_task_lines(self, body: str) -> list[str]:
         """Extract non-empty, non-comment lines from a section body."""
         lines = []
         for line in body.split("\n"):
@@ -390,7 +391,7 @@ PRODUCT_KNOWN_FILES = {
 }
 
 
-def _resolve_target_path(source_product: str, source_path: str, target_product: str) -> Optional[str]:
+def _resolve_target_path(source_product: str, source_path: str, target_product: str) -> str | None:
     """Resolve the target path for a source file in a cross-product migration."""
     if source_product == target_product:
         return source_path
@@ -428,12 +429,12 @@ def _catch_all_file(product: str) -> str:
 
 
 def merge_resources(
-    incoming: Dict[str, str],
+    incoming: dict[str, str],
     source_product: str,
     target_product: str,
-    source_defaults: Dict[str, str],
-    target_defaults: Dict[str, str],
-    existing_skills: Optional[List[str]] = None,
+    source_defaults: dict[str, str],
+    target_defaults: dict[str, str],
+    existing_skills: list[str] | None = None,
 ) -> FullMergeResult:
     """Merge incoming resources into a target product workspace.
 
@@ -456,7 +457,7 @@ def merge_resources(
     heartbeat_file = tgt_cls.get("heartbeat", "")
 
     handled_target_paths = set()
-    overflow_blocks: List[Tuple[str, str]] = []
+    overflow_blocks: list[tuple[str, str]] = []
 
     for path, content in incoming.items():
         # Skills: direct import, skip if exists

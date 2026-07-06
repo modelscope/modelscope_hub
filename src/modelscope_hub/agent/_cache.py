@@ -1,7 +1,7 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """Agent cache path helpers.
 
-Cache layout (under ``~/.cache/modelscope/agent/``):
+Cache layout (under ``~/.cache/modelscope/agent/``)::
 
 ::
 
@@ -12,35 +12,36 @@ Cache layout (under ``~/.cache/modelscope/agent/``):
     └── watch.pid                # background process PID
 
 Environment variable priority:
-  MODELSCOPE_AGENT_CACHE > MODELSCOPE_CACHE/agent > ~/.cache/modelscope/agent
-
-Legacy fallback: ULTRON_DATA_DIR/cache (for backward compatibility).
+  MODELSCOPE_AGENT_CACHE > HubConfig.cache_dir/agent > ~/.cache/modelscope/agent
 """
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
-from typing import Dict
+
+__all__ = [
+    "cache_dir",
+    "log_file",
+    "pid_file",
+    "stop_file",
+    "sync_state_file",
+    "load_sync_state",
+    "save_sync_state",
+]
 
 
 def _agent_home() -> Path:
     """Agent data root directory."""
+    from ..config import get_default_config
+
     # Priority 1: explicit agent cache env
     explicit = os.environ.get("MODELSCOPE_AGENT_CACHE", "").strip()
     if explicit:
         return Path(os.path.expanduser(explicit))
 
-    # Priority 2: legacy ultron env (backward compat)
-    legacy = os.environ.get("ULTRON_DATA_DIR", "").strip()
-    if legacy:
-        return Path(os.path.expanduser(legacy)) / "cache"
-
-    # Priority 3: standard modelscope cache hierarchy
-    ms_cache = os.environ.get("MODELSCOPE_CACHE", "").strip()
-    if ms_cache:
-        return Path(os.path.expanduser(ms_cache)) / "agent"
-
-    # Default: ~/.cache/modelscope/agent
-    return Path.home() / ".cache" / "modelscope" / "agent"
+    # Priority 2: derive from HubConfig.cache_dir (honours MODELSCOPE_CACHE)
+    return get_default_config().cache_dir / "agent"
 
 
 def cache_dir() -> Path:
@@ -100,7 +101,7 @@ def load_sync_state(name: str) -> dict:
         return default
 
 
-def save_sync_state(name: str, last_commit_date: int, remote_files: Dict[str, str]) -> None:
+def save_sync_state(name: str, last_commit_date: int, remote_files: dict[str, str]) -> None:
     """Persist sync state to disk (atomic write)."""
     path = sync_state_file(name)
     tmp = path.with_suffix(".tmp")

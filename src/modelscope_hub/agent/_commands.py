@@ -2,17 +2,18 @@
 """Core command logic for agent workspace management.
 
 This module contains the business logic for agent upload, download, convert,
-watch, stop, and recover operations.  CLI adapters (``modelscope_hub.cli.agent``,
-``ultron.cli.commands``) call these functions to perform the actual work.
+watch, stop, and recover operations.  The CLI adapter (``modelscope_hub.cli.agent``)
+calls these functions to perform the actual work.
 """
+from __future__ import annotations
+
 import getpass
-import logging
 import os
 import sys
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
+from ..utils.logger import get_logger
 from ._workspace import (
     FRAMEWORK_REGISTRY,
     ALL_AGENT_NAME,
@@ -24,7 +25,7 @@ from ._defaults import get_defaults
 from ._merge import merge_resources
 from ._api import AgentApi, ApiError
 
-logger = logging.getLogger("modelscope_hub.agent")
+logger = get_logger("agent")
 
 
 # ---------------------------------------------------------------------------
@@ -72,11 +73,11 @@ def repo_name(framework: str, name: str) -> str:
 
 
 def resolve_remote(
-    repo: Optional[str] = None,
-    name: Optional[str] = None,
+    repo: str | None = None,
+    name: str | None = None,
     framework: str = "",
     username: str = "",
-) -> Tuple[str, str]:
+) -> tuple[str, str]:
     """Resolve remote target as (group, repo_name).
 
     - repo contains '/' -> split into (group, repo_name), ignore username
@@ -92,7 +93,7 @@ def resolve_remote(
     return username, derived
 
 
-def resolve_local_name(name: Optional[str], framework: str, local_dir=None):
+def resolve_local_name(name: str | None, framework: str, local_dir=None):
     """Resolve local agent name when --name is omitted.
 
     Returns (resolved_name, error_message).
@@ -174,14 +175,14 @@ def cmd_status(framework: str, local_dir=None) -> int:
 
 def cmd_upload(
     framework: str,
-    name: Optional[str] = None,
+    name: str | None = None,
     local_dir=None,
-    repo: Optional[str] = None,
+    repo: str | None = None,
     dry_run: bool = False,
     *,
-    endpoint: Optional[str] = None,
-    token: Optional[str] = None,
-    username: Optional[str] = None,
+    endpoint: str | None = None,
+    token: str | None = None,
+    username: str | None = None,
 ) -> int:
     """Upload local agent files to remote."""
     if framework not in FRAMEWORK_REGISTRY:
@@ -193,7 +194,7 @@ def cmd_upload(
 
     spec = build_spec(framework, local_name, local_dir)
     root = spec.workspace_root
-    resources: Dict[str, bytes] = spec.collect_bytes()
+    resources: dict[str, bytes] = spec.collect_bytes()
     if not resources:
         display_name = local_name if local_name != GLOBAL_AGENT_NAME else "global"
         return _fail(
@@ -235,14 +236,14 @@ def cmd_upload(
 def cmd_download(
     framework: str,
     repo: str,
-    name: Optional[str] = None,
-    target: Optional[str] = None,
+    name: str | None = None,
+    target: str | None = None,
     local_dir=None,
     dry_run: bool = False,
     *,
-    endpoint: Optional[str] = None,
-    token: Optional[str] = None,
-    username: Optional[str] = None,
+    endpoint: str | None = None,
+    token: str | None = None,
+    username: str | None = None,
 ) -> int:
     """Download remote agent files to local."""
     if not repo:
@@ -375,7 +376,7 @@ def convert_workspace(
 def cmd_convert(
     source_fw: str,
     target_fw: str,
-    name: Optional[str] = None,
+    name: str | None = None,
     local_dir=None,
     out_dir=None,
     dry_run: bool = False,
@@ -393,14 +394,14 @@ def cmd_convert(
 
 def cmd_watch(
     framework: str,
-    name: Optional[str] = None,
+    name: str | None = None,
     local_dir=None,
-    repo: Optional[str] = None,
+    repo: str | None = None,
     pull: bool = False,
     *,
-    endpoint: Optional[str] = None,
-    token: Optional[str] = None,
-    username: Optional[str] = None,
+    endpoint: str | None = None,
+    token: str | None = None,
+    username: str | None = None,
 ) -> int:
     """Start background bidirectional sync for agent files."""
     from ._cache import pid_file
@@ -488,9 +489,9 @@ def cmd_stop() -> int:
 
 
 def cmd_recover(
-    target: Optional[str] = None,
-    framework: Optional[str] = None,
-    name: Optional[str] = None,
+    target: str | None = None,
+    framework: str | None = None,
+    name: str | None = None,
     local_dir=None,
     list_backups: bool = False,
 ) -> int:

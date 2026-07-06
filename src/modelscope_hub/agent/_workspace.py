@@ -30,14 +30,17 @@ Use :func:`register_framework` to add a new framework at runtime::
 
     register_framework("my-framework", MyFramework)
 """
+from __future__ import annotations
+
 import fnmatch
-import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Type
+from typing import Type
 
-logger = logging.getLogger("modelscope_hub.agent")
+from ..utils.logger import get_logger
+
+logger = get_logger("agent")
 
 MAX_FILE_SIZE = 1 * 1024 * 1024  # 1 MB
 
@@ -60,7 +63,7 @@ class WorkspaceSpec(ABC):
     """
 
     def __init__(
-        self, agent_name: str = DEFAULT_AGENT_NAME, local_dir: Optional[Path] = None
+        self, agent_name: str = DEFAULT_AGENT_NAME, local_dir: Path | None = None
     ):
         self.agent_name = agent_name or DEFAULT_AGENT_NAME
         self._local_dir = Path(local_dir).expanduser() if local_dir else None
@@ -82,7 +85,7 @@ class WorkspaceSpec(ABC):
 
     @property
     @abstractmethod
-    def patterns(self) -> List[str]:
+    def patterns(self) -> list[str]:
         """fnmatch globs (workspace-relative); may contain ``{name}``."""
         ...
 
@@ -103,7 +106,7 @@ class WorkspaceSpec(ABC):
         """
         return True
 
-    def _effective_patterns(self) -> List[str]:
+    def _effective_patterns(self) -> list[str]:
         """Patterns to match against.  Root-per-agent classes override this to
         add an agent-name prefix in all mode."""
         return self.patterns
@@ -121,7 +124,7 @@ class WorkspaceSpec(ABC):
         """Whether we are in global-only mode (shared files only, no sub-agent)."""
         return self.agent_name == GLOBAL_AGENT_NAME
 
-    def resolved_patterns(self) -> List[str]:
+    def resolved_patterns(self) -> list[str]:
         """Resolve glob patterns for the current agent mode.
 
         Convention: In global mode (``GLOBAL_AGENT_NAME``), patterns containing
@@ -134,20 +137,20 @@ class WorkspaceSpec(ABC):
         name = "*" if self._is_all() else self.agent_name
         return [p.format(name=name) for p in self._effective_patterns()]
 
-    def matches(self, rel_path: str, patterns: List[str]) -> bool:
+    def matches(self, rel_path: str, patterns: list[str]) -> bool:
         """Return True if *rel_path* matches any of the given glob *patterns*."""
         for pattern in patterns:
             if fnmatch.fnmatch(rel_path, pattern):
                 return True
         return False
 
-    def _walk_matched(self) -> List[Tuple[str, Path]]:
+    def _walk_matched(self) -> list[tuple[str, Path]]:
         """Walk workspace and return (rel_path, Path) for matched files."""
         root = self.workspace_root
         if not root.is_dir():
             return []
         patterns = self.resolved_patterns()
-        matched: List[Tuple[str, Path]] = []
+        matched: list[tuple[str, Path]] = []
         for dirpath, dirnames, filenames in os.walk(root):
             dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
             for fname in sorted(filenames):
@@ -170,9 +173,9 @@ class WorkspaceSpec(ABC):
                 matched.append((rel, f))
         return matched
 
-    def collect(self) -> Dict[str, str]:
+    def collect(self) -> dict[str, str]:
         """Gather allowed workspace files as {relative_path: text_content}."""
-        result: Dict[str, str] = {}
+        result: dict[str, str] = {}
         for rel, f in self._walk_matched():
             try:
                 result[rel] = f.read_text(encoding="utf-8")
@@ -180,13 +183,13 @@ class WorkspaceSpec(ABC):
                 logger.warning("Skip %s: %s", f, e)
         return result
 
-    def collect_bytes(self) -> Dict[str, bytes]:
+    def collect_bytes(self) -> dict[str, bytes]:
         """Gather allowed workspace files as {relative_path: raw_bytes}.
 
         Unlike :meth:`collect`, this includes binary files and does not skip
         on UnicodeDecodeError.
         """
-        result: Dict[str, bytes] = {}
+        result: dict[str, bytes] = {}
         for rel, f in self._walk_matched():
             try:
                 result[rel] = f.read_bytes()
@@ -194,7 +197,7 @@ class WorkspaceSpec(ABC):
                 logger.warning("Skip %s: %s", f, e)
         return result
 
-    def list_agents(self) -> List[str]:
+    def list_agents(self) -> list[str]:
         """Discover sub-agent names available on disk.
 
         Default: single-agent products report ``["default"]``.  Root-per-agent
@@ -202,17 +205,17 @@ class WorkspaceSpec(ABC):
         """
         return [DEFAULT_AGENT_NAME]
 
-    def _list_agents_from_dir(self, agents_dir: Path) -> List[str]:
+    def _list_agents_from_dir(self, agents_dir: Path) -> list[str]:
         """List agents from a directory, prepending DEFAULT if not present."""
         agents = _list_agent_files(agents_dir)
         if DEFAULT_AGENT_NAME not in agents:
             agents = [DEFAULT_AGENT_NAME] + agents
         return agents
 
-    def apply(self, resources: Dict[str, str]) -> List[str]:
+    def apply(self, resources: dict[str, str]) -> list[str]:
         """Write resource files back to the workspace.  Returns list of written paths."""
         root = self.workspace_root.resolve()
-        written: List[str] = []
+        written: list[str] = []
         for rel_path, content in resources.items():
             target = (root / rel_path).resolve()
             if not target.is_relative_to(root):
@@ -224,7 +227,7 @@ class WorkspaceSpec(ABC):
         return written
 
 
-def _list_agent_files(agents_dir: Path) -> List[str]:
+def _list_agent_files(agents_dir: Path) -> list[str]:
     """Return the stems of ``*.md`` files in an ``agents/`` directory."""
     if not agents_dir.is_dir():
         return []
@@ -234,7 +237,7 @@ def _list_agent_files(agents_dir: Path) -> List[str]:
 # ---------------------------------------------------------------------------
 # Framework registry
 # ---------------------------------------------------------------------------
-FRAMEWORK_REGISTRY: Dict[str, Type[WorkspaceSpec]] = {}
+FRAMEWORK_REGISTRY: dict[str, Type[WorkspaceSpec]] = {}
 
 
 def register_framework(name: str, cls: Type[WorkspaceSpec]) -> None:

@@ -1,7 +1,8 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """Hermes workspace specification (single-agent install)."""
+from __future__ import annotations
+
 from pathlib import Path
-from typing import List
 
 from .._workspace import WorkspaceSpec, register_framework
 
@@ -18,7 +19,7 @@ class HermesWorkspace(WorkspaceSpec):
         return Path.home() / ".hermes"
 
     @property
-    def patterns(self) -> List[str]:
+    def patterns(self) -> list[str]:
         return [
             "SOUL.md",
             "memories/*.md",

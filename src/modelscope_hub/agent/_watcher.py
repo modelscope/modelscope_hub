@@ -1,5 +1,7 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """File watcher (polling) and daemon management for agent sync."""
+from __future__ import annotations
+
 import logging
 import os
 import signal
@@ -8,8 +10,8 @@ import sys
 import threading
 import time
 from logging.handlers import RotatingFileHandler
-from typing import List, Optional
 
+from ..utils.logger import get_logger
 from ._cache import load_sync_state, log_file, pid_file, save_sync_state, stop_file
 from ._api import ApiError
 from ._sync import (
@@ -20,14 +22,16 @@ from ._sync import (
     push_resources,
 )
 
-_logger: Optional[logging.Logger] = None
+__all__ = ["watch_loop", "daemonize", "stop_daemon"]
+
+_logger: logging.Logger | None = None
 
 
 def _get_logger() -> logging.Logger:
     global _logger
     if _logger is not None:
         return _logger
-    _logger = logging.getLogger("modelscope_hub.agent.watch")
+    _logger = get_logger("agent.watch")
     _logger.setLevel(logging.INFO)
     fh = RotatingFileHandler(
         str(log_file()), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
@@ -278,7 +282,7 @@ _DEFAULT_WATCH_PATTERNS = [
 ]
 
 
-def stop_daemon(extra_patterns: Optional[List[str]] = None) -> bool:
+def stop_daemon(extra_patterns: list[str] | None = None) -> bool:
     """Stop ALL running watch daemon processes (cross-platform).
 
     Primary mechanism: write a stop-file that the watch loop polls.
@@ -329,7 +333,7 @@ def stop_daemon(extra_patterns: Optional[List[str]] = None) -> bool:
     return stopped or tracked_pid is not None
 
 
-def _find_watch_pids(extra_patterns: Optional[List[str]] = None) -> List[int]:
+def _find_watch_pids(extra_patterns: list[str] | None = None) -> list[int]:
     """Find PIDs of running watch daemon processes via pgrep (Unix only)."""
     patterns = list(dict.fromkeys(_DEFAULT_WATCH_PATTERNS + (extra_patterns or [])))
     pids: set = set()
@@ -348,7 +352,7 @@ def _find_watch_pids(extra_patterns: Optional[List[str]] = None) -> List[int]:
     return list(pids)
 
 
-def _find_watch_pids_windows(extra_patterns: Optional[List[str]] = None) -> List[int]:
+def _find_watch_pids_windows(extra_patterns: list[str] | None = None) -> list[int]:
     """Find PIDs of running watch daemon processes on Windows via wmic."""
     patterns = list(dict.fromkeys(_DEFAULT_WATCH_PATTERNS + (extra_patterns or [])))
     pids: set = set()
@@ -393,7 +397,7 @@ def _is_alive(pid: int) -> bool:
         return False
 
 
-def _wait_for_exit(pid: Optional[int], timeout: int = 8) -> None:
+def _wait_for_exit(pid: int | None, timeout: int = 8) -> None:
     """Wait up to *timeout* seconds for a process to exit."""
     if pid is None:
         time.sleep(2)
@@ -413,3 +417,37 @@ def _force_kill(pid: int) -> None:
             pass
     else:
         _terminate_pid_windows(pid)
+
+
+# ---------------------------------------------------------------------------
+# Windows daemon entry point
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    import json
+
+    if len(sys.argv) >= 3 and sys.argv[1] == "_daemon":
+        param_path = sys.argv[2]
+        with open(param_path, "r") as _f:
+            _params = json.load(_f)
+        os.unlink(param_path)
+
+        from ._api import AgentApi
+        from ._workspace import FRAMEWORK_REGISTRY
+        from . import frameworks as _  # noqa: F401 — trigger registration
+
+        _fw = _params["framework"]
+        _spec_cls = FRAMEWORK_REGISTRY[_fw]
+        _spec = _spec_cls(agent_name=_params.get("local_name", "all"))
+        _client = AgentApi(endpoint=_params["server"], token=_params["token"])
+
+        _pf = pid_file()
+        _pf.write_text(str(os.getpid()), encoding="utf-8")
+
+        watch_loop(
+            _spec, _client,
+            username=_params["username"],
+            repo=_params["repo"],
+            framework=_fw,
+            interval=_params.get("interval", 120),
+            push_only=_params.get("push_only", True),
+        )

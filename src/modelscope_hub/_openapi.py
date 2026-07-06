@@ -112,7 +112,101 @@ class OpenAPIClient:
         self.close()
 
     # ------------------------------------------------------------------
-    # Request plumbing
+    # Public request interface
+    # ------------------------------------------------------------------
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, Any] | QueryParams | None = None,
+        json_body: Any | None = None,
+        data: Any | None = None,
+        files: Any | None = None,
+        headers: Mapping[str, str] | None = None,
+        require_token: bool = True,
+        unwrap: bool = True,
+        timeout: float | None = None,
+    ) -> Any:
+        """Public interface to :meth:`_request`.
+
+        Subpackages that need to reach non-standard OpenAPI paths (e.g. agent
+        repositories) should use this instead of accessing ``_request`` directly.
+        """
+        return self._request(
+            method, path,
+            params=params, json_body=json_body, data=data, files=files,
+            headers=headers, require_token=require_token, unwrap=unwrap,
+            timeout=timeout,
+        )
+
+    def request_url(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_body: Any | None = None,
+        data: Any | None = None,
+        headers: Mapping[str, str] | None = None,
+        require_token: bool = True,
+        timeout: float | None = None,
+    ) -> Any:
+        """Execute a request against an *absolute* URL (not prefixed by the OpenAPI base).
+
+        Used for endpoints that live outside ``/openapi/v1`` (e.g. file-download
+        resolve paths, OSS signed URLs).
+        """
+        merged_headers = dict(self._auth_headers(require_token=require_token))
+        if headers:
+            merged_headers.update(headers)
+
+        method_upper = method.upper()
+        attempts = max(1, self._max_retries)
+        last_exc: BaseException | None = None
+
+        for attempt in range(1, attempts + 1):
+            _logger.debug("%s %s", method_upper, url)
+            try:
+                response = self._session.request(
+                    method=method_upper,
+                    url=url,
+                    json=json_body,
+                    data=data,
+                    headers=merged_headers,
+                    timeout=timeout if timeout is not None else self._timeout,
+                )
+            except requests.Timeout as exc:
+                last_exc = RequestTimeoutError(f"Request timed out: {exc}")
+            except requests.ConnectionError as exc:
+                last_exc = NetworkError(f"Connection error: {exc}")
+            except requests.RequestException as exc:
+                last_exc = NetworkError(f"Request failed: {exc}")
+            else:
+                if response.status_code >= 400:
+                    try:
+                        raise_for_status(response)
+                    except _RETRYABLE_EXC as exc:  # type: ignore[misc]
+                        last_exc = exc
+                    else:
+                        return response
+                else:
+                    return response
+
+            is_retryable = method_upper in _IDEMPOTENT_METHODS
+            if attempt >= attempts or not is_retryable:
+                break
+            backoff = min(2 ** (attempt - 1), 16)
+            _logger.debug(
+                "Retrying %s %s after %s (attempt %d/%d)",
+                method_upper, url, last_exc, attempt, attempts,
+            )
+            time.sleep(backoff)
+
+        assert last_exc is not None
+        raise last_exc
+
+    # ------------------------------------------------------------------
+    # Request plumbing (internal)
     # ------------------------------------------------------------------
     @property
     def base_url(self) -> str:

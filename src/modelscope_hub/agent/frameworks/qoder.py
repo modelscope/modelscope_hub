@@ -1,7 +1,8 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """Qoder workspace specification (file-per-agent + shared)."""
+from __future__ import annotations
+
 from pathlib import Path
-from typing import List
 
 from .._workspace import WorkspaceSpec, register_framework, DEFAULT_AGENT_NAME
 
@@ -28,7 +29,7 @@ class QoderWorkspace(WorkspaceSpec):
         return Path.home() / ".qoder"
 
     @property
-    def patterns(self) -> List[str]:
+    def patterns(self) -> list[str]:
         return [
             "AGENTS.md",
             "agents/{name}.md",
@@ -39,7 +40,7 @@ class QoderWorkspace(WorkspaceSpec):
             "skills/*/references/*",
         ]
 
-    def list_agents(self) -> List[str]:
+    def list_agents(self) -> list[str]:
         return self._list_agents_from_dir(self.workspace_root / "agents")
 
 

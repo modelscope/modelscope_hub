@@ -1,7 +1,8 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """OpenHuman workspace specification (single-agent install)."""
+from __future__ import annotations
+
 from pathlib import Path
-from typing import List
 
 from .._workspace import WorkspaceSpec, register_framework
 
@@ -22,7 +23,7 @@ class OpenhumanWorkspace(WorkspaceSpec):
         return Path.home() / ".openhuman" / "workspace"
 
     @property
-    def patterns(self) -> List[str]:
+    def patterns(self) -> list[str]:
         return [
             "SOUL.md",
             "IDENTITY.md",
