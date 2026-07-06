@@ -320,6 +320,13 @@ PRODUCT_FILE_CLASSES = {
         ]),
         "heartbeat": "HEARTBEAT.md",
     },
+    "qoder": {
+        "portable": frozenset([]),
+        "config": frozenset([
+            "AGENTS.md",
+        ]),
+        "heartbeat": "",
+    },
 }
 
 _DEFAULT_FILE_CLASS = {
@@ -342,7 +349,8 @@ SEMANTIC_GROUPS = [
      "qwenpaw": "MEMORY.md", "openhuman": "MEMORY.md"},
     {"openclaw": "IDENTITY.md", "openhuman": "IDENTITY.md"},
     {"qwenpaw": "PROFILE.md", "openhuman": "PROFILE.md"},
-    {"nanobot": "AGENTS.md", "openclaw": "AGENTS.md", "qwenpaw": "AGENTS.md"},
+    {"nanobot": "AGENTS.md", "openclaw": "AGENTS.md", "qwenpaw": "AGENTS.md",
+     "qoder": "AGENTS.md"},
     {"nanobot": "HEARTBEAT.md", "openclaw": "HEARTBEAT.md",
      "qwenpaw": "HEARTBEAT.md", "openhuman": "HEARTBEAT.md"},
     {"nanobot": "TOOLS.md", "openclaw": "TOOLS.md"},
@@ -350,7 +358,7 @@ SEMANTIC_GROUPS = [
     {"nanobot": "memory/HISTORY.md"},
 ]
 
-_ALL_PRODUCTS = ["nanobot", "openclaw", "hermes", "qwenpaw", "openhuman"]
+_ALL_PRODUCTS = ["nanobot", "openclaw", "hermes", "qwenpaw", "openhuman", "qoder"]
 
 
 def _build_path_map():
@@ -387,6 +395,9 @@ PRODUCT_KNOWN_FILES = {
     "openhuman": frozenset([
         "SOUL.md", "IDENTITY.md", "USER.md", "PROFILE.md", "MEMORY.md",
         "HEARTBEAT.md",
+    ]),
+    "qoder": frozenset([
+        "AGENTS.md",
     ]),
 }
 

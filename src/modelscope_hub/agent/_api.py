@@ -204,7 +204,13 @@ class AgentApi:
             headers={"Content-Type": "application/json"},
             unwrap=False,
         )
-        body = resp.json()
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise APIError(
+                f"upload credential response is not valid JSON: {exc}",
+                status_code=resp.status_code,
+            ) from exc
         if not body.get("Success"):
             raise APIError(
                 body.get("Message", "upload credential failed"),

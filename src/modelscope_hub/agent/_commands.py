@@ -447,7 +447,7 @@ def cmd_watch(
     # Ensure no stale watch processes are running.
     pf = pid_file()
     from ._watcher import stop_daemon
-    stop_daemon(extra_patterns=['ms agent watch', 'modelscope agent watch'])
+    stop_daemon()
 
     spec = build_spec(framework, local_name, local_dir)
     client = AgentApi(endpoint=endpoint, token=token)

@@ -161,17 +161,21 @@ def _sync_action(
     state,
 ) -> bool:
     """Execute the appropriate sync action. Returns True if something changed."""
+    # Backup naming convention: {framework}_{agent_name} so that
+    # ``cmd_recover --framework`` can filter watch-created backups.
+    backup_label = f"{framework}_{spec.agent_name}"
+
     if push_only:
         if not local_changed:
             return False
         return _push_local(client, username, name, framework, local_resources, state, logger)
 
     if remote_changed and local_changed:
-        backup_path = backup_local(spec, name)
+        backup_path = backup_local(spec, backup_label)
         pull_incremental(client, username, name, spec, remote_files, local_resources)
         logger.warning("Conflict: remote wins. Local backup: %s", backup_path)
     elif remote_changed:
-        backup_path = backup_local(spec, name)
+        backup_path = backup_local(spec, backup_label)
         pull_incremental(client, username, name, spec, remote_files, local_resources)
         logger.info("Pulled remote changes (backup: %s).", backup_path)
     elif local_changed:
