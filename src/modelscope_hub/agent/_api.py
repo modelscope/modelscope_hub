@@ -38,28 +38,33 @@ class AgentApi:
 
     This is the primary programmatic interface for interacting with agent
     repositories on ModelScope Hub.
+
+    Parameters
+    ----------
+    config : HubConfig or None
+        Pre-built configuration. When provided, *endpoint* and *token* are
+        ignored and the config is used directly.
+    endpoint : str or None
+        Hub API endpoint (fallback: HubConfig default).
+    token : str or None
+        API token (fallback: HubConfig default / ``ms login``).
+    timeout : int
+        HTTP request timeout in seconds.
     """
 
-    def __init__(self, endpoint: str | None = None, token: str | None = None, timeout: int = 60):
-        self._config = HubConfig(endpoint=endpoint, token=token)
+    def __init__(
+        self,
+        endpoint: str | None = None,
+        token: str | None = None,
+        timeout: int = 60,
+        *,
+        config: HubConfig | None = None,
+    ):
+        self._config = config or HubConfig(endpoint=endpoint, token=token)
         self.server = (self._config.endpoint or "").rstrip("/")
-        self.token = token or self._config.token
+        self.token = self._config.token
         self.timeout = timeout
         self._openapi = OpenAPIClient(config=self._config, timeout=float(timeout))
-
-    # ---- auth ----
-
-    def login(self, token: str) -> str:
-        """Validate token via GET /openapi/v1/users/me, return username."""
-        self._config.token = token
-        self.token = token
-        data = self._openapi.get_current_user()
-        return data.get("username") or data.get("Username") or ""
-
-    def get_username(self) -> str:
-        """Return the current authenticated username."""
-        data = self._openapi.get_current_user()
-        return data.get("username") or data.get("Username") or ""
 
     # ---- repository ----
 

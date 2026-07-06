@@ -102,16 +102,19 @@ class AgentCommand(CLICommand):
         token = getattr(args, "token", None)
         endpoint = getattr(args, "endpoint", None)
 
-        # For commands that need auth, resolve username from the API.
-        # AgentApi falls back to HubConfig (ms login credentials) when args are None.
+        # For commands that need auth, resolve username via OpenAPIClient.
+        # HubConfig falls back to `ms login` credentials when args are None.
         username = None
         if action in ("upload", "download", "watch"):
-            from ..agent import AgentApi
+            from ..config import HubConfig
+            from .._openapi import OpenAPIClient
             try:
-                client = AgentApi(endpoint=endpoint, token=token)
-                username = client.get_username()
-                token = token or client.token
-                endpoint = endpoint or client.server
+                config = HubConfig(endpoint=endpoint, token=token)
+                openapi = OpenAPIClient(config=config)
+                user_data = openapi.get_current_user()
+                username = user_data.get("username") or user_data.get("Username") or ""
+                token = config.token
+                endpoint = config.endpoint
             except Exception:
                 pass
 

@@ -165,7 +165,7 @@ class TestClientIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.client = AgentApi(SERVER)
+        cls.client = AgentApi(SERVER, TOKEN)
 
     def setUp(self):
         """Throttle between tests to avoid 429 rate limiting."""
@@ -175,15 +175,16 @@ class TestClientIntegration(unittest.TestCase):
     # 01. Login
     # -----------------------------------------------------------------------
     def test_01_login_valid_token(self):
-        username = self.__class__.client.login(TOKEN)
+        user_data = self.__class__.client._openapi.get_current_user()
+        username = user_data.get("username") or user_data.get("Username") or ""
         self.assertTrue(username, "login should return non-empty username")
         self.__class__.username = username
         print(f"    username={username}")
 
     def test_02_login_invalid_token(self):
-        bad = AgentApi(SERVER)
+        bad = AgentApi(SERVER, "invalid-token-xyz")
         with self.assertRaises(APIError):
-            bad.login("invalid-token-xyz")
+            bad._openapi.get_current_user()
 
     # -----------------------------------------------------------------------
     # 02. Check repo

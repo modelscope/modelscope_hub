@@ -84,7 +84,8 @@ def _watch_process_target(
     spec_cls = FRAMEWORK_REGISTRY[framework]
     spec = spec_cls(agent_name=agent_name, local_dir=Path(local_dir))
     client = AgentApi(server, token)
-    username = client.login(token)
+    user_data = client._openapi.get_current_user()
+    username = user_data.get("username") or user_data.get("Username") or ""
 
     watch_loop(spec, client, username, repo_name, framework, interval=interval, push_only=push_only)
 
@@ -103,8 +104,9 @@ class TestWatchSync(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.client = AgentApi(SERVER)
-        cls.username = cls.client.login(TOKEN)
+        cls.client = AgentApi(SERVER, TOKEN)
+        user_data = cls.client._openapi.get_current_user()
+        cls.username = user_data.get("username") or user_data.get("Username") or ""
         assert cls.username, "login failed"
         print(f"    Logged in as {cls.username}")
         cls._data_dir = tempfile.mkdtemp(prefix="agent_test_watch_data_")

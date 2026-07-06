@@ -142,8 +142,9 @@ class TestUploadDownload(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.client = AgentApi(SERVER)
-        cls.username = cls.client.login(TOKEN)
+        cls.client = AgentApi(SERVER, TOKEN)
+        user_data = cls.client._openapi.get_current_user()
+        cls.username = user_data.get("username") or user_data.get("Username") or ""
         assert cls.username, "login failed"
         print(f"    Logged in as {cls.username}")
 
