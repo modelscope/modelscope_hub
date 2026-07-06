@@ -255,7 +255,7 @@ class HeartbeatMerger(SectionMerger):
                 insert_idx = len(body_lines)
                 for j, line in enumerate(body_lines):
                     if "<!--" in line and j > 0:
-                        insert_idx = j
+                        insert_idx = j + 1
                         break
                 for task in new_tasks:
                     body_lines.insert(insert_idx, task)

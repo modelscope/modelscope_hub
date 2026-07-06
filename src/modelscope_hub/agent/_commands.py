@@ -571,8 +571,9 @@ def cmd_recover(
         name = parts[0] if len(parts) >= 3 else stem
 
     if not framework:
-        if name in FRAMEWORK_REGISTRY:
-            framework = name
+        possible_fw = name.split("_")[0] if "_" in name else name
+        if possible_fw in FRAMEWORK_REGISTRY:
+            framework = possible_fw
         else:
             return _fail("cannot infer framework. Pass --framework explicitly.")
 

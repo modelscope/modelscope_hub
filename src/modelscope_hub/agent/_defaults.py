@@ -7,7 +7,7 @@ from typing import Dict
 
 logger = logging.getLogger("modelscope_hub.agent")
 
-_DEFAULTS_DIR = Path(__file__).parent / "defaults"
+_DEFAULTS_DIR = Path(__file__).parent / "default_configs"
 
 
 def get_defaults(framework: str) -> Dict[str, str]:

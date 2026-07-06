@@ -1,5 +1,5 @@
 # Copyright (c) ModelScope Contributors. All rights reserved.
-"""CLI upload, status, and backup/restore flow tests (stubbed client)."""
+"""CLI command tests: helper functions, upload/download/convert flows (stubbed client)."""
 import tempfile
 import unittest
 import zipfile
@@ -7,10 +7,116 @@ from pathlib import Path
 from unittest import mock
 
 from modelscope_hub.agent._commands import (
+    available_frameworks,
+    build_spec,
+    cmd_convert,
+    cmd_download,
     cmd_recover,
     cmd_status,
     cmd_upload,
+    repo_name,
+    resolve_local_name,
+    resolve_remote,
 )
+
+
+# ---------------------------------------------------------------------------
+# Helper function unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestRepoName(unittest.TestCase):
+    def test_both_fw_and_name(self):
+        self.assertEqual(repo_name("qoder", "reviewer"), "qoder-reviewer")
+
+    def test_name_all(self):
+        self.assertEqual(repo_name("qoder", "all"), "qoder")
+
+    def test_fw_only(self):
+        self.assertEqual(repo_name("qoder", ""), "qoder")
+
+    def test_name_only(self):
+        self.assertEqual(repo_name("", "mybot"), "mybot")
+
+    def test_neither(self):
+        self.assertEqual(repo_name("", ""), "default")
+
+
+class TestResolveRemote(unittest.TestCase):
+    def test_repo_with_slash(self):
+        group, name = resolve_remote(repo="org/myrepo", username="u")
+        self.assertEqual(group, "org")
+        self.assertEqual(name, "myrepo")
+
+    def test_repo_without_slash(self):
+        group, name = resolve_remote(repo="myrepo", username="u")
+        self.assertEqual(group, "u")
+        self.assertEqual(name, "myrepo")
+
+    def test_no_repo_derives(self):
+        group, name = resolve_remote(name="bot", framework="qoder", username="u")
+        self.assertEqual(group, "u")
+        self.assertEqual(name, "qoder-bot")
+
+
+class TestResolveLocalName(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_explicit_name_passes_through(self):
+        name, err = resolve_local_name("reviewer", "qoder", self.root)
+        self.assertEqual(name, "reviewer")
+        self.assertIsNone(err)
+
+    def test_single_agent_auto_select(self):
+        (self.root / "agents").mkdir()
+        (self.root / "agents" / "mybot.md").write_text("x")
+        name, err = resolve_local_name(None, "qoder", self.root)
+        self.assertEqual(name, "mybot")
+        self.assertIsNone(err)
+
+    def test_multiple_agents_error(self):
+        (self.root / "agents").mkdir()
+        (self.root / "agents" / "a.md").write_text("x")
+        (self.root / "agents" / "b.md").write_text("y")
+        name, err = resolve_local_name(None, "qoder", self.root)
+        self.assertIsNone(name)
+        self.assertIn("multiple", err)
+
+
+# ---------------------------------------------------------------------------
+# Status command tests
+# ---------------------------------------------------------------------------
+
+
+class TestStatusCmd(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "agents").mkdir()
+        (self.root / "agents" / "reviewer.md").write_text("reviewer")
+        (self.root / "agents" / "coder.md").write_text("coder")
+        (self.root / "AGENTS.md").write_text("shared")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_status_shows_agents(self):
+        rc = cmd_status(framework="qoder", local_dir=str(self.root))
+        self.assertEqual(rc, 0)
+
+    def test_status_unknown_framework_fails(self):
+        rc = cmd_status(framework="nope", local_dir=str(self.root))
+        self.assertEqual(rc, 1)
+
+
+# ---------------------------------------------------------------------------
+# Upload command tests (stubbed client)
+# ---------------------------------------------------------------------------
 
 
 class _StubClient:
@@ -169,25 +275,9 @@ class TestUploadCmd(unittest.TestCase):
             self.assertFalse(p.startswith("agents/"))
 
 
-class TestStatusCmd(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        (self.root / "agents").mkdir()
-        (self.root / "agents" / "reviewer.md").write_text("reviewer")
-        (self.root / "agents" / "coder.md").write_text("coder")
-        (self.root / "AGENTS.md").write_text("shared")
-
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_status_shows_agents(self):
-        rc = cmd_status(framework="qoder", local_dir=str(self.root))
-        self.assertEqual(rc, 0)
-
-    def test_status_unknown_framework_fails(self):
-        rc = cmd_status(framework="nope", local_dir=str(self.root))
-        self.assertEqual(rc, 1)
+# ---------------------------------------------------------------------------
+# Backup/restore tests
+# ---------------------------------------------------------------------------
 
 
 class TestBackupsFilterCmd(unittest.TestCase):
@@ -278,6 +368,177 @@ class TestBackupsFilterCmd(unittest.TestCase):
         """'restore last -f hermes' with no hermes backups should fail."""
         mock_cache.return_value = self.cache_dir
         rc = cmd_recover(target="last", framework="hermes")
+        self.assertEqual(rc, 1)
+
+
+# ---------------------------------------------------------------------------
+# Download command tests (stubbed client)
+# ---------------------------------------------------------------------------
+
+
+class _DownloadStub:
+    """Serves a fixed nanobot repo so download flows can be exercised offline."""
+
+    instances = []
+    STORE = {"SOUL.md": "soul", "USER.md": "user", "memory/MEMORY.md": "mem"}
+
+    def __init__(self, *args, **kwargs):
+        _DownloadStub.instances.append(self)
+
+    def repo_info(self, path, name):
+        return {"Path": path, "Name": name, "Framework": "nanobot", "Revision": 1}
+
+    def list_repo_files(self, path, name):
+        return list(self.STORE)
+
+    def download_repo_file(self, path, name, file_path):
+        return self.STORE[file_path]
+
+
+class TestDownload(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self.tmp.name) / "ws"
+        _DownloadStub.instances = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _DownloadStub)
+    def test_download_writes_files(self):
+        rc = cmd_download(
+            framework="nanobot", repo="nano",
+            local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.out / "SOUL.md").read_text(), "soul")
+        self.assertEqual((self.out / "memory" / "MEMORY.md").read_text(), "mem")
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _DownloadStub)
+    def test_download_with_conversion(self):
+        # nanobot -> hermes: USER.md must land at hermes' memories/USER.md.
+        rc = cmd_download(
+            framework="nanobot", repo="nano",
+            target="hermes", local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.out / "memories" / "USER.md").is_file())
+        self.assertFalse((self.out / "USER.md").is_file())
+
+    def test_download_without_login_fails(self):
+        rc = cmd_download(
+            framework="nanobot", repo="nano",
+            local_dir=str(self.out),
+            endpoint=None, token=None,
+        )
+        self.assertEqual(rc, 1)
+
+    def test_download_repo_required(self):
+        """Download without --repo should fail."""
+        rc = cmd_download(
+            framework="nanobot", repo="",
+            local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 1)
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _DownloadStub)
+    def test_download_with_name_creates_agent(self):
+        """Download with --name should write files for that local agent."""
+        rc = cmd_download(
+            framework="nanobot", repo="nano",
+            name="myagent", local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.out / "SOUL.md").is_file())
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _DownloadStub)
+    def test_download_filters_by_allowlist(self):
+        """Files not matching the allowlist patterns should be skipped."""
+        orig_store = _DownloadStub.STORE.copy()
+        _DownloadStub.STORE = {
+            "SOUL.md": "soul",
+            "random/junk.txt": "junk",
+            "memory/MEMORY.md": "mem",
+        }
+        try:
+            rc = cmd_download(
+                framework="nanobot", repo="nano",
+                local_dir=str(self.out),
+                endpoint="http://s", token="tok", username="u",
+            )
+            self.assertEqual(rc, 0)
+            # random/junk.txt should NOT be written.
+            self.assertFalse((self.out / "random" / "junk.txt").exists())
+            # Valid files should be written.
+            self.assertTrue((self.out / "SOUL.md").is_file())
+        finally:
+            _DownloadStub.STORE = orig_store
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _DownloadStub)
+    def test_download_repo_with_slash(self):
+        """--repo with '/' uses the specified group instead of username."""
+        rc = cmd_download(
+            framework="nanobot", repo="othergroup/nano",
+            local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.out / "SOUL.md").is_file())
+
+
+# ---------------------------------------------------------------------------
+# Convert command tests
+# ---------------------------------------------------------------------------
+
+
+class TestConvert(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.src = Path(self.tmp.name) / "nb"
+        self.out = Path(self.tmp.name) / "hm"
+        (self.src / "memory").mkdir(parents=True)
+        (self.src / "SOUL.md").write_text("nano soul")
+        (self.src / "USER.md").write_text("about user")
+        (self.src / "memory" / "MEMORY.md").write_text("fact")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_convert_local_nanobot_to_hermes(self):
+        rc = cmd_convert(
+            source_fw="nanobot", target_fw="hermes",
+            local_dir=str(self.src), out_dir=str(self.out),
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.out / "SOUL.md").is_file())
+        # nanobot USER.md maps to hermes memories/USER.md
+        self.assertTrue((self.out / "memories" / "USER.md").is_file())
+
+    def test_convert_dry_run_writes_nothing(self):
+        rc = cmd_convert(
+            source_fw="nanobot", target_fw="hermes",
+            local_dir=str(self.src), out_dir=str(self.out),
+            dry_run=True,
+        )
+        self.assertEqual(rc, 0)
+        self.assertFalse(self.out.exists())
+
+    def test_convert_unknown_framework_fails(self):
+        rc = cmd_convert(
+            source_fw="nope", target_fw="hermes",
+            local_dir=str(self.src),
+        )
+        self.assertEqual(rc, 1)
+
+    def test_convert_no_source_files_fails(self):
+        rc = cmd_convert(
+            source_fw="nanobot", target_fw="hermes",
+            local_dir=str(self.src / "missing"),
+        )
         self.assertEqual(rc, 1)
 
 

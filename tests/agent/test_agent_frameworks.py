@@ -14,7 +14,7 @@ Covers every endpoint plus edge cases:
     - framework-specific mock files (nanobot, openclaw, qwenpaw, hermes, openhuman, qoder)
 
 Usage:
-    python -m pytest tests/agent/test_client_integration.py -v
+    python -m pytest tests/agent/test_agent_frameworks.py -v
 """
 import os
 import sys
@@ -30,7 +30,7 @@ from modelscope_hub.agent._merge import merge_resources
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-SERVER = os.environ.get("SERVER", "http://pre.modelscope.cn")
+SERVER = os.environ.get("SERVER", "https://www.modelscope.cn")
 TOKEN = os.environ.get("TOKEN", "")
 AGENT_NAME = "test-agent-integration"
 

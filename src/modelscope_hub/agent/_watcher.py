@@ -63,9 +63,10 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
         running = False
         stop_event.set()
 
-    if hasattr(signal, "SIGTERM"):
-        signal.signal(signal.SIGTERM, _handle_term)
-    signal.signal(signal.SIGINT, _handle_term)
+    if threading.current_thread() is threading.main_thread():
+        if hasattr(signal, "SIGTERM"):
+            signal.signal(signal.SIGTERM, _handle_term)
+        signal.signal(signal.SIGINT, _handle_term)
 
     sf.unlink(missing_ok=True)
 
@@ -127,7 +128,11 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
     logger.info("Watch stopped (signal received).")
     pf = pid_file()
     if pf.exists():
-        pf.unlink(missing_ok=True)
+        try:
+            if pf.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                pf.unlink(missing_ok=True)
+        except Exception:
+            pass
     sf.unlink(missing_ok=True)
 
 
@@ -236,7 +241,11 @@ def _daemonize_unix(target, *args, **kwargs):
     try:
         target(*args, **kwargs)
     finally:
-        pf.unlink(missing_ok=True)
+        try:
+            if pf.exists() and pf.read_text(encoding="utf-8").strip() == str(os.getpid()):
+                pf.unlink(missing_ok=True)
+        except Exception:
+            pass
         os._exit(0)
 
 

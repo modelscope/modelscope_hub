@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from urllib.parse import unquote
 
 import requests
 
@@ -262,7 +261,7 @@ class AgentApi:
         path_part = parts[0]
         if "%2F" not in path_part and "%2f" not in path_part:
             return url
-        decoded_path = unquote(path_part)
+        decoded_path = path_part.replace("%2F", "/").replace("%2f", "/")
         if len(parts) == 2:
             return decoded_path + "?" + parts[1]
         return decoded_path
