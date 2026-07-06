@@ -269,7 +269,9 @@ class OpenAPIClient:
                 except _RETRYABLE_EXC as exc:  # type: ignore[misc]
                     last_exc = exc
                 else:
-                    return self._decode(response, unwrap=unwrap)
+                    if not unwrap:
+                        return response
+                    return self._decode(response, unwrap=True)
 
             # Retry policy: idempotent methods + known-idempotent POST paths.
             is_retryable = (
