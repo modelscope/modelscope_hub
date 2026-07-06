@@ -446,6 +446,7 @@ def merge_resources(
     source_defaults: dict[str, str],
     target_defaults: dict[str, str],
     existing_skills: list[str] | None = None,
+    fill_missing_defaults: bool = True,
 ) -> FullMergeResult:
     """Merge incoming resources into a target product workspace.
 
@@ -456,6 +457,10 @@ def merge_resources(
         source_defaults: default templates for source product
         target_defaults: default templates for target product
         existing_skills: list of skill dir names already on target
+        fill_missing_defaults: when *True*, add target default templates for
+            file types that the source did not provide.  Set to *False* for
+            convert / download so only files actually present in the source
+            are written to the target.
     """
     is_cross_product = source_product != target_product
     existing_skill_set = set(existing_skills or [])
@@ -614,14 +619,17 @@ def merge_resources(
             detail="Imported directly",
         ))
 
-    # Fill in missing files from target defaults
-    for path, content in target_defaults.items():
-        if path not in result.merged_files and path not in handled_target_paths:
-            result.merged_files[path] = content
-            result.actions.append(MergeAction(
-                path=path, action="default",
-                detail=f"Added from {target_product} default template",
-            ))
+    # Fill in missing files from target defaults (opt-in).
+    # Skipped for convert / download so the target only receives files that
+    # actually exist in the source.
+    if fill_missing_defaults:
+        for path, content in target_defaults.items():
+            if path not in result.merged_files and path not in handled_target_paths:
+                result.merged_files[path] = content
+                result.actions.append(MergeAction(
+                    path=path, action="default",
+                    detail=f"Added from {target_product} default template",
+                ))
 
     # Append overflow blocks
     for catch_all, block in overflow_blocks:

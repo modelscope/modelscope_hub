@@ -196,6 +196,7 @@ class TestMergeResources(unittest.TestCase):
         self.assertEqual(result.merged_files["SOUL.md"], "my soul")
 
     def test_fills_missing_from_target_defaults(self):
+        """merge_resources fills target defaults for absent source files."""
         result = merge_resources(
             incoming={},
             source_product="nanobot",
@@ -205,6 +206,32 @@ class TestMergeResources(unittest.TestCase):
         )
         self.assertIn("SOUL.md", result.merged_files)
         self.assertEqual(result.merged_files["SOUL.md"], "default soul")
+
+    def test_fill_missing_defaults_kept_when_target_lacks_them(self):
+        """Defaults for files the target doesn't have are kept by convert_resources."""
+        from modelscope_hub.agent._commands import convert_resources
+        result = convert_resources(
+            resources={"skills/bot/SKILL.md": "# bot"},
+            source_fw="qoder",
+            target_fw="qwenpaw",
+            existing_files=set(),  # target has nothing
+        )
+        # Skill + target defaults should all be present
+        self.assertIn("skills/bot/SKILL.md", result)
+
+    def test_fill_missing_defaults_filtered_when_target_has_them(self):
+        """Defaults for files the target already has are filtered by convert_resources."""
+        from modelscope_hub.agent._commands import convert_resources
+        result = convert_resources(
+            resources={"skills/bot/SKILL.md": "# bot"},
+            source_fw="qoder",
+            target_fw="qwenpaw",
+            existing_files={"SOUL.md"},  # target already has SOUL.md
+        )
+        # SOUL.md default should be filtered (target already has it)
+        self.assertNotIn("SOUL.md", result)
+        # But the skill should still be present
+        self.assertIn("skills/bot/SKILL.md", result)
 
     def test_skill_import(self):
         incoming = {"skills/my-skill/SKILL.md": "# Skill content"}

@@ -137,10 +137,19 @@ def build_spec(framework: str, name: str, local_dir=None) -> WorkspaceSpec:
     return spec_cls(agent_name=name, local_dir=local)
 
 
-def convert_resources(resources: dict, source_fw: str, target_fw: str) -> dict:
+def convert_resources(
+    resources: dict,
+    source_fw: str,
+    target_fw: str,
+    existing_files: set[str] | None = None,
+) -> dict:
     """Convert workspace resources from one framework format to another.
 
     Reuses the cross-framework merge engine.  No-op when source == target.
+
+    When *existing_files* is provided, default template files that already
+    exist on the target are filtered out so the target's custom content is
+    preserved.  Default templates for files the target does NOT have are kept.
     """
     if source_fw == target_fw:
         return resources
@@ -151,7 +160,14 @@ def convert_resources(resources: dict, source_fw: str, target_fw: str) -> dict:
         source_defaults=get_defaults(source_fw),
         target_defaults=get_defaults(target_fw),
     )
-    return result.merged_files
+    merged = result.merged_files
+    if existing_files is not None:
+        default_paths = {a.path for a in result.actions if a.action == "default"}
+        merged = {
+            k: v for k, v in merged.items()
+            if k not in default_paths or k not in existing_files
+        }
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -296,13 +312,15 @@ def cmd_download(
     target_fw = target or framework
     if target_fw not in FRAMEWORK_REGISTRY:
         return _fail(f"unknown target framework '{target_fw}'. Available: {available_frameworks()}")
-    if target_fw != framework:
-        resources = convert_resources(resources, framework, target_fw)
-        print(f"Converted {framework} -> {target_fw} ({len(resources)} file(s)).")
 
     local_name = name or DEFAULT_AGENT_NAME
     spec = build_spec(target_fw, local_name, local_dir)
     root = spec.workspace_root
+
+    if target_fw != framework:
+        existing_files = set(spec.collect().keys())
+        resources = convert_resources(resources, framework, target_fw, existing_files=existing_files)
+        print(f"Converted {framework} -> {target_fw} ({len(resources)} file(s)).")
 
     patterns = spec.resolved_patterns()
     filtered = {k: v for k, v in resources.items() if spec.matches(k, patterns)}
@@ -344,6 +362,9 @@ def convert_workspace(
     if not resources:
         return _fail(f"no {source_fw} files found under {src_root}.")
 
+    existing = dst_spec.collect()
+    existing_paths = set(existing.keys())
+
     if source_fw == target_fw:
         converted = resources
         default_paths: set = set()
@@ -359,8 +380,14 @@ def convert_workspace(
         converted = result.merged_files
 
     dst_root = dst_spec.workspace_root
-    effective = {k: v for k, v in converted.items() if k not in default_paths}
-    skipped_defaults = sorted(default_paths & set(converted.keys()))
+    # Non-default files: always write (overwrite if exists).
+    # Default files: write only if target does NOT already have them.
+    effective = {
+        k: v for k, v in converted.items()
+        if k not in default_paths or k not in existing_paths
+    }
+    skipped_defaults = sorted(default_paths & existing_paths)
+    added_defaults = sorted(default_paths - existing_paths)
 
     print(
         f"Convert {source_fw}/{src_spec.agent_name} ({src_root}) -> "
@@ -370,20 +397,22 @@ def convert_workspace(
     for rel in sorted(effective):
         print(f"  {rel} -> {dst_root / rel}")
     if skipped_defaults:
-        print(f"  ({len(skipped_defaults)} default template(s) skipped: "
+        print(f"  ({len(skipped_defaults)} existing default(s) preserved: "
               f"{', '.join(skipped_defaults)})")
+    if added_defaults:
+        print(f"  ({len(added_defaults)} default template(s) added: "
+              f"{', '.join(added_defaults)})")
 
     if dry_run:
         print("\n[dry-run] nothing written.")
         return 0
 
     if not effective:
-        print("\nNo effective files to write (all were default templates).")
+        print("\nNo effective files to write.")
         return 0
 
     # Backup existing target files before overwriting
     from ._sync import backup_local
-    existing = dst_spec.collect()
     if existing:
         backup_path = backup_local(dst_spec, f"{target_fw}_{dst_spec.agent_name}")
         print(f"  Backup: {backup_path}")
