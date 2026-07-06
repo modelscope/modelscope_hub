@@ -496,7 +496,7 @@ class HubApi:
         username = data.get("Username", "")
         email = data.get("Email", "")
 
-        self._config.save_token(token)
+        self._config.save_cookies(cookies)
         if git_token:
             self._config.save_git_token(git_token)
         if username:
