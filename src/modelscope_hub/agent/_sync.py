@@ -104,7 +104,7 @@ def push_resources(
         return
     client.create_repo(username, name, framework, system_prompt_files=gid)
     for rel in sorted(resources):
-        logger.info("  UPLOAD: %s (%d B)", rel, len(resources[rel]))
+        logger.info("  CREATE: %s (%d B)", rel, len(resources[rel]))
     logger.info("Pushed %d file(s) via OSS (gid=%s).", len(resources), gid)
 
 
@@ -173,7 +173,8 @@ def pull_incremental(
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         changes += 1
-        logger.info("  Downloaded: %s", rfile.path)
+        action = "UPDATE" if local_content is not None else "CREATE"
+        logger.info("  %s (pull): %s", action, rfile.path)
 
     for rel in sorted(local_paths - remote_paths):
         target = (root / rel).resolve()
@@ -182,7 +183,7 @@ def pull_incremental(
         if target.exists():
             target.unlink()
             changes += 1
-            logger.info("  Deleted: %s", rel)
+            logger.info("  DELETE (pull): %s", rel)
 
     return changes
 
