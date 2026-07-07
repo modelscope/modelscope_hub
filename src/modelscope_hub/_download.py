@@ -28,7 +28,6 @@ import time
 import re
 import threading
 
-_RESOLVED_REGIONS_LOCK = threading.Lock()
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -331,6 +330,10 @@ class DownloadManager:
         self._client = legacy_client
         self._config = config
         self._cached_region: str | None = None
+        # Cache resolved inter-region probe results to avoid redundant HEAD probes
+        # when downloading multiple files from the same repo in parallel.
+        self._inter_region_cache: dict[tuple[str, str], tuple[str | None, str]] = {}
+        self._inter_region_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # User-agent & headers
@@ -862,27 +865,49 @@ class DownloadManager:
 
         download_headers = self._build_download_headers(user_agent)
 
-        # Inter-region acceleration: probe peer regions for OSS internal URL
+        # Inter-region acceleration: probe peer regions for OSS internal URL.
+        # Cache per (repo_id, repo_type) — all files in the same repo share one
+        # OSS bucket so one probe is sufficient for the entire download session.
         # Progress bar prefix: "⚡ " = local OSS, "⇄ " = peer OSS, "  " = CDN, "" = not configured
         source_prefix = ""
         peer_regions = self._get_inter_cloud_regions()
         if peer_regions:
-            try:
-                probe_url = self._client.get_download_url(
-                    repo_id, repo_type, file_path, revision,
-                )
-                cookies = None
-                if self._client.token:
-                    cookies = {"m_session_id": self._client.token}
-                download_headers, source = self._resolve_inter_region_headers(
-                    probe_url, download_headers, cookies,
-                    peer_regions=peer_regions,
-                )
+            cache_key = (repo_id, repo_type)
+            with self._inter_region_lock:
+                cached = self._inter_region_cache.get(cache_key)
+                if cached is None:
+                    # First thread for this repo — do the probe under lock so
+                    # other threads wait instead of issuing redundant HEAD reqs.
+                    try:
+                        probe_url = self._client.get_download_url(
+                            repo_id, repo_type, file_path, revision,
+                        )
+                        cookies = None
+                        if self._client.token:
+                            cookies = {"m_session_id": self._client.token}
+                        download_headers, source = self._resolve_inter_region_headers(
+                            probe_url, download_headers, cookies,
+                            peer_regions=peer_regions,
+                        )
+                        resolved_region = download_headers.get("x-aliyun-region-id")
+                        self._inter_region_cache[cache_key] = (resolved_region, source)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to resolve inter-region acceleration: %s. Falling back to default.", exc,
+                        )
+                        self._inter_region_cache[cache_key] = (None, "default")
+                        cached = (None, "default")
+
+            if cached is None:
+                cached = self._inter_region_cache.get(cache_key)
+
+            if cached is not None:
+                resolved_region, source = cached
+                if resolved_region is not None:
+                    download_headers["x-aliyun-region-id"] = resolved_region
                 source_prefix = {
                     "local": "\u26a1 ", "peer": "\u21c4 ", "default": "  ",
                 }[source]
-            except Exception as exc:
-                logger.warning("Failed to resolve inter-region acceleration: %s. Falling back to default.", exc)
 
         if use_parallel:
             url = self._client.get_download_url(
