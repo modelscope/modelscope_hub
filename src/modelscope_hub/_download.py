@@ -554,8 +554,13 @@ class DownloadManager:
         if local_dir is not None:
             target = Path(local_dir) / file_path
         else:
-            root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
-            target = root / "snapshots" / revision / file_path
+            # Fallback: reuse old SDK (<=1.37) cache if it exists
+            legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+            if legacy is not None:
+                target = legacy / file_path
+            else:
+                root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+                target = root / "snapshots" / revision / file_path
 
         if local_files_only:
             if target.exists():
@@ -654,8 +659,17 @@ class DownloadManager:
         if local_dir is not None:
             output_dir = ensure_dir(Path(local_dir))
         else:
-            root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
-            output_dir = ensure_dir(root / "snapshots" / revision)
+            # Fallback: reuse old SDK (<=1.37) cache if it exists
+            legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+            if legacy is not None:
+                logger.info(
+                    "Found legacy cache at %s, reusing.", legacy,
+                )
+                output_dir = legacy
+                local_dir = legacy
+            else:
+                root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+                output_dir = ensure_dir(root / "snapshots" / revision)
 
         if local_files_only:
             if any(output_dir.iterdir()):
@@ -828,6 +842,33 @@ class DownloadManager:
         segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
         safe_id = repo_id.replace("/", "--")
         return ensure_dir(base / segment / safe_id)
+
+    def _find_legacy_repo_dir(
+        self,
+        repo_id: str,
+        repo_type: str,
+        cache_dir: Path | None = None,
+    ) -> Path | None:
+        """Check for old SDK (<=1.37) cache layout and return it if non-empty.
+
+        Old format: {base}/{type}s/{owner}/{name_with_dots_as___}/
+        e.g.  ~/.cache/modelscope/models/Qwen/Qwen3___5-0___8B/
+        """
+        base = cache_dir or self._config.cache_dir
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        parts = repo_id.split("/", 1)
+        if len(parts) != 2:
+            return None
+        owner, name = parts
+        safe_name = name.replace(".", "___")
+        legacy_path = base / segment / owner / safe_name
+        if legacy_path.is_dir():
+            try:
+                if any(legacy_path.iterdir()):
+                    return legacy_path
+            except OSError:
+                pass
+        return None
 
     def _lock_path(
         self,
