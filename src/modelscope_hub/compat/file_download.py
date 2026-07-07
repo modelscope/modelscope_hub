@@ -7,7 +7,6 @@ These functions replicate the signature of the old
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
 
 import requests as _requests
 
@@ -23,30 +22,16 @@ def _resolve_legacy_paths(
     local_dir: str | None,
     api: "HubApi",
 ) -> tuple[str | None, str | None]:
-    """Resolve cache_dir/local_dir for legacy path layout compatibility.
+    """Resolve cache_dir/local_dir for legacy API compatibility.
 
-    Strategy:
-    - If ``local_dir`` is explicitly specified, use it directly.
-    - If legacy cache exists at old format path (``{cache_dir}/{owner}/{name}``),
-      reuse it to avoid re-downloading.
-    - Otherwise, pass ``cache_dir`` to let the new download engine use
-      HF-compatible format (``{cache_dir}/models/{owner}--{name}/snapshots/{rev}/``).
+    Passes parameters through so the new API uses its standard cache
+    layout (``{cache}/{type}s/{owner}--{name}/snapshots/{rev}/...``),
+    consistent with CLI ``ms download`` behavior.
 
-    Returns (effective_cache_dir, effective_local_dir).
+    When ``local_dir`` is explicitly set, files go directly there.
+    Otherwise the standard cache hierarchy is used.
     """
-    if local_dir is not None:
-        # User explicitly controls the output directory — pass through.
-        return cache_dir, local_dir
-
-    base = Path(cache_dir) if cache_dir else Path(api._config.cache_dir)
-    legacy_path = base / repo_id  # Old format: {base}/{owner}/{name}
-
-    if legacy_path.exists():
-        # Legacy cache found — reuse old format path to avoid re-download.
-        return None, str(legacy_path)
-    else:
-        # Clean environment — let download engine use new HF-compatible format.
-        return str(base), None
+    return cache_dir, local_dir
 
 
 def model_file_download(

@@ -25,10 +25,14 @@ import hashlib
 import io
 import os
 import time
+import re
+import threading
+
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 import requests
 from tqdm.auto import tqdm
@@ -44,6 +48,7 @@ from .constants import (
     ENV_FILE_LOCK,
     ENV_INTRA_CLOUD_ACCELERATION,
     ENV_INTRA_CLOUD_REGION,
+    ENV_INTER_CLOUD_REGIONS,
 )
 from .errors import (
     CacheNotFound,
@@ -325,6 +330,10 @@ class DownloadManager:
         self._client = legacy_client
         self._config = config
         self._cached_region: str | None = None
+        # Cache resolved inter-region probe results to avoid redundant HEAD probes
+        # when downloading multiple files from the same repo in parallel.
+        self._inter_region_cache: dict[tuple[str, str], tuple[str | None, str]] = {}
+        self._inter_region_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # User-agent & headers
@@ -367,6 +376,98 @@ class DownloadManager:
 
         self._cached_region = region_id
         return region_id
+
+    # OSS internal endpoint hostname pattern:
+    #   <prefix>.oss<region>-internal.aliyuncs.com
+    # e.g. modelhub-cn-hangzhou.oss-cn-hangzhou-internal.aliyuncs.com
+    _OSS_INTERNAL_RE = re.compile(
+        r".*\.oss.*-internal\.aliyuncs\.com$"
+    )
+
+    @staticmethod
+    def _is_oss_internal_url(url: str) -> bool:
+        """Check if a URL points to an OSS internal (intranet) endpoint.
+
+        Matches hostnames like:
+            modelhub-cn-hangzhou.oss-cn-hangzhou-internal.aliyuncs.com
+        """
+        try:
+            host = urlparse(url).hostname or ""
+        except Exception:
+            return False
+        return bool(DownloadManager._OSS_INTERNAL_RE.match(host))
+
+    @staticmethod
+    def _probe_redirect_url(
+        url: str,
+        headers: dict[str, str],
+        cookies: dict | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        """Send a HEAD request without following redirects to get the 302 Location."""
+        try:
+            r = requests.head(
+                url, headers=headers, cookies=cookies,
+                allow_redirects=False, timeout=timeout,
+            )
+            if r.status_code in (301, 302, 303, 307, 308):
+                return r.headers.get("Location", "")
+        except requests.exceptions.RequestException:
+            pass
+        return ""
+
+    def _get_inter_cloud_regions(self) -> list[str]:
+        """Read the inter-cloud peer region list from the environment."""
+        from .constants import _env
+        raw = _env(ENV_INTER_CLOUD_REGIONS, "INTER_CLOUD_ACCELERATION_REGIONS") or ""
+        return [r.strip().lower() for r in raw.split(",") if r.strip()]
+
+    def _resolve_inter_region_headers(
+        self,
+        url: str,
+        headers: dict[str, str],
+        cookies: dict | None = None,
+        peer_regions: list[str] | None = None,
+    ) -> tuple[dict[str, str], str]:
+        """Probe peer regions and return headers with the best region for OSS internal download.
+
+        Steps:
+        1. Probe with current (local) region — if already OSS internal, return as-is.
+        2. Try each peer region in order (skip duplicates of local) — first OSS internal hit wins.
+        3. If all miss, fall back to original headers (default path).
+
+        Returns:
+            (headers, source) where source is "local", "peer", or "default".
+        """
+        if peer_regions is None:
+            peer_regions = self._get_inter_cloud_regions()
+        if not peer_regions:
+            return headers, "default"
+
+        current_region = headers.get("x-aliyun-region-id", "").lower()
+
+        # Step 1: Probe with current (local) region
+        redirect_url = self._probe_redirect_url(url, headers, cookies)
+        if self._is_oss_internal_url(redirect_url):
+            logger.debug("Inter-region: local region already yields OSS internal URL, skipping.")
+            return headers, "local"
+
+        # Step 2: Try each peer region in order
+        for peer_region in peer_regions:
+            if peer_region == current_region:
+                continue
+            probe_headers = {**headers, "x-aliyun-region-id": peer_region}
+            redirect_url = self._probe_redirect_url(url, probe_headers, cookies)
+            if self._is_oss_internal_url(redirect_url):
+                logger.debug(
+                    'Inter-region acceleration: using peer region "%s" (OSS internal).',
+                    peer_region,
+                )
+                return probe_headers, "peer"
+
+        # Step 3: All peers missed
+        logger.debug("Inter-region: no peer region yields OSS internal URL, using default path.")
+        return headers, "default"
 
     def _build_download_headers(
         self,
@@ -453,8 +554,13 @@ class DownloadManager:
         if local_dir is not None:
             target = Path(local_dir) / file_path
         else:
-            root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
-            target = root / "snapshots" / revision / file_path
+            # Fallback: reuse old SDK (<=1.37) cache if it exists
+            legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+            if legacy is not None:
+                target = legacy / file_path
+            else:
+                root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+                target = root / "snapshots" / revision / file_path
 
         if local_files_only:
             if target.exists():
@@ -553,8 +659,17 @@ class DownloadManager:
         if local_dir is not None:
             output_dir = ensure_dir(Path(local_dir))
         else:
-            root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
-            output_dir = ensure_dir(root / "snapshots" / revision)
+            # Fallback: reuse old SDK (<=1.37) cache if it exists
+            legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+            if legacy is not None:
+                logger.info(
+                    "Found legacy cache at %s, reusing.", legacy,
+                )
+                output_dir = legacy
+                local_dir = legacy
+            else:
+                root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+                output_dir = ensure_dir(root / "snapshots" / revision)
 
         if local_files_only:
             if any(output_dir.iterdir()):
@@ -728,6 +843,33 @@ class DownloadManager:
         safe_id = repo_id.replace("/", "--")
         return ensure_dir(base / segment / safe_id)
 
+    def _find_legacy_repo_dir(
+        self,
+        repo_id: str,
+        repo_type: str,
+        cache_dir: Path | None = None,
+    ) -> Path | None:
+        """Check for old SDK (<=1.37) cache layout and return it if non-empty.
+
+        Old format: {base}/{type}s/{owner}/{name_with_dots_as___}/
+        e.g.  ~/.cache/modelscope/models/Qwen/Qwen3___5-0___8B/
+        """
+        base = cache_dir or self._config.cache_dir
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        parts = repo_id.split("/", 1)
+        if len(parts) != 2:
+            return None
+        owner, name = parts
+        safe_name = name.replace(".", "___")
+        legacy_path = base / segment / owner / safe_name
+        if legacy_path.is_dir():
+            try:
+                if any(legacy_path.iterdir()):
+                    return legacy_path
+            except OSError:
+                pass
+        return None
+
     def _lock_path(
         self,
         repo_id: str,
@@ -763,6 +905,50 @@ class DownloadManager:
         )
 
         download_headers = self._build_download_headers(user_agent)
+
+        # Inter-region acceleration: probe peer regions for OSS internal URL.
+        # Cache per (repo_id, repo_type) — all files in the same repo share one
+        # OSS bucket so one probe is sufficient for the entire download session.
+        # Progress bar prefix: "⚡ " = local OSS, "⇄ " = peer OSS, "  " = CDN, "" = not configured
+        source_prefix = ""
+        peer_regions = self._get_inter_cloud_regions()
+        if peer_regions:
+            cache_key = (repo_id, repo_type)
+            with self._inter_region_lock:
+                cached = self._inter_region_cache.get(cache_key)
+                if cached is None:
+                    # First thread for this repo — do the probe under lock so
+                    # other threads wait instead of issuing redundant HEAD reqs.
+                    try:
+                        probe_url = self._client.get_download_url(
+                            repo_id, repo_type, file_path, revision,
+                        )
+                        cookies = None
+                        if self._client.token:
+                            cookies = {"m_session_id": self._client.token}
+                        download_headers, source = self._resolve_inter_region_headers(
+                            probe_url, download_headers, cookies,
+                            peer_regions=peer_regions,
+                        )
+                        resolved_region = download_headers.get("x-aliyun-region-id")
+                        self._inter_region_cache[cache_key] = (resolved_region, source)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to resolve inter-region acceleration: %s. Falling back to default.", exc,
+                        )
+                        self._inter_region_cache[cache_key] = (None, "default")
+                        cached = (None, "default")
+
+            if cached is None:
+                cached = self._inter_region_cache.get(cache_key)
+
+            if cached is not None:
+                resolved_region, source = cached
+                if resolved_region is not None:
+                    download_headers["x-aliyun-region-id"] = resolved_region
+                source_prefix = {
+                    "local": "\u26a1 ", "peer": "\u21c4 ", "default": "  ",
+                }[source]
 
         if use_parallel:
             url = self._client.get_download_url(
@@ -842,7 +1028,7 @@ class DownloadManager:
                     initial=existing_size,
                     unit="B",
                     unit_scale=True,
-                    desc=Path(file_path).name,
+                    desc=f"{source_prefix}{Path(file_path).name}",
                     leave=False,
                 ) as pbar:
                     with open(tmp_path, mode) as fh:
