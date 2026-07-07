@@ -30,10 +30,10 @@ logger = get_logger("agent")
 
 
 def zip_resources(resources: dict[str, str | bytes], wrapper: str = "agent") -> bytes:
-    """Pack resources into a deterministic in-memory zip.
+    """Pack resources into a deterministic in-memory zip for local backup.
 
-    The server always strips the first directory level from zip entries, so we
-    wrap all files under a top-level folder (``wrapper/``).
+    Used by :func:`backup_local` to create timestamped backups before
+    destructive operations (pull, convert, restore).
     """
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -91,21 +91,60 @@ def push_resources(
     framework: str,
     resources: dict[str, bytes],
 ) -> None:
-    """Full upload via two-step OSS, then create/update agent repo.
+    """Full upload via commit interface (normal + LFS).
 
+    Creates the repo if needed, then commits all files in batches.
     Raises on failure (caller should NOT update baseline on exception).
     """
+    from ._api import is_lfs_file
+
     if not resources:
         logger.warning("push_resources called with empty resources; skipping.")
         return
-    gid = client.upload_file(resources)
-    if not gid:
-        logger.warning("upload_file returned empty gid; skipping create_repo.")
-        return
-    client.create_repo(username, name, framework, system_prompt_files=gid)
-    for rel in sorted(resources):
-        logger.info("  CREATE: %s (%d B)", rel, len(resources[rel]))
-    logger.info("Pushed %d file(s) via OSS (gid=%s).", len(resources), gid)
+
+    # Ensure repo exists (idempotent create).
+    try:
+        if not client.check_repo(username, name):
+            client.create_repo(username, name, framework=framework)
+            logger.info("Created empty agent repo %s/%s (framework=%s).", username, name, framework)
+    except Exception as exc:
+        logger.warning("create_repo check failed (%s), proceeding anyway.", exc)
+
+    # Split into normal and LFS files.
+    normal_actions: list[dict] = []
+    lfs_files: list[tuple[str, bytes]] = []
+
+    for rel, content in sorted(resources.items()):
+        size = len(content)
+        if is_lfs_file(rel, size):
+            lfs_files.append((rel, content))
+        else:
+            b64 = base64.b64encode(content).decode("ascii")
+            normal_actions.append({
+                "action": "create",
+                "path": rel,
+                "type": "normal",
+                "size": size,
+                "sha256": "",
+                "content": b64,
+                "encoding": "base64",
+            })
+
+    # Commit normal files in one request.
+    if normal_actions:
+        client.commit_files(username, name, normal_actions,
+                            commit_message="sync: upload normal files")
+        for a in normal_actions:
+            logger.info("  CREATE: %s (%d B)", a["path"], a["size"])
+
+    # Upload LFS files one-by-one (batch verify + PUT + commit).
+    for rel, content in lfs_files:
+        client.upload_lfs_file(username, name, rel, content,
+                              action="create", commit_message=f"sync: upload LFS {rel}")
+        logger.info("  CREATE (LFS): %s (%d B)", rel, len(content))
+
+    logger.info("Pushed %d file(s) (%d normal, %d LFS).",
+                len(resources), len(normal_actions), len(lfs_files))
 
 
 def push_incremental(
@@ -114,30 +153,67 @@ def push_incremental(
     name: str,
     changed: dict[str, bytes | None],
     remote_paths: set,
+    remote_lfs_paths: set | None = None,
 ) -> None:
     """Incremental push via commit interface.
 
-    Builds create/update/delete actions and commits in one request.
+    Builds create/update/delete actions and commits.  LFS files are
+    uploaded via the LFS batch+PUT flow before committing their reference.
     """
-    actions: list[dict] = []
+    from ._api import is_lfs_file
+
+    normal_actions: list[dict] = []
+    lfs_items: list[tuple[str, bytes, str]] = []  # (path, content, action_type)
+    delete_paths: list[str] = []
+
     for fpath, content in changed.items():
         if content is None:
-            actions.append({"action": "delete", "file_path": fpath})
+            delete_paths.append(fpath)
         else:
             action_type = "update" if fpath in remote_paths else "create"
-            try:
-                text = content.decode("utf-8")
-                actions.append({"action": action_type, "file_path": fpath,
-                                "content": text, "encoding": "text"})
-            except UnicodeDecodeError:
+            size = len(content)
+            # Determine if the file needs LFS: check remote flag or local heuristic.
+            use_lfs = False
+            if remote_lfs_paths and fpath in remote_lfs_paths:
+                use_lfs = True
+            elif is_lfs_file(fpath, size):
+                use_lfs = True
+
+            if use_lfs:
+                lfs_items.append((fpath, content, action_type))
+            else:
                 b64 = base64.b64encode(content).decode("ascii")
-                actions.append({"action": action_type, "file_path": fpath,
-                                "content": b64, "encoding": "base64"})
-    if actions:
-        for a in actions:
-            logger.info("  %s: %s", a["action"].upper(), a["file_path"])
-        client.commit_files(username, name, actions, commit_message="watch sync")
-        logger.info("Committed %d action(s) incrementally.", len(actions))
+                normal_actions.append({
+                    "action": action_type,
+                    "path": fpath,
+                    "type": "normal",
+                    "size": size,
+                    "sha256": "",
+                    "content": b64,
+                    "encoding": "base64",
+                })
+
+    # Commit normal file actions in one batch.
+    if normal_actions:
+        for a in normal_actions:
+            logger.info("  %s: %s", a["action"].upper(), a["path"])
+        client.commit_files(username, name, normal_actions,
+                            commit_message="watch sync")
+
+    # Upload LFS files one-by-one.
+    for fpath, content, action_type in lfs_items:
+        logger.info("  %s (LFS): %s", action_type.upper(), fpath)
+        client.upload_lfs_file(username, name, fpath, content,
+                              action=action_type, commit_message="watch sync")
+
+    # Delete files via the DELETE endpoint.
+    for fpath in delete_paths:
+        logger.info("  DELETE: %s", fpath)
+        client.delete_file(username, name, fpath)
+
+    total = len(normal_actions) + len(lfs_items) + len(delete_paths)
+    if total:
+        logger.info("Committed %d action(s) incrementally.", total)
 
 
 def pull_incremental(

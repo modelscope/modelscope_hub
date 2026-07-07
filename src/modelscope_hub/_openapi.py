@@ -158,12 +158,17 @@ class OpenAPIClient:
         # discard the ``/openapi/v1`` prefix. Normalise to a relative form.
         return urljoin(self.base_url, path.lstrip("/"))
 
-    def _auth_headers(self, *, require_token: bool = False) -> dict[str, str]:
+    def _resolve_token(self) -> str | None:
+        """Resolve the current API token (from config or persisted credential)."""
         token = self._config.token
         if not token:
             token = self._config.load_token()
             if token:
                 self._config.token = token
+        return token
+
+    def _auth_headers(self, *, require_token: bool = False) -> dict[str, str]:
+        token = self._resolve_token()
         if not token:
             if require_token:
                 raise AuthenticationError(
@@ -171,6 +176,13 @@ class OpenAPIClient:
                 )
             return {}
         return {"Authorization": f"Bearer {token}"}
+
+    def _auth_cookies(self) -> dict[str, str]:
+        """Build session cookies for /api/v1/ endpoints that use cookie auth."""
+        token = self._resolve_token()
+        if not token:
+            return {}
+        return {"m_session_id": token, "modelscope_session": token}
 
     @staticmethod
     def _flatten_filters(filters: Filters) -> QueryParams:
@@ -245,6 +257,7 @@ class OpenAPIClient:
                     data=data,
                     files=files,
                     headers=merged_headers,
+                    cookies=self._auth_cookies(),
                     timeout=timeout if timeout is not None else self._timeout,
                 )
             except requests.Timeout as exc:
@@ -301,9 +314,11 @@ class OpenAPIClient:
             return response.content if not unwrap else response.text
         if not unwrap or not isinstance(payload, dict):
             return payload
-        # The OpenAPI envelope always carries a ``data`` field on success.
+        # The OpenAPI envelope carries a ``data`` (or ``Data``) field on success.
         if "data" in payload:
             return payload["data"]
+        if "Data" in payload:
+            return payload["Data"]
         return payload
 
     # ==================================================================

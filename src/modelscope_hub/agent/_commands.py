@@ -242,8 +242,8 @@ def cmd_upload(
     )
 
     try:
-        file_id = client.upload_file(resources)
-        client.create_repo(group, repo_n, framework, system_prompt_files=file_id)
+        from ._sync import push_resources
+        push_resources(client, group, repo_n, framework, resources)
     except APIError as e:
         return _fail(api_error_message(e, "upload"))
     except Exception as e:

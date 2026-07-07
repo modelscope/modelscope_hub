@@ -126,19 +126,34 @@ class _StubClient:
 
     def __init__(self, *args, **kwargs):
         self.created = []
+        self.committed_actions = []
         self.uploaded_resources = None
+        self.lfs_uploads = []
         _StubClient.instances.append(self)
 
     def check_repo(self, path, name):
         return False
 
-    def upload_file(self, resources):
-        """Accept Dict[str, bytes]; return a fake Gid."""
-        self.uploaded_resources = resources
-        return "fake-gid-uuid"
+    def create_repo(self, path, name, framework=None):
+        self.created.append((path, name, framework))
+        return {"success": True}
 
-    def create_repo(self, path, name, framework, **kwargs):
-        self.created.append((path, name, framework, kwargs.get("system_prompt_files")))
+    def commit_files(self, path, name, actions, **kwargs):
+        self.committed_actions.extend(actions)
+        # Track resources from the actions for assertions.
+        if self.uploaded_resources is None:
+            self.uploaded_resources = {}
+        import base64
+        for a in actions:
+            if a.get("encoding") == "base64" and a.get("content"):
+                self.uploaded_resources[a["path"]] = base64.b64decode(a["content"])
+        return {"success": True}
+
+    def upload_lfs_file(self, path, name, file_path, content, **kwargs):
+        self.lfs_uploads.append((file_path, content))
+        if self.uploaded_resources is None:
+            self.uploaded_resources = {}
+        self.uploaded_resources[file_path] = content
         return {"success": True}
 
 
@@ -185,10 +200,9 @@ class TestUploadCmd(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(len(_StubClient.instances), 1)
         client = _StubClient.instances[0]
-        # create_repo called with (group, repo_name, framework, system_prompt_files)
+        # create_repo called with (group, repo_name)
         self.assertEqual(len(client.created), 1)
-        self.assertEqual(client.created[0][:3], ("u", "qoder-reviewer", "qoder"))
-        self.assertEqual(client.created[0][3], "fake-gid-uuid")
+        self.assertEqual(client.created[0], ("u", "qoder-reviewer", "qoder"))
         # Verify uploaded resources are bytes-valued dict
         self.assertIsNotNone(client.uploaded_resources)
         self.assertIsInstance(client.uploaded_resources, dict)

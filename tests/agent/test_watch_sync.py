@@ -136,13 +136,40 @@ class TestWatchSync(unittest.TestCase):
         shutil.rmtree(path, ignore_errors=True)
 
     def _upload_remote(self, name: str, framework: str, files: dict):
-        """Upload files directly to remote (simulates remote-side changes)."""
+        """Upload files directly to remote (simulates remote-side changes).
+
+        Uses push_incremental with correct create/update/delete actions so
+        that files already on the remote are updated and files removed from
+        the set are deleted on the remote.
+        """
+        from modelscope_hub.agent._sync import push_resources, push_incremental
         byte_files = {
             k: (v.encode("utf-8") if isinstance(v, str) else v)
             for k, v in files.items()
         }
-        file_id = self.client.upload_file(byte_files)
-        self.client.create_repo(self.username, name, framework, system_prompt_files=file_id)
+        # Ensure repo exists (idempotent)
+        try:
+            if not self.client.check_repo(self.username, name):
+                self.client.create_repo(self.username, name, framework=framework)
+        except Exception:
+            pass
+        # Determine which files already exist on remote
+        try:
+            existing = set(self.client.list_repo_files(self.username, name))
+        except Exception:
+            existing = set()
+        if existing:
+            # Build changed dict: new/modified files + deletions (None)
+            changed: dict = {}
+            for k, v in byte_files.items():
+                changed[k] = v
+            # Files on remote but NOT in the new set → delete
+            for path in existing:
+                if path not in byte_files and not path.startswith("."):
+                    changed[path] = None
+            push_incremental(self.client, self.username, name, changed, existing)
+        else:
+            push_resources(self.client, self.username, name, framework, byte_files)
 
     def _start_watch(self, framework: str, agent_name: str, local_dir: str, repo_name: str, push_only: bool = True) -> multiprocessing.Process:
         """Start a watch_loop in a child process, return the Process."""
