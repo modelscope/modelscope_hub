@@ -28,7 +28,6 @@ import time
 import re
 import threading
 
-_RESOLVED_REGIONS_LOCK = threading.Lock()
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -331,6 +330,10 @@ class DownloadManager:
         self._client = legacy_client
         self._config = config
         self._cached_region: str | None = None
+        # Cache resolved inter-region probe results to avoid redundant HEAD probes
+        # when downloading multiple files from the same repo in parallel.
+        self._inter_region_cache: dict[tuple[str, str], tuple[str | None, str]] = {}
+        self._inter_region_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # User-agent & headers
@@ -551,8 +554,13 @@ class DownloadManager:
         if local_dir is not None:
             target = Path(local_dir) / file_path
         else:
-            root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
-            target = root / "snapshots" / revision / file_path
+            # Fallback: reuse old SDK (<=1.37) cache if it exists
+            legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+            if legacy is not None:
+                target = legacy / file_path
+            else:
+                root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+                target = root / "snapshots" / revision / file_path
 
         if local_files_only:
             if target.exists():
@@ -651,8 +659,17 @@ class DownloadManager:
         if local_dir is not None:
             output_dir = ensure_dir(Path(local_dir))
         else:
-            root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
-            output_dir = ensure_dir(root / "snapshots" / revision)
+            # Fallback: reuse old SDK (<=1.37) cache if it exists
+            legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+            if legacy is not None:
+                logger.info(
+                    "Found legacy cache at %s, reusing.", legacy,
+                )
+                output_dir = legacy
+                local_dir = legacy
+            else:
+                root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+                output_dir = ensure_dir(root / "snapshots" / revision)
 
         if local_files_only:
             if any(output_dir.iterdir()):
@@ -826,6 +843,33 @@ class DownloadManager:
         safe_id = repo_id.replace("/", "--")
         return ensure_dir(base / segment / safe_id)
 
+    def _find_legacy_repo_dir(
+        self,
+        repo_id: str,
+        repo_type: str,
+        cache_dir: Path | None = None,
+    ) -> Path | None:
+        """Check for old SDK (<=1.37) cache layout and return it if non-empty.
+
+        Old format: {base}/{type}s/{owner}/{name_with_dots_as___}/
+        e.g.  ~/.cache/modelscope/models/Qwen/Qwen3___5-0___8B/
+        """
+        base = cache_dir or self._config.cache_dir
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        parts = repo_id.split("/", 1)
+        if len(parts) != 2:
+            return None
+        owner, name = parts
+        safe_name = name.replace(".", "___")
+        legacy_path = base / segment / owner / safe_name
+        if legacy_path.is_dir():
+            try:
+                if any(legacy_path.iterdir()):
+                    return legacy_path
+            except OSError:
+                pass
+        return None
+
     def _lock_path(
         self,
         repo_id: str,
@@ -862,27 +906,49 @@ class DownloadManager:
 
         download_headers = self._build_download_headers(user_agent)
 
-        # Inter-region acceleration: probe peer regions for OSS internal URL
+        # Inter-region acceleration: probe peer regions for OSS internal URL.
+        # Cache per (repo_id, repo_type) — all files in the same repo share one
+        # OSS bucket so one probe is sufficient for the entire download session.
         # Progress bar prefix: "⚡ " = local OSS, "⇄ " = peer OSS, "  " = CDN, "" = not configured
         source_prefix = ""
         peer_regions = self._get_inter_cloud_regions()
         if peer_regions:
-            try:
-                probe_url = self._client.get_download_url(
-                    repo_id, repo_type, file_path, revision,
-                )
-                cookies = None
-                if self._client.token:
-                    cookies = {"m_session_id": self._client.token}
-                download_headers, source = self._resolve_inter_region_headers(
-                    probe_url, download_headers, cookies,
-                    peer_regions=peer_regions,
-                )
+            cache_key = (repo_id, repo_type)
+            with self._inter_region_lock:
+                cached = self._inter_region_cache.get(cache_key)
+                if cached is None:
+                    # First thread for this repo — do the probe under lock so
+                    # other threads wait instead of issuing redundant HEAD reqs.
+                    try:
+                        probe_url = self._client.get_download_url(
+                            repo_id, repo_type, file_path, revision,
+                        )
+                        cookies = None
+                        if self._client.token:
+                            cookies = {"m_session_id": self._client.token}
+                        download_headers, source = self._resolve_inter_region_headers(
+                            probe_url, download_headers, cookies,
+                            peer_regions=peer_regions,
+                        )
+                        resolved_region = download_headers.get("x-aliyun-region-id")
+                        self._inter_region_cache[cache_key] = (resolved_region, source)
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed to resolve inter-region acceleration: %s. Falling back to default.", exc,
+                        )
+                        self._inter_region_cache[cache_key] = (None, "default")
+                        cached = (None, "default")
+
+            if cached is None:
+                cached = self._inter_region_cache.get(cache_key)
+
+            if cached is not None:
+                resolved_region, source = cached
+                if resolved_region is not None:
+                    download_headers["x-aliyun-region-id"] = resolved_region
                 source_prefix = {
                     "local": "\u26a1 ", "peer": "\u21c4 ", "default": "  ",
                 }[source]
-            except Exception as exc:
-                logger.warning("Failed to resolve inter-region acceleration: %s. Falling back to default.", exc)
 
         if use_parallel:
             url = self._client.get_download_url(
