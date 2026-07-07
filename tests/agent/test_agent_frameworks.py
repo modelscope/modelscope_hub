@@ -31,7 +31,7 @@ from modelscope_hub.agent._merge import merge_resources
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-SERVER = os.environ.get("SERVER", "https://www.modelscope.cn")
+SERVER = os.environ.get("MODELSCOPE_ENDPOINT", "https://www.modelscope.cn")
 TOKEN = os.environ.get("TOKEN", "")
 AGENT_NAME = "test-agent-integration"
 
