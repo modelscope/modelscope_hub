@@ -51,9 +51,9 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
     """
     logger = _get_logger()
 
-    # After double-fork, the parent's requests.Session connection pool holds
-    # stale file descriptors that cause EBADF on new connections.  Rebuild the
-    # client so the daemon starts with a fresh session.
+    # The daemon runs in a freshly exec'd interpreter, but watch_loop may also
+    # be invoked directly (tests / foreground).  Rebuild the client so we always
+    # start with a clean requests.Session connection pool.
     from ._api import AgentApi
     client = AgentApi(endpoint=client.server, token=client.token, timeout=client.timeout)
 
@@ -233,60 +233,22 @@ def _refresh_baseline(client, username: str, name: str, local_resources: dict, s
 
 
 def daemonize(target, *args, **kwargs):
-    """Launch *target* as a background process.
+    """Launch the watch loop as a fresh background process (fork + exec).
 
-    Unix: classic double-fork.
-    Windows: subprocess.Popen with DETACHED_PROCESS.
+    Spawns a brand-new Python interpreter running the ``_daemon`` entry point
+    on ALL platforms.  Using exec (rather than a bare ``os.fork()``) guarantees
+    the daemon starts from a clean process image.  This is essential on macOS,
+    where calling into system frameworks (e.g. ``_scproxy`` /
+    ``SystemConfiguration`` for proxy detection during an HTTPS request) inside
+    a fork-without-exec child crashes with SIGSEGV.  It also avoids stale file
+    descriptors inherited from the parent's connection pool.
     """
-    if hasattr(os, "fork"):
-        _daemonize_unix(target, *args, **kwargs)
-    else:
-        _daemonize_windows(target, *args, **kwargs)
-
-
-def _daemonize_unix(target, *args, **kwargs):
-    """Double-fork daemon (Unix only)."""
-    pf = pid_file()
-
-    pid = os.fork()
-    if pid > 0:
-        return
-
-    os.setsid()
-
-    pid = os.fork()
-    if pid > 0:
-        os._exit(0)
-
-    pf.write_text(str(os.getpid()), encoding="utf-8")
-
-    sys.stdout.flush()
-    sys.stderr.flush()
-    with open(os.devnull, "r") as devnull:
-        os.dup2(devnull.fileno(), sys.stdin.fileno())
-    log_fd = os.open(str(log_file()), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-    os.dup2(log_fd, sys.stdout.fileno())
-    os.dup2(log_fd, sys.stderr.fileno())
-    os.close(log_fd)
-
-    try:
-        target(*args, **kwargs)
-    finally:
-        try:
-            if pf.exists() and pf.read_text(encoding="utf-8").strip() == str(os.getpid()):
-                pf.unlink(missing_ok=True)
-        except Exception:
-            pass
-        os._exit(0)
-
-
-def _daemonize_windows(target, *args, **kwargs):
-    """Spawn a detached background process (Windows)."""
     import json
     import tempfile
 
     spec_obj = args[0] if len(args) > 0 else None
     client_obj = args[1] if len(args) > 1 else None
+    local_dir = getattr(spec_obj, "_local_dir", None) if spec_obj else None
     payload = {
         "username": args[2] if len(args) > 2 else kwargs.get("username", ""),
         "repo": args[3] if len(args) > 3 else kwargs.get("repo", ""),
@@ -294,6 +256,7 @@ def _daemonize_windows(target, *args, **kwargs):
         "interval": args[5] if len(args) > 5 else kwargs.get("interval", 120),
         "push_only": kwargs.get("push_only", True),
         "local_name": getattr(spec_obj, "agent_name", "") if spec_obj else "",
+        "local_dir": str(local_dir) if local_dir else "",
         "server": getattr(client_obj, "server", "") if client_obj else "",
         "token": getattr(client_obj, "token", "") if client_obj else "",
     }
@@ -301,17 +264,38 @@ def _daemonize_windows(target, *args, **kwargs):
     with os.fdopen(fd, "w") as f:
         json.dump(payload, f)
 
-    CREATE_NO_WINDOW = 0x08000000
-    DETACHED_PROCESS = 0x00000008
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "modelscope_hub.agent._watcher", "_daemon", param_path],
-        creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
-        close_fds=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-    )
+    cmd = [sys.executable, "-m", "modelscope_hub.agent._watcher", "_daemon", param_path]
     pf = pid_file()
+
+    if hasattr(os, "fork"):
+        # Unix: detach into a new session (setsid equivalent) and redirect the
+        # daemon's stdio to the log file so tracebacks are never lost.
+        lf = log_file()
+        lf.parent.mkdir(parents=True, exist_ok=True)
+        log_fd = os.open(str(lf), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                start_new_session=True,
+                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=log_fd,
+                stderr=log_fd,
+            )
+        finally:
+            os.close(log_fd)
+    else:
+        CREATE_NO_WINDOW = 0x08000000
+        DETACHED_PROCESS = 0x00000008
+        proc = subprocess.Popen(
+            cmd,
+            creationflags=DETACHED_PROCESS | CREATE_NO_WINDOW,
+            close_fds=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+        )
+
     pf.write_text(str(proc.pid), encoding="utf-8")
 
 
@@ -477,7 +461,8 @@ if __name__ == "__main__":
 
         _fw = _params["framework"]
         _spec_cls = FRAMEWORK_REGISTRY[_fw]
-        _spec = _spec_cls(agent_name=_params.get("local_name", "all"))
+        _spec = _spec_cls(agent_name=_params.get("local_name", "all"),
+                          local_dir=_params.get("local_dir") or None)
         _client = AgentApi(endpoint=_params["server"], token=_params["token"])
 
         _pf = pid_file()

@@ -516,7 +516,7 @@ def cmd_watch(
     except Exception as e:
         return _fail(f"failed to get repository info: {e}")
 
-    interval = 120
+    interval = 60
     push_only = not pull
     print(f"Starting sync for {group}/{repo_n} (interval={interval}s)...")
     print(f"  Framework: {framework}")
