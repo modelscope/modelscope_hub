@@ -49,6 +49,20 @@ class QwenpawWorkspace(WorkspaceSpec):
             return [f"*/{p}" for p in self.patterns]
         return self.patterns
 
+    @property
+    def is_root_per_agent(self) -> bool:
+        return True
+
+    def split_all_path(self, rel_path: str) -> tuple[str | None, str]:
+        # agent directory name IS the agent name: ``<agent>/<bare>``.
+        if "/" in rel_path:
+            head, rest = rel_path.split("/", 1)
+            return (head, rest)
+        return (None, rel_path)
+
+    def join_all_path(self, agent_name: str, bare_path: str) -> str:
+        return f"{agent_name}/{bare_path}"
+
     def list_agents(self) -> list[str]:
         base = Path.home() / ".qwenpaw" / "workspaces"
         if not base.is_dir():

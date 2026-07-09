@@ -151,6 +151,10 @@ def convert_resources(
     source_fw: str,
     target_fw: str,
     existing_files: set[str] | None = None,
+    *,
+    all_mode: bool = False,
+    src_spec: WorkspaceSpec | None = None,
+    dst_spec: WorkspaceSpec | None = None,
 ) -> dict:
     """Convert workspace resources from one framework format to another.
 
@@ -159,9 +163,16 @@ def convert_resources(
     When *existing_files* is provided, default template files that already
     exist on the target are filtered out so the target's custom content is
     preserved.  Default templates for files the target does NOT have are kept.
+
+    When *all_mode* is True (root-per-agent -> root-per-agent), paths carry an
+    agent prefix; each agent is split out, converted independently as a single
+    agent, then re-prefixed for the target framework.  Requires *src_spec* and
+    *dst_spec*.
     """
     if source_fw == target_fw:
         return resources
+    if all_mode:
+        return _convert_resources_all(resources, source_fw, target_fw, src_spec, dst_spec)
     result = merge_resources(
         incoming=resources,
         source_product=source_fw,
@@ -177,6 +188,43 @@ def convert_resources(
             if k not in default_paths or k not in existing_files
         }
     return merged
+
+
+def _convert_resources_all(
+    resources: dict,
+    source_fw: str,
+    target_fw: str,
+    src_spec: WorkspaceSpec,
+    dst_spec: WorkspaceSpec,
+) -> dict:
+    """All-mode cross-framework convert (root-per-agent -> root-per-agent).
+
+    Group incoming files by their source agent prefix, convert each agent as an
+    isolated single-agent workspace, then re-prefix the results using the target
+    framework's convention.  Top-level files without an agent prefix (e.g.
+    README.md) belong to no agent and are dropped.
+    """
+    groups: dict[str, dict[str, str]] = {}
+    for path, content in resources.items():
+        agent, bare = src_spec.split_all_path(path)
+        if agent is None:
+            continue
+        groups.setdefault(agent, {})[bare] = content
+
+    src_defaults = get_defaults(source_fw)
+    tgt_defaults = get_defaults(target_fw)
+    out: dict[str, str] = {}
+    for agent, bare_files in groups.items():
+        result = merge_resources(
+            incoming=bare_files,
+            source_product=source_fw,
+            target_product=target_fw,
+            source_defaults=src_defaults,
+            target_defaults=tgt_defaults,
+        )
+        for bare_path, content in result.merged_files.items():
+            out[dst_spec.join_all_path(agent, bare_path)] = content
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -327,8 +375,25 @@ def cmd_download(
     root = spec.workspace_root
 
     if target_fw != framework:
-        existing_files = set(spec.collect().keys())
-        resources = convert_resources(resources, framework, target_fw, existing_files=existing_files)
+        if name == ALL_AGENT_NAME:
+            # All-mode conversion only makes sense between two root-per-agent
+            # frameworks (1:1 agent-directory mapping).  Other layouts (e.g.
+            # file-per-agent qoder, single-agent) would collapse N agents into
+            # a shared root, which is lossy and ambiguous -- reject explicitly.
+            src_spec = build_spec(framework, local_name, local_dir)
+            if not (src_spec.is_root_per_agent and spec.is_root_per_agent):
+                return _fail(
+                    "cross-framework conversion with --name all is only supported "
+                    "between root-per-agent frameworks (e.g. qwenpaw <-> openclaw). "
+                    "For other layouts, convert one agent at a time: "
+                    "-n <agent> --target-framework <fw>.")
+            resources = convert_resources(
+                resources, framework, target_fw,
+                all_mode=True, src_spec=src_spec, dst_spec=spec,
+            )
+        else:
+            existing_files = set(spec.collect().keys())
+            resources = convert_resources(resources, framework, target_fw, existing_files=existing_files)
         print(f"Converted {framework} -> {target_fw} ({len(resources)} file(s)).")
 
     patterns = spec.resolved_patterns()

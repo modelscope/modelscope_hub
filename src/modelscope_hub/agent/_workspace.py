@@ -112,6 +112,35 @@ class WorkspaceSpec(ABC):
         return self.patterns
 
     # ------------------------------------------------------------------
+    # All-mode path prefixing (for cross-framework conversion)
+    # ------------------------------------------------------------------
+
+    @property
+    def is_root_per_agent(self) -> bool:
+        """Whether sub-agents are separate directories (root-per-agent layout).
+
+        All-mode cross-framework conversion is only well-defined between two
+        root-per-agent frameworks, where every agent maps 1:1 to a directory
+        prefix.  Other layouts return ``False``.
+        """
+        return False
+
+    def split_all_path(self, rel_path: str) -> tuple[str | None, str]:
+        """Split an all-mode path into ``(agent_name, bare_path)``.
+
+        ``bare_path`` is the path relative to a single agent's root (i.e. what a
+        non-all spec would use).  Returns ``(None, rel_path)`` when the path has
+        no recognizable agent prefix (e.g. top-level ``README.md``).
+        Root-per-agent frameworks override this.
+        """
+        return (None, rel_path)
+
+    def join_all_path(self, agent_name: str, bare_path: str) -> str:
+        """Inverse of :meth:`split_all_path`: build this framework's all-mode
+        path for *agent_name* + *bare_path*."""
+        return bare_path
+
+    # ------------------------------------------------------------------
     # Core helpers
     # ------------------------------------------------------------------
 

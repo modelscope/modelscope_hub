@@ -87,6 +87,30 @@ class TestResolveLocalName(unittest.TestCase):
         self.assertIsNone(name)
         self.assertIn("multiple", err)
 
+    def test_root_per_agent_omitted_name_is_default(self):
+        # qwenpaw is root-per-agent (no {name} placeholder): an omitted --name
+        # ALWAYS resolves to 'default', never auto-selecting or erroring on
+        # sibling sub-agents (bot-a/bot-b).  Regression for the upload bug.
+        name, err = resolve_local_name(None, "qwenpaw", self.root)
+        self.assertEqual(name, "default")
+        self.assertIsNone(err)
+
+    def test_single_agent_layout_omitted_name_is_default(self):
+        # single-agent frameworks (hermes) resolve omitted --name to default too.
+        name, err = resolve_local_name(None, "hermes", self.root)
+        self.assertEqual(name, "default")
+        self.assertIsNone(err)
+
+    def test_all_name_passes_through(self):
+        name, err = resolve_local_name("all", "qwenpaw", self.root)
+        self.assertEqual(name, "all")
+        self.assertIsNone(err)
+
+    def test_explicit_bot_name_passes_through(self):
+        name, err = resolve_local_name("bot-a", "qwenpaw", self.root)
+        self.assertEqual(name, "bot-a")
+        self.assertIsNone(err)
+
 
 # ---------------------------------------------------------------------------
 # Status command tests
@@ -409,11 +433,39 @@ class _DownloadStub:
         return self.STORE[file_path]
 
 
+class _QwenpawAllStub:
+    """Serves a qwenpaw all-mode repo (agent-prefixed paths) for convert tests."""
+
+    instances = []
+    STORE = {
+        ".gitattributes": "x",
+        "README.md": "readme",
+        "default/AGENTS.md": "# default agents",
+        "default/SOUL.md": "# default soul",
+        "bot-a/AGENTS.md": "# bot-a agents",
+        "bot-a/SOUL.md": "# bot-a soul",
+        "bot-a/PROFILE.md": "# bot-a profile",
+    }
+
+    def __init__(self, *args, **kwargs):
+        _QwenpawAllStub.instances.append(self)
+
+    def repo_info(self, path, name):
+        return {"Path": path, "Name": name, "Framework": "qwenpaw", "Revision": 1}
+
+    def list_repo_files(self, path, name):
+        return list(self.STORE)
+
+    def download_repo_file(self, path, name, file_path):
+        return self.STORE[file_path]
+
+
 class TestDownload(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.out = Path(self.tmp.name) / "ws"
         _DownloadStub.instances = []
+        _QwenpawAllStub.instances = []
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -502,6 +554,50 @@ class TestDownload(unittest.TestCase):
         )
         self.assertEqual(rc, 0)
         self.assertTrue((self.out / "SOUL.md").is_file())
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _QwenpawAllStub)
+    def test_download_convert_all_root_to_root(self):
+        """qwenpaw -> openclaw with --name all: per-agent convert + re-prefix."""
+        rc = cmd_download(
+            framework="qwenpaw", repo="qw", name="all", target="openclaw",
+            local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        # default -> workspace/, bot-a -> workspace-bot-a/ (openclaw convention)
+        self.assertTrue((self.out / "workspace" / "AGENTS.md").is_file())
+        self.assertTrue((self.out / "workspace-bot-a" / "AGENTS.md").is_file())
+        self.assertTrue((self.out / "workspace-bot-a" / "SOUL.md").is_file())
+        # qwenpaw-only PROFILE.md has no openclaw equivalent: must NOT land as-is.
+        self.assertFalse((self.out / "workspace-bot-a" / "PROFILE.md").exists())
+        # top-level non-agent files (README) are dropped, never mis-prefixed.
+        self.assertFalse((self.out / "README.md").exists())
+        self.assertFalse((self.out / "workspace" / "README.md").exists())
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _QwenpawAllStub)
+    def test_download_convert_all_cross_layout_rejected(self):
+        """qwenpaw -> qoder with --name all is cross-layout: must be rejected."""
+        rc = cmd_download(
+            framework="qwenpaw", repo="qw", name="all", target="qoder",
+            local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 1)
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _QwenpawAllStub)
+    def test_download_all_same_framework_keeps_prefixed_paths(self):
+        """qwenpaw -> qwenpaw with --name all: no convert, agent prefixes kept."""
+        rc = cmd_download(
+            framework="qwenpaw", repo="qw", name="all",
+            local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        self.assertTrue((self.out / "default" / "AGENTS.md").is_file())
+        self.assertTrue((self.out / "bot-a" / "AGENTS.md").is_file())
+        self.assertTrue((self.out / "bot-a" / "PROFILE.md").is_file())
+        # non-spec top-level files are skipped.
+        self.assertFalse((self.out / "README.md").exists())
 
 
 # ---------------------------------------------------------------------------
