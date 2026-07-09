@@ -173,6 +173,16 @@ class TestResolveTargetPath(unittest.TestCase):
     def test_cross_product_memory_md(self):
         self.assertEqual(_resolve_target_path("nanobot", "memory/MEMORY.md", "openclaw"), "MEMORY.md")
 
+    def test_cross_product_ms_agent_profile(self):
+        # ms-agent profile.md <-> qwenpaw PROFILE.md (persona semantic group)
+        self.assertEqual(_resolve_target_path("ms-agent", "profile.md", "qwenpaw"), "PROFILE.md")
+        self.assertEqual(_resolve_target_path("qwenpaw", "PROFILE.md", "ms-agent"), "profile.md")
+
+    def test_cross_product_ms_agent_memory(self):
+        self.assertEqual(_resolve_target_path("ms-agent", "MEMORY.md", "openclaw"), "MEMORY.md")
+        self.assertEqual(_resolve_target_path("openclaw", "MEMORY.md", "ms-agent"), "MEMORY.md")
+        self.assertEqual(_resolve_target_path("ms-agent", "MEMORY.md", "nanobot"), "memory/MEMORY.md")
+
     def test_cross_product_no_mapping_passthrough(self):
         result = _resolve_target_path("nanobot", "skills/my-skill/SKILL.md", "openclaw")
         self.assertEqual(result, "skills/my-skill/SKILL.md")

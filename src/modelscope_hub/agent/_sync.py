@@ -29,8 +29,13 @@ __all__ = [
 logger = get_logger("agent")
 
 
-def zip_resources(resources: dict[str, str | bytes], wrapper: str = "agent") -> bytes:
+def zip_resources(resources: dict[str, str | bytes], wrapper: str = "") -> bytes:
     """Pack resources into a deterministic in-memory zip for local backup.
+
+    Entries are stored with workspace-relative paths (no wrapper directory) so
+    that :func:`restore <modelscope_hub.agent.cmd_restore>` can extract them
+    back to the exact locations reported by ``collect``/``apply``.  A non-empty
+    *wrapper* prefixes every entry (kept only for backward compatibility).
 
     Used by :func:`backup_local` to create timestamped backups before
     destructive operations (pull, convert, restore).
@@ -38,7 +43,8 @@ def zip_resources(resources: dict[str, str | bytes], wrapper: str = "agent") -> 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for rel, value in sorted(resources.items()):
-            zf.writestr(f"{wrapper}/{rel}", value)
+            key = f"{wrapper}/{rel}" if wrapper else rel
+            zf.writestr(key, value)
     return buf.getvalue()
 
 
@@ -82,6 +88,32 @@ def detect_local_changes(
         if rel not in local_resources:
             changed[rel] = None
     return changed
+
+
+def _retry_on_master_missing(fn, *, retries: int = 3, delay: float = 2.0):
+    """Run *fn*, retrying the create-then-commit race.
+
+    A freshly created repo may not have its ``master`` branch ready when the
+    first commit fires, yielding a 400 "branch or revision master not found".
+    Wrapping any commit-bearing call (normal commit *and* LFS upload) means
+    every first-push path gets the same protection.
+    """
+    import time
+
+    from ..errors import APIError
+
+    for attempt in range(retries):
+        try:
+            return fn()
+        except APIError as e:
+            msg = (getattr(e, "message", "") or str(e)).lower()
+            branch_missing = e.status_code == 400 and (
+                "branch" in msg or "revision" in msg
+            )
+            if branch_missing and attempt < retries - 1:
+                time.sleep(delay)
+                continue
+            raise
 
 
 def push_resources(
@@ -132,15 +164,19 @@ def push_resources(
 
     # Commit normal files in one request.
     if normal_actions:
-        client.commit_files(username, name, normal_actions,
-                            commit_message="sync: upload normal files")
+        _retry_on_master_missing(lambda: client.commit_files(
+            username, name, normal_actions,
+            commit_message="sync: upload normal files"))
         for a in normal_actions:
             logger.info("  CREATE: %s (%d B)", a["path"], a["size"])
 
-    # Upload LFS files one-by-one (batch verify + PUT + commit).
+    # Upload LFS files one-by-one (batch verify + PUT + commit).  The commit
+    # inside upload_lfs_file hits the same fresh-repo master race, so it needs
+    # the retry too (LFS-only first push would otherwise fail).
     for rel, content in lfs_files:
-        client.upload_lfs_file(username, name, rel, content,
-                              action="create", commit_message=f"sync: upload LFS {rel}")
+        _retry_on_master_missing(lambda rel=rel, content=content: client.upload_lfs_file(
+            username, name, rel, content,
+            action="create", commit_message=f"sync: upload LFS {rel}"))
         logger.info("  CREATE (LFS): %s (%d B)", rel, len(content))
 
     logger.info("Pushed %d file(s) (%d normal, %d LFS).",

@@ -325,6 +325,16 @@ PRODUCT_FILE_CLASSES = {
         ]),
         "heartbeat": "",
     },
+    "ms-agent": {
+        # Only persona + memory carry cross-framework semantics; the
+        # config.yaml/settings.json/agent.yaml/facts.json/skill.json files are
+        # ms-agent specific and preserved on same-framework sync only.
+        "portable": frozenset([
+            "profile.md", "MEMORY.md",
+        ]),
+        "config": frozenset([]),
+        "heartbeat": "",
+    },
 }
 
 _DEFAULT_FILE_CLASS = {
@@ -343,9 +353,9 @@ SEMANTIC_GROUPS = [
      "qwenpaw": "SOUL.md"},
     {"nanobot": "USER.md", "openclaw": "USER.md", "hermes": "memories/USER.md"},
     {"nanobot": "memory/MEMORY.md", "openclaw": "MEMORY.md",
-     "qwenpaw": "MEMORY.md"},
+     "qwenpaw": "MEMORY.md", "ms-agent": "MEMORY.md"},
     {"openclaw": "IDENTITY.md"},
-    {"qwenpaw": "PROFILE.md"},
+    {"qwenpaw": "PROFILE.md", "ms-agent": "profile.md"},
     {"nanobot": "AGENTS.md", "openclaw": "AGENTS.md", "qwenpaw": "AGENTS.md",
      "qoder": "AGENTS.md"},
     {"nanobot": "HEARTBEAT.md", "openclaw": "HEARTBEAT.md",
@@ -355,7 +365,7 @@ SEMANTIC_GROUPS = [
     {"nanobot": "memory/HISTORY.md"},
 ]
 
-_ALL_PRODUCTS = ["nanobot", "openclaw", "hermes", "qwenpaw", "openhuman", "qoder"]
+_ALL_PRODUCTS = ["nanobot", "openclaw", "hermes", "qwenpaw", "openhuman", "qoder", "ms-agent"]
 
 
 def _build_path_map():
@@ -392,6 +402,10 @@ PRODUCT_KNOWN_FILES = {
     "openhuman": frozenset([]),
     "qoder": frozenset([
         "AGENTS.md",
+    ]),
+    "ms-agent": frozenset([
+        "profile.md", "MEMORY.md", "config.yaml", "settings.json",
+        "agent.yaml", "facts.json", "skill.json",
     ]),
 }
 
@@ -430,6 +444,12 @@ def _catch_all_file(product: str) -> str:
         return "AGENTS.md"
     if "AGENTS.md" in known:
         return "AGENTS.md"
+    if "SOUL.md" in known:
+        return "SOUL.md"
+    # Products without AGENTS.md/SOUL.md (e.g. ms-agent) fall back to their
+    # persona file so overflow lands in a file the harness actually loads.
+    if "profile.md" in known:
+        return "profile.md"
     return "SOUL.md"
 
 

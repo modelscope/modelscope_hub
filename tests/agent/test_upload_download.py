@@ -322,7 +322,7 @@ class TestUploadDownload(unittest.TestCase):
         local = tempfile.mkdtemp(prefix="agent_test_dl_")
         try:
             rc = cmd_download(
-                framework="qoder", repo=agent_name, local_dir=local,
+                framework="qoder", repo=_repo_name("qoder", agent_name), local_dir=local,
                 endpoint=SERVER, token=TOKEN, username=self.username,
             )
             self.assertEqual(rc, 0, "download should succeed")
@@ -341,7 +341,7 @@ class TestUploadDownload(unittest.TestCase):
         local = tempfile.mkdtemp(prefix="agent_test_dldry_")
         try:
             rc = cmd_download(
-                framework="qoder", repo=agent_name, local_dir=local,
+                framework="qoder", repo=_repo_name("qoder", agent_name), local_dir=local,
                 dry_run=True,
                 endpoint=SERVER, token=TOKEN, username=self.username,
             )
@@ -405,7 +405,7 @@ class TestUploadDownload(unittest.TestCase):
         local_dl = tempfile.mkdtemp(prefix="agent_test_dlconv_")
         try:
             rc = cmd_download(
-                framework="nanobot", repo=agent_name, target="openclaw", local_dir=local_dl,
+                framework="nanobot", repo=_repo_name("nanobot", agent_name), target="openclaw", local_dir=local_dl,
                 endpoint=SERVER, token=TOKEN, username=self.username,
             )
             self.assertEqual(rc, 0)
@@ -437,7 +437,7 @@ class TestUploadDownload(unittest.TestCase):
 
         _wait(5)
 
-        server_files = self.client.list_repo_files(self.username, agent_name)
+        server_files = self.client.list_repo_files(self.username, _repo_name("qoder", agent_name))
         uploaded_keys = set(files.keys())
         server_set = set(server_files)
         missing = uploaded_keys - server_set
@@ -445,7 +445,7 @@ class TestUploadDownload(unittest.TestCase):
 
         for rel, expected in files.items():
             if rel in server_set:
-                actual = self.client.download_repo_file(self.username, agent_name, rel)
+                actual = self.client.download_repo_file(self.username, _repo_name("qoder", agent_name), rel)
                 self.assertEqual(actual.strip(), expected.strip(),
                                  f"content mismatch for {rel}")
 
@@ -567,7 +567,7 @@ class TestUploadDownload(unittest.TestCase):
 
         _wait(5)
 
-        content = self.client.download_repo_file(self.username, agent_name, "AGENTS.md")
+        content = self.client.download_repo_file(self.username, _repo_name("qoder", agent_name), "AGENTS.md")
         self.assertIn("V2", content)
         self.assertIn("Modified", content)
 
@@ -579,7 +579,7 @@ class TestUploadDownload(unittest.TestCase):
         custom_dir = tempfile.mkdtemp(prefix="agent_test_custom_")
         try:
             rc = cmd_download(
-                framework="qoder", repo=agent_name, local_dir=custom_dir,
+                framework="qoder", repo=_repo_name("qoder", agent_name), local_dir=custom_dir,
                 endpoint=SERVER, token=TOKEN, username=self.username,
             )
             self.assertEqual(rc, 0)
@@ -608,7 +608,9 @@ class TestUploadDownload(unittest.TestCase):
                 elif fw == "hermes":
                     files = {"SOUL.md": "# Soul\n"}
                 elif fw == "openhuman":
-                    files = {"SOUL.md": "# Soul\n", "IDENTITY.md": "# ID\n"}
+                    files = {"wiki/identity.md": "# Identity\n"}
+                elif fw == "ms-agent":
+                    files = {"profile.md": "# Profile\n", "MEMORY.md": "# Memory\n"}
                 else:
                     files = {"SOUL.md": "# Soul\n"}
                 local = self._create_local_workspace(files)
@@ -754,12 +756,17 @@ class TestUploadDownload(unittest.TestCase):
         qwenpaw = FRAMEWORK_REGISTRY["qwenpaw"](agent_name="bot-a")
         openclaw = FRAMEWORK_REGISTRY["openclaw"](agent_name="helper")
         hermes = FRAMEWORK_REGISTRY["hermes"](agent_name="default")
+        ms_agent = FRAMEWORK_REGISTRY["ms-agent"](agent_name="default")
 
+        # file-per-agent + shared: shared files cascade, individual watch unsupported
         self.assertFalse(qoder.supports_individual_watch)
-        self.assertFalse(nanobot.supports_individual_watch)
+        # single-agent installs: the whole workspace is the one agent
+        self.assertTrue(nanobot.supports_individual_watch)
+        self.assertTrue(hermes.supports_individual_watch)
+        self.assertTrue(ms_agent.supports_individual_watch)
+        # root-per-agent: each agent is its own directory
         self.assertTrue(qwenpaw.supports_individual_watch)
         self.assertTrue(openclaw.supports_individual_watch)
-        self.assertTrue(hermes.supports_individual_watch)
 
 
 if __name__ == "__main__":

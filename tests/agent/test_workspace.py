@@ -122,5 +122,35 @@ class TestAllPathPrefix(unittest.TestCase):
         self.assertEqual(spec.join_all_path("x", "agents/x.md"), "agents/x.md")
 
 
+class TestMsAgentWorkspace(unittest.TestCase):
+    """ms-agent is single-agent: no {name} placeholder; collects persona/
+    memory/skills/config under ~/.ms_agent."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_single_agent_layout_collect(self):
+        spec = FRAMEWORK_REGISTRY["ms-agent"](agent_name="default", local_dir=self.root)
+        self.assertEqual(spec.product_name, "ms-agent")
+        self.assertFalse(any("{name}" in p for p in spec.patterns))
+        (self.root / "profile.md").write_text("p")
+        (self.root / "MEMORY.md").write_text("m")
+        (self.root / "facts.json").write_text("{}")
+        (self.root / "settings.json").write_text("{}")
+        (self.root / "skill.json").write_text("{}")
+        (self.root / "random.txt").write_text("x")
+        (self.root / "skills" / "foo").mkdir(parents=True)
+        (self.root / "skills" / "foo" / "SKILL.md").write_text("s")
+        got = spec.collect()
+        for f in ("profile.md", "MEMORY.md", "facts.json", "settings.json",
+                  "skill.json", "skills/foo/SKILL.md"):
+            self.assertIn(f, got)
+        self.assertNotIn("random.txt", got)
+
+
 if __name__ == "__main__":
     unittest.main()
