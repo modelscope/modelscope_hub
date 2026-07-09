@@ -10,8 +10,11 @@ from .._workspace import WorkspaceSpec, register_framework
 class OpenhumanWorkspace(WorkspaceSpec):
     """Workspace spec for the OpenHuman agent framework (single-agent install).
 
-    OpenHuman keeps its hidden workspace at ``~/.openhuman/workspace`` with an
-    Obsidian-style ``wiki/`` memory vault alongside the persona files.
+    OpenHuman is a Rust/Tauri desktop app whose brain is a local Memory Tree
+    (SQLite at ``memory_tree/chunks.db``) mirrored as an Obsidian-style
+    ``wiki/`` Markdown vault under ``~/.openhuman``.  Only the human-readable
+    ``wiki/`` vault is portable; the SQLite store and app config are not.
+    OpenHuman has no OpenClaw-style persona files (SOUL/IDENTITY/USER/...).
     """
 
     @property
@@ -20,23 +23,13 @@ class OpenhumanWorkspace(WorkspaceSpec):
 
     @property
     def default_workspace_root(self) -> Path:
-        return Path.home() / ".openhuman" / "workspace"
+        return Path.home() / ".openhuman"
 
     @property
     def patterns(self) -> list[str]:
+        # ``*`` in fnmatch spans ``/`` so this recurses the whole wiki vault.
         return [
-            "SOUL.md",
-            "IDENTITY.md",
-            "USER.md",
-            "PROFILE.md",
-            "MEMORY.md",
-            "HEARTBEAT.md",
             "wiki/*.md",
-            "wiki/summaries/*.md",
-            "wiki/notes/*.md",
-            "skills/*/SKILL.md",
-            "skills/*/_meta.json",
-            "skills/*/scripts/*",
         ]
 
 

@@ -99,11 +99,14 @@ def resolve_local_name(name: str | None, framework: str, local_dir=None):
     """Resolve local agent name when --name is omitted.
 
     Returns (resolved_name, error_message).
-    - If name is given -> use it directly.
-    - If omitted -> check list_agents():
-      - 0 or only 'default' -> use GLOBAL_AGENT_NAME (shared files only)
-      - exactly 1 non-default agent -> auto-select it
-      - multiple -> return error
+    - If *name* is given -> use it directly.
+    - If omitted:
+      - root-per-agent / single-agent layout (no ``{name}`` placeholder) ->
+        always ``DEFAULT_AGENT_NAME``.  'default' is a real workspace
+        directory, so sibling sub-agents never trigger auto-select or an error.
+      - file-per-agent+shared layout (patterns use ``{name}``) -> inspect the
+        ``agents/`` files: exactly 1 non-default -> auto-select it; 0 ->
+        ``GLOBAL_AGENT_NAME`` (shared files only); multiple -> error.
     """
     if name:
         return name, None
@@ -111,14 +114,20 @@ def resolve_local_name(name: str | None, framework: str, local_dir=None):
     spec_cls = FRAMEWORK_REGISTRY[framework]
     local = Path(local_dir).expanduser() if local_dir else None
     tmp_spec = spec_cls(agent_name=DEFAULT_AGENT_NAME, local_dir=local)
+
+    # root-per-agent / single-agent: an omitted --name always means the default
+    # agent.  Only layouts with a ``{name}`` placeholder (file-per-agent+shared)
+    # have a meaningful shared/global mode or per-agent auto-selection.
+    has_shared_mode = any("{name}" in p for p in tmp_spec.patterns)
+    if not has_shared_mode:
+        return DEFAULT_AGENT_NAME, None
+
     agents = tmp_spec.list_agents()
-
     real_agents = [a for a in agents if a != DEFAULT_AGENT_NAME]
-
-    if len(real_agents) == 0:
-        return GLOBAL_AGENT_NAME, None
     if len(real_agents) == 1:
         return real_agents[0], None
+    if len(real_agents) == 0:
+        return GLOBAL_AGENT_NAME, None
     return None, (
         f"multiple sub-agents found: {', '.join(agents)}. "
         f"Please specify --name to select one."

@@ -282,7 +282,7 @@ PRODUCT_FILE_CLASSES = {
             "SOUL.md", "USER.md", "memory/MEMORY.md", "memory/HISTORY.md",
         ]),
         "config": frozenset([
-            "AGENTS.md", "HEARTBEAT.md", "TOOLS.md",
+            "AGENTS.md", "HEARTBEAT.md",
         ]),
         "heartbeat": "HEARTBEAT.md",
     },
@@ -312,13 +312,11 @@ PRODUCT_FILE_CLASSES = {
         "heartbeat": "HEARTBEAT.md",
     },
     "openhuman": {
-        "portable": frozenset([
-            "SOUL.md", "IDENTITY.md", "USER.md", "PROFILE.md", "MEMORY.md",
-        ]),
-        "config": frozenset([
-            "HEARTBEAT.md",
-        ]),
-        "heartbeat": "HEARTBEAT.md",
+        # OpenHuman has no persona/config files; only the wiki/ vault is
+        # portable (imported as-is, not a classified persona/config file).
+        "portable": frozenset([]),
+        "config": frozenset([]),
+        "heartbeat": "",
     },
     "qoder": {
         "portable": frozenset([]),
@@ -342,18 +340,17 @@ _heartbeat_merger = HeartbeatMerger()
 # ---- Cross-product path mapping ----
 SEMANTIC_GROUPS = [
     {"nanobot": "SOUL.md", "openclaw": "SOUL.md", "hermes": "SOUL.md",
-     "qwenpaw": "SOUL.md", "openhuman": "SOUL.md"},
-    {"nanobot": "USER.md", "openclaw": "USER.md", "hermes": "memories/USER.md",
-     "openhuman": "USER.md"},
+     "qwenpaw": "SOUL.md"},
+    {"nanobot": "USER.md", "openclaw": "USER.md", "hermes": "memories/USER.md"},
     {"nanobot": "memory/MEMORY.md", "openclaw": "MEMORY.md",
-     "qwenpaw": "MEMORY.md", "openhuman": "MEMORY.md"},
-    {"openclaw": "IDENTITY.md", "openhuman": "IDENTITY.md"},
-    {"qwenpaw": "PROFILE.md", "openhuman": "PROFILE.md"},
+     "qwenpaw": "MEMORY.md"},
+    {"openclaw": "IDENTITY.md"},
+    {"qwenpaw": "PROFILE.md"},
     {"nanobot": "AGENTS.md", "openclaw": "AGENTS.md", "qwenpaw": "AGENTS.md",
      "qoder": "AGENTS.md"},
     {"nanobot": "HEARTBEAT.md", "openclaw": "HEARTBEAT.md",
-     "qwenpaw": "HEARTBEAT.md", "openhuman": "HEARTBEAT.md"},
-    {"nanobot": "TOOLS.md", "openclaw": "TOOLS.md"},
+     "qwenpaw": "HEARTBEAT.md"},
+    {"openclaw": "TOOLS.md"},
     {"openclaw": "BOOTSTRAP.md", "qwenpaw": "BOOTSTRAP.md"},
     {"nanobot": "memory/HISTORY.md"},
 ]
@@ -378,7 +375,7 @@ PATH_MAP = _build_path_map()
 
 PRODUCT_KNOWN_FILES = {
     "nanobot": frozenset([
-        "SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "HEARTBEAT.md",
+        "SOUL.md", "USER.md", "AGENTS.md", "HEARTBEAT.md",
         "memory/MEMORY.md", "memory/HISTORY.md",
     ]),
     "openclaw": frozenset([
@@ -392,10 +389,7 @@ PRODUCT_KNOWN_FILES = {
         "SOUL.md", "PROFILE.md", "AGENTS.md", "MEMORY.md", "HEARTBEAT.md",
         "BOOTSTRAP.md",
     ]),
-    "openhuman": frozenset([
-        "SOUL.md", "IDENTITY.md", "USER.md", "PROFILE.md", "MEMORY.md",
-        "HEARTBEAT.md",
-    ]),
+    "openhuman": frozenset([]),
     "qoder": frozenset([
         "AGENTS.md",
     ]),
