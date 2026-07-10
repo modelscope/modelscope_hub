@@ -12,9 +12,11 @@ class NanobotWorkspace(WorkspaceSpec):
 
     Nanobot keeps a single shared workspace at ``~/.nanobot/workspace``.  Its
     ``onboard`` command seeds ``AGENTS.md``, ``SOUL.md``, ``USER.md`` and the
-    ``HEARTBEAT.md`` task file; long-term memory lives in ``memory/MEMORY.md``
-    with an append-only ``memory/HISTORY.md`` event log.  Sub-agents run as
-    background sessions (no on-disk per-agent files), so this is single-agent.
+    ``HEARTBEAT.md`` task file; reusable prompts live under ``prompts/`` and
+    long-term memory under ``memory/`` -- ``memory/MEMORY.md`` plus the
+    append-only event log ``memory/history.jsonl`` (the legacy ``HISTORY.md``
+    was replaced by the JSONL log).  Sub-agents run as background sessions
+    (no on-disk per-agent files), so this is single-agent.
     """
 
     @property
@@ -27,15 +29,17 @@ class NanobotWorkspace(WorkspaceSpec):
 
     @property
     def patterns(self) -> list[str]:
+        # fnmatch ``*`` spans ``/`` so ``skills/*`` recurses the whole skill
+        # tree (SKILL.md + scripts/references/assets at any depth).
         return [
             "AGENTS.md",
             "SOUL.md",
             "USER.md",
             "HEARTBEAT.md",
+            "prompts/*.md",
             "memory/MEMORY.md",
-            "memory/HISTORY.md",
-            "skills/*/SKILL.md",
-            "skills/*/scripts/*",
+            "memory/history.jsonl",
+            "skills/*",
         ]
 
 

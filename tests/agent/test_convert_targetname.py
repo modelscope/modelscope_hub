@@ -467,8 +467,8 @@ class TestFourFrameworkConvertMatrix(unittest.TestCase):
         )
         self.assertIn("SOUL.md", files)
         self.assertIn("HM_ID_MARKER", files["SOUL.md"])
-        self.assertIn("memories/USER.md", files)
-        self.assertIn("HM_USER_MARKER", files["memories/USER.md"])
+        self.assertIn("memory/USER.md", files)
+        self.assertIn("HM_USER_MARKER", files["memory/USER.md"])
 
     def test_openclaw_to_ms_agent_memory_kept(self):
         """openclaw -> ms-agent: MEMORY.md carried over, output is single-agent."""

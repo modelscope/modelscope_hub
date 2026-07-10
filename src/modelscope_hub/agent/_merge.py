@@ -279,7 +279,7 @@ class HeartbeatMerger(SectionMerger):
 PRODUCT_FILE_CLASSES = {
     "nanobot": {
         "portable": frozenset([
-            "SOUL.md", "USER.md", "memory/MEMORY.md", "memory/HISTORY.md",
+            "SOUL.md", "USER.md", "memory/MEMORY.md", "memory/history.jsonl",
         ]),
         "config": frozenset([
             "AGENTS.md", "HEARTBEAT.md",
@@ -291,13 +291,13 @@ PRODUCT_FILE_CLASSES = {
             "SOUL.md", "USER.md", "IDENTITY.md", "MEMORY.md",
         ]),
         "config": frozenset([
-            "AGENTS.md", "HEARTBEAT.md", "TOOLS.md", "BOOTSTRAP.md",
+            "AGENTS.md", "HEARTBEAT.md", "TOOLS.md", "BOOT.md", "BOOTSTRAP.md",
         ]),
         "heartbeat": "HEARTBEAT.md",
     },
     "hermes": {
         "portable": frozenset([
-            "SOUL.md", "memories/USER.md",
+            "SOUL.md", "memories/USER.md", "memories/MEMORY.md",
         ]),
         "config": frozenset([]),
         "heartbeat": "",
@@ -312,11 +312,16 @@ PRODUCT_FILE_CLASSES = {
         "heartbeat": "HEARTBEAT.md",
     },
     "openhuman": {
-        # OpenHuman has no persona/config files; only the wiki/ vault is
-        # portable (imported as-is, not a classified persona/config file).
-        "portable": frozenset([]),
-        "config": frozenset([]),
-        "heartbeat": "",
+        # Per the official "move to a new PC" guide OpenHuman carries the
+        # persona files SOUL/IDENTITY plus the HEARTBEAT task file; the
+        # wiki/ vault is imported as-is (not a classified persona file).
+        "portable": frozenset([
+            "SOUL.md", "IDENTITY.md",
+        ]),
+        "config": frozenset([
+            "HEARTBEAT.md",
+        ]),
+        "heartbeat": "HEARTBEAT.md",
     },
     "qoder": {
         "portable": frozenset([]),
@@ -350,19 +355,21 @@ _heartbeat_merger = HeartbeatMerger()
 # ---- Cross-product path mapping ----
 SEMANTIC_GROUPS = [
     {"nanobot": "SOUL.md", "openclaw": "SOUL.md", "hermes": "SOUL.md",
-     "qwenpaw": "SOUL.md"},
-    {"nanobot": "USER.md", "openclaw": "USER.md", "hermes": "memories/USER.md"},
+     "qwenpaw": "SOUL.md", "openhuman": "SOUL.md"},
+    {"nanobot": "USER.md", "openclaw": "USER.md", "hermes": "memories/USER.md",
+     "qwenpaw": "memory/USER.md"},
     {"nanobot": "memory/MEMORY.md", "openclaw": "MEMORY.md",
-     "qwenpaw": "MEMORY.md", "ms-agent": "MEMORY.md"},
-    {"openclaw": "IDENTITY.md"},
+     "qwenpaw": "MEMORY.md", "ms-agent": "MEMORY.md",
+     "hermes": "memories/MEMORY.md"},
+    {"openclaw": "IDENTITY.md", "openhuman": "IDENTITY.md"},
     {"qwenpaw": "PROFILE.md", "ms-agent": "profile.md"},
     {"nanobot": "AGENTS.md", "openclaw": "AGENTS.md", "qwenpaw": "AGENTS.md",
      "qoder": "AGENTS.md"},
     {"nanobot": "HEARTBEAT.md", "openclaw": "HEARTBEAT.md",
-     "qwenpaw": "HEARTBEAT.md"},
+     "qwenpaw": "HEARTBEAT.md", "openhuman": "HEARTBEAT.md"},
     {"openclaw": "TOOLS.md"},
     {"openclaw": "BOOTSTRAP.md", "qwenpaw": "BOOTSTRAP.md"},
-    {"nanobot": "memory/HISTORY.md"},
+    {"nanobot": "memory/history.jsonl"},
 ]
 
 _ALL_PRODUCTS = ["nanobot", "openclaw", "hermes", "qwenpaw", "openhuman", "qoder", "ms-agent"]
@@ -386,20 +393,22 @@ PATH_MAP = _build_path_map()
 PRODUCT_KNOWN_FILES = {
     "nanobot": frozenset([
         "SOUL.md", "USER.md", "AGENTS.md", "HEARTBEAT.md",
-        "memory/MEMORY.md", "memory/HISTORY.md",
+        "memory/MEMORY.md", "memory/history.jsonl",
     ]),
     "openclaw": frozenset([
         "SOUL.md", "USER.md", "AGENTS.md", "TOOLS.md", "HEARTBEAT.md",
-        "IDENTITY.md", "BOOTSTRAP.md", "MEMORY.md",
+        "IDENTITY.md", "BOOT.md", "BOOTSTRAP.md", "MEMORY.md",
     ]),
     "hermes": frozenset([
-        "SOUL.md", "memories/USER.md",
+        "SOUL.md", "memories/USER.md", "memories/MEMORY.md", "config.yaml",
     ]),
     "qwenpaw": frozenset([
         "SOUL.md", "PROFILE.md", "AGENTS.md", "MEMORY.md", "HEARTBEAT.md",
         "BOOTSTRAP.md",
     ]),
-    "openhuman": frozenset([]),
+    "openhuman": frozenset([
+        "SOUL.md", "IDENTITY.md", "HEARTBEAT.md",
+    ]),
     "qoder": frozenset([
         "AGENTS.md",
     ]),

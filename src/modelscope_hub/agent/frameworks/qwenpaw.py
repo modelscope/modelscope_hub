@@ -32,7 +32,7 @@ class QwenpawWorkspace(WorkspaceSpec):
     Portable files:
 
     * persona markdown (``AGENTS.md``/``SOUL.md``/``PROFILE.md``/... )
-    * ``skills/<name>/SKILL.md`` plus the workspace ``skill.json`` manifest
+    * ``skills/`` (recursively) plus the workspace ``skill.json`` manifest
     * ``agent.json`` -- the agent configuration. It is collected as-is but
       sanitized on :meth:`apply` (machine-specific ``workspace_dir``/``id`` are
       rewritten and per-channel secrets/tokens are stripped).
@@ -95,8 +95,9 @@ class QwenpawWorkspace(WorkspaceSpec):
             "memory/*.md",
             "agent.json",
             "skill.json",
-            "skills/*/SKILL.md",
-            "skills/*/scripts/*",
+            # fnmatch ``*`` spans ``/`` so ``skills/*`` recurses the
+            # whole skill tree (SKILL.md + references/assets/scripts).
+            "skills/*",
         ]
 
     def _effective_patterns(self) -> list[str]:

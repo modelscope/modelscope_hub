@@ -21,6 +21,34 @@ from modelscope_hub.agent._commands import (
     resolve_local_name,
     resolve_remote,
 )
+from modelscope_hub.agent._api import RemoteFileInfo
+from modelscope_hub.agent._sync import sha256_content
+
+
+class _RepoStub:
+    """Base offline repo stub. Subclasses define ``STORE`` ({path: content});
+    this provides the read APIs the download/sync flows call, including
+    ``list_repo_files_detail`` (sha256 computed from STORE content).
+    """
+
+    STORE: dict = {}
+
+    def repo_info(self, path, name):
+        return {"Path": path, "Name": name,
+                "Framework": self.FRAMEWORK, "Revision": 1}
+
+    def list_repo_files(self, path, name, revision="master"):
+        return list(self.STORE)
+
+    def list_repo_files_detail(self, path, name, revision="master"):
+        return [
+            RemoteFileInfo(path=p, sha256=sha256_content(c),
+                           committed_date=0, is_lfs=False)
+            for p, c in self.STORE.items()
+        ]
+
+    def download_repo_file(self, path, name, file_path):
+        return self.STORE[file_path]
 
 
 # ---------------------------------------------------------------------------
@@ -590,28 +618,21 @@ class TestRestoreBehaviour(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class _DownloadStub:
+class _DownloadStub(_RepoStub):
     """Serves a fixed nanobot repo so download flows can be exercised offline."""
 
+    FRAMEWORK = "nanobot"
     instances = []
     STORE = {"SOUL.md": "soul", "USER.md": "user", "memory/MEMORY.md": "mem"}
 
     def __init__(self, *args, **kwargs):
         _DownloadStub.instances.append(self)
 
-    def repo_info(self, path, name):
-        return {"Path": path, "Name": name, "Framework": "nanobot", "Revision": 1}
 
-    def list_repo_files(self, path, name):
-        return list(self.STORE)
-
-    def download_repo_file(self, path, name, file_path):
-        return self.STORE[file_path]
-
-
-class _QwenpawAllStub:
+class _QwenpawAllStub(_RepoStub):
     """Serves a qwenpaw all-mode repo (agent-prefixed paths) for convert tests."""
 
+    FRAMEWORK = "qwenpaw"
     instances = []
     STORE = {
         ".gitattributes": "x",
@@ -625,15 +646,6 @@ class _QwenpawAllStub:
 
     def __init__(self, *args, **kwargs):
         _QwenpawAllStub.instances.append(self)
-
-    def repo_info(self, path, name):
-        return {"Path": path, "Name": name, "Framework": "qwenpaw", "Revision": 1}
-
-    def list_repo_files(self, path, name):
-        return list(self.STORE)
-
-    def download_repo_file(self, path, name, file_path):
-        return self.STORE[file_path]
 
 
 class TestDownload(unittest.TestCase):
@@ -879,60 +891,36 @@ class TestFrameworkUploadCoverage(unittest.TestCase):
         self.assertIn("PROFILE.md", client.uploaded_resources)
 
 
-class _OpenclawStub:
+class _OpenclawStub(_RepoStub):
     """Serves an openclaw single sub-agent repo (bare paths)."""
 
+    FRAMEWORK = "openclaw"
     STORE = {"SOUL.md": "# Soul\noc identity\n", "USER.md": "# User\noc user\n"}
 
     def __init__(self, *args, **kwargs):
         pass
 
-    def repo_info(self, path, name):
-        return {"Path": path, "Name": name, "Framework": "openclaw", "Revision": 1}
 
-    def list_repo_files(self, path, name):
-        return list(self.STORE)
-
-    def download_repo_file(self, path, name, file_path):
-        return self.STORE[file_path]
-
-
-class _HermesStub:
+class _HermesStub(_RepoStub):
     """Serves a hermes single-agent repo."""
 
+    FRAMEWORK = "hermes"
     STORE = {"SOUL.md": "# Soul\nhermes identity\n",
              "memories/USER.md": "# User\nhermes user\n"}
 
     def __init__(self, *args, **kwargs):
         pass
 
-    def repo_info(self, path, name):
-        return {"Path": path, "Name": name, "Framework": "hermes", "Revision": 1}
 
-    def list_repo_files(self, path, name):
-        return list(self.STORE)
-
-    def download_repo_file(self, path, name, file_path):
-        return self.STORE[file_path]
-
-
-class _MsAgentStub:
+class _MsAgentStub(_RepoStub):
     """Serves an ms-agent single-agent repo (lowercase profile.md persona)."""
 
+    FRAMEWORK = "ms-agent"
     STORE = {"profile.md": "# Profile\nms persona\n",
              "MEMORY.md": "# Memory\nms memory\n"}
 
     def __init__(self, *args, **kwargs):
         pass
-
-    def repo_info(self, path, name):
-        return {"Path": path, "Name": name, "Framework": "ms-agent", "Revision": 1}
-
-    def list_repo_files(self, path, name):
-        return list(self.STORE)
-
-    def download_repo_file(self, path, name, file_path):
-        return self.STORE[file_path]
 
 
 class TestFrameworkDownloadCoverage(unittest.TestCase):

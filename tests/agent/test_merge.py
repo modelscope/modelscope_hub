@@ -188,7 +188,7 @@ class TestResolveTargetPath(unittest.TestCase):
         self.assertEqual(result, "skills/my-skill/SKILL.md")
 
     def test_cross_product_none_mapping(self):
-        result = _resolve_target_path("nanobot", "memory/HISTORY.md", "hermes")
+        result = _resolve_target_path("nanobot", "memory/history.jsonl", "hermes")
         self.assertIsNone(result)
 
 

@@ -33,6 +33,13 @@ class OpenclawWorkspace(WorkspaceSpec):
 
     @property
     def patterns(self) -> list[str]:
+        # NOTE: fnmatch ``*`` spans ``/``, so ``skills/*`` matches every file
+        # under a skill dir at any depth (SKILL.md, _meta.json, scripts/,
+        # references/, schemas/, ...). Aligned with the official OpenClaw
+        # workspace file map (docs.openclaw.ai/concepts/agent-workspace):
+        # BOOT.md (startup checklist) is a standard workspace file distinct
+        # from BOOTSTRAP.md (one-time first-run ritual). canvas/ (UI .html) is
+        # intentionally excluded -- it is not portable persona/memory/skill.
         return [
             "AGENTS.md",
             "SOUL.md",
@@ -40,13 +47,12 @@ class OpenclawWorkspace(WorkspaceSpec):
             "TOOLS.md",
             "HEARTBEAT.md",
             "IDENTITY.md",
+            "BOOT.md",
             "BOOTSTRAP.md",
             "MEMORY.md",
             "memory/*.md",
             "memory/*.json",
-            "skills/*/SKILL.md",
-            "skills/*/_meta.json",
-            "skills/*/scripts/*",
+            "skills/*",
         ]
 
     def _effective_patterns(self) -> list[str]:

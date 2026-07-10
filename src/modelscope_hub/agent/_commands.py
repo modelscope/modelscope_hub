@@ -526,6 +526,23 @@ def convert_workspace(
     if source_fw == target_fw:
         converted = resources
         default_paths: set = set()
+    elif src_spec._is_all() or dst_spec._is_all():
+        # All-mode conversion only makes sense between two root-per-agent
+        # frameworks (1:1 agent-directory mapping).  Other layouts (e.g.
+        # file-per-agent qoder, single-agent nanobot) would collapse N agents
+        # into a shared root, which is lossy and ambiguous -- reject explicitly
+        # (mirrors the guard in cmd_download's all-mode branch).
+        if not (src_spec.is_root_per_agent and dst_spec.is_root_per_agent):
+            return _fail(
+                "cross-framework conversion with --name all is only supported "
+                "between root-per-agent frameworks (e.g. qwenpaw <-> openclaw). "
+                "For other layouts, convert one agent at a time: "
+                "--from-name <agent> --target-framework <fw>.")
+        converted = convert_resources(
+            resources, source_fw, target_fw,
+            all_mode=True, src_spec=src_spec, dst_spec=dst_spec,
+        )
+        default_paths = set()
     else:
         # File-per-agent targets (e.g. qoder ``agents/{name}.md``) keep
         # per-agent identity in a dedicated sub-agent file; route overflow
@@ -546,6 +563,19 @@ def convert_workspace(
         converted = result.merged_files
 
     dst_root = dst_spec.workspace_root
+    # Drop files that don't belong to the target framework's workspace spec.
+    # merge_resources imports unmapped files (e.g. qwenpaw agent.json/skill.json)
+    # as-is; without this filter they would leak into the target framework.
+    # Mirrors the dst-spec guard in cmd_download's download path.
+    if source_fw != target_fw:
+        dst_patterns = dst_spec.resolved_patterns()
+        dropped = sorted(k for k in converted if not dst_spec.matches(k, dst_patterns))
+        if dropped:
+            print(f"Dropped {len(dropped)} file(s) not matching {target_fw} spec:")
+            for d in dropped:
+                print(f"  [drop] {d}")
+        converted = {k: v for k, v in converted.items()
+                     if dst_spec.matches(k, dst_patterns)}
     # Non-default files: always write (overwrite if exists).
     # Default files: write only if target does NOT already have them.
     effective = {
@@ -606,6 +636,23 @@ def cmd_convert(
     dst_name = target_name or src_name
     src_spec = build_spec(source_fw, src_name, local_dir)
     dst_spec = build_spec(target_fw, dst_name, out_dir)
+    # Single-agent target frameworks (e.g. nanobot, openhuman) have no
+    # sub-agent slots:
+    # ``workspace_root`` ignores ``dst_name`` entirely, so every convert writes
+    # to the same shared root. Warn the user that a non-default --target-name is
+    # meaningless here and that this convert may overwrite an earlier one's
+    # output landing at the same paths.
+    dst_is_file_per_agent = any("{name}" in p for p in dst_spec.patterns)
+    dst_is_single_agent = not dst_spec.is_root_per_agent and not dst_is_file_per_agent
+    if (dst_is_single_agent
+            and dst_name not in (DEFAULT_AGENT_NAME, GLOBAL_AGENT_NAME, ALL_AGENT_NAME)):
+        print(
+            f"Warning: '{target_fw}' is a single-agent framework with no sub-agent "
+            f"slots; --target-name '{dst_name}' is ignored and content is written to "
+            f"the shared root ({dst_spec.workspace_root}). This may overwrite output "
+            f"from a previous convert into the same framework.",
+            file=sys.stderr,
+        )
     return convert_workspace(src_spec, source_fw, target_fw, dst_spec, dry_run=dry_run)
 
 
