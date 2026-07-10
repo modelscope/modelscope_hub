@@ -21,11 +21,11 @@ logger = get_logger("agent")
 class QwenpawWorkspace(WorkspaceSpec):
     """Workspace spec for the QwenPaw (a.k.a. CoPaw) agent framework.
 
-    QwenPaw stores per-agent workspaces under ``~/.copaw/workspaces/{id}``;
+    QwenPaw stores per-agent workspaces under ``~/.qwenpaw/workspaces/{id}`` (legacy ``~/.copaw``);
     the default agent lives in ``workspaces/default``. Unlike other products,
     QwenPaw does *not* discover agents by scanning the workspaces directory:
     the desktop app loads agents from a central registry in
-    ``~/.copaw/config.json`` (the ``agents.profiles`` map). An agent whose files
+    ``config.json`` (the ``agents.profiles`` map). An agent whose files
     exist on disk but is absent from that registry is invisible in the UI, so
     :meth:`apply` both writes the files *and* registers the agent.
 
@@ -37,12 +37,15 @@ class QwenpawWorkspace(WorkspaceSpec):
       sanitized on :meth:`apply` (machine-specific ``workspace_dir``/``id`` are
       rewritten and per-channel secrets/tokens are stripped).
 
-    In ``all`` mode, ``workspace_root`` lifts to ``~/.copaw/workspaces/`` and
+    In ``all`` mode, ``workspace_root`` lifts to ``<config>/workspaces/`` and
     patterns are prefixed with ``*/`` so that each agent directory becomes a
     path prefix in the collected resource dict.
     """
 
-    _CONFIG_DIRNAME = ".copaw"
+    # Brand rename CoPaw -> QwenPaw moved the data root from ``~/.copaw``
+    # to ``~/.qwenpaw``. Probe both, preferring the current brand name;
+    # fall back to the new name when neither exists yet (fresh install).
+    _CONFIG_DIRNAMES = (".qwenpaw", ".copaw")
 
     # channel keys whose values are machine-specific secrets/paths and must
     # never be carried across machines.
@@ -59,13 +62,21 @@ class QwenpawWorkspace(WorkspaceSpec):
 
     @property
     def _config_root(self) -> Path:
-        return Path.home() / self._CONFIG_DIRNAME
+        # Prefer an existing data root; ``.qwenpaw`` wins over the legacy
+        # ``.copaw`` when both are present. Default to ``.qwenpaw`` (the
+        # current brand) when neither exists yet.
+        home = Path.home()
+        for name in self._CONFIG_DIRNAMES:
+            candidate = home / name
+            if candidate.is_dir():
+                return candidate
+        return home / self._CONFIG_DIRNAMES[0]
 
     def _effective_config_root(self) -> Path:
         """Config root that owns the *current* workspace.
 
         Derived from ``workspace_root`` so that a ``--local_dir`` override never
-        touches the user's real ``~/.copaw`` (sanitized ``workspace_dir`` and
+        touches the user's real data root (sanitized ``workspace_dir`` and
         the ``config.json`` registry both live beside the workspace on disk):
 
         * single-agent: ``<config>/workspaces/<agent>`` -> up two levels.
@@ -167,7 +178,7 @@ class QwenpawWorkspace(WorkspaceSpec):
         return json.dumps(data, ensure_ascii=False, indent=2)
 
     def _register_agent(self, agent_name: str) -> None:
-        """Add *agent_name* to ``~/.copaw/config.json`` ``agents`` registry.
+        """Add *agent_name* to the data root's ``config.json`` ``agents`` registry.
 
         Best-effort and idempotent: an existing profile is updated in place and
         the agent is appended to ``agent_order`` only if absent. When the config
