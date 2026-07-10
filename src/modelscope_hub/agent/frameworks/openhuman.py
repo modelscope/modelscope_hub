@@ -36,7 +36,7 @@ class OpenhumanWorkspace(WorkspaceSpec):
         return "openhuman"
 
     @property
-    def default_workspace_root(self) -> Path:
+    def default_root(self) -> Path:
         return Path.home() / ".openhuman"
 
     @property

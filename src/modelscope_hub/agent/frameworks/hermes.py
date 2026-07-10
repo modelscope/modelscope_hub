@@ -50,11 +50,13 @@ class HermesWorkspace(WorkspaceSpec):
         return "hermes"
 
     @property
-    def default_workspace_root(self) -> Path:
-        base = Path.home() / ".hermes"
-        if self._is_all():
-            return base
-        if self.agent_name in ("", DEFAULT_AGENT_NAME):
+    def default_root(self) -> Path:
+        return Path.home() / ".hermes"
+
+    @property
+    def workspace_root(self) -> Path:
+        base = self.root
+        if self._is_all() or self.agent_name in ("", DEFAULT_AGENT_NAME):
             return base
         return base / "profiles" / self.agent_name
 
@@ -108,7 +110,7 @@ class HermesWorkspace(WorkspaceSpec):
         return f"profiles/{agent_name}/{bare_path}"
 
     def list_agents(self) -> list[str]:
-        base = Path.home() / ".hermes"
+        base = self.root
         agents: list[str] = []
         if (base / "SOUL.md").is_file():
             agents.append(DEFAULT_AGENT_NAME)
@@ -118,6 +120,86 @@ class HermesWorkspace(WorkspaceSpec):
                 if d.is_dir() and not d.name.startswith("."):
                     agents.append(d.name)
         return agents or [DEFAULT_AGENT_NAME]
+
+    # ------------------------------------------------------------------
+    # bundled default skill filtering
+    # ------------------------------------------------------------------
+
+    def _bundled_skill_names(self, skills_rel: str) -> frozenset:
+        """Names of Hermes's bundled default skills, read from the per-agent
+        ``skills/.bundled_manifest`` (lines ``name:hash``). Cached per manifest.
+        """
+        cache = self.__dict__.setdefault("_bundled_cache", {})
+        if skills_rel in cache:
+            return cache[skills_rel]
+        names: set[str] = set()
+        manifest = self.workspace_root / skills_rel / ".bundled_manifest"
+        try:
+            for line in manifest.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line:
+                    names.add(line.split(":", 1)[0])
+        except OSError:
+            pass
+        result = frozenset(names)
+        cache[skills_rel] = result
+        return result
+
+    def _skill_declared_name(self, skill_md: Path):
+        """Read the ``name:`` field from a SKILL.md YAML frontmatter. Bundled
+        skills declare it; user skills usually have none (returns None).
+        """
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+        except OSError:
+            return None
+        if not text.startswith("---"):
+            return None
+        end = text.find("\n---", 3)
+        if end == -1:
+            return None
+        for line in text[3:end].splitlines():
+            line = line.strip()
+            if line.startswith("name:"):
+                return line[len("name:"):].strip().strip('"').strip("'")
+        return None
+
+    def _user_skill_dirs(self, skills_rel: str) -> set:
+        """Rel-path prefixes (workspace_root-relative) of *user-authored* skill
+        dirs -- those whose SKILL.md ``name`` is NOT in the bundled manifest.
+        Directory names do not match manifest names, so the frontmatter is the
+        only reliable key. Cached per skills root.
+        """
+        cache = self.__dict__.setdefault("_user_skill_cache", {})
+        if skills_rel in cache:
+            return cache[skills_rel]
+        bundled = self._bundled_skill_names(skills_rel)
+        skills_root = self.workspace_root / skills_rel
+        keep: set = set()
+        if skills_root.is_dir():
+            for skill_md in skills_root.rglob("SKILL.md"):
+                if self._skill_declared_name(skill_md) not in bundled:
+                    keep.add(skill_md.parent.relative_to(self.workspace_root).as_posix())
+        cache[skills_rel] = keep
+        return keep
+
+    def _is_excluded_asset(self, rel_path: str) -> bool:
+        """Carry only *user-authored* skills across machines/frameworks.
+
+        Hermes ships a large bundled skill library (recorded in each agent's
+        ``skills/.bundled_manifest`` as ``declared-name:hash``). Directory
+        names do not match the declared names, so we read each SKILL.md's
+        frontmatter ``name`` and keep a skill only when that name is absent
+        from the manifest. Every other file under ``skills/`` (bundled skills
+        plus category scaffolding like ``DESCRIPTION.md``) is dropped.
+        ``optional-skills/`` is never filtered.
+        """
+        parts = rel_path.split("/")
+        if "skills" not in parts:
+            return False
+        i = parts.index("skills")
+        keep = self._user_skill_dirs("/".join(parts[:i + 1]))
+        return not any(rel_path == d or rel_path.startswith(d + "/") for d in keep)
 
     # ------------------------------------------------------------------
     # config.yaml secret sanitization on the inbound path

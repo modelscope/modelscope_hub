@@ -91,7 +91,7 @@ def detect_local_changes(
     return changed
 
 
-def _retry_on_master_missing(fn, *, retries: int = 3, delay: float = 2.0):
+def _retry_on_master_missing(fn, *, retries: int = 6, delay: float = 1.0):
     """Run *fn*, retrying the create-then-commit race.
 
     A freshly created repo may not have its ``master`` branch ready when the
@@ -112,7 +112,10 @@ def _retry_on_master_missing(fn, *, retries: int = 3, delay: float = 2.0):
                 "branch" in msg or "revision" in msg
             )
             if branch_missing and attempt < retries - 1:
-                time.sleep(delay)
+                # Exponential backoff (1, 2, 4, 8, 16s capped -> ~31s total) to
+                # outlast slow server-side master-branch initialization on a
+                # freshly created bare repo.
+                time.sleep(min(delay * (2 ** attempt), 16.0))
                 continue
             raise
 
@@ -153,12 +156,32 @@ def push_resources(
     except Exception as exc:
         logger.warning("create_repo check failed (%s), proceeding anyway.", exc)
 
+    # Idempotent upsert: skip files whose content already matches the remote.
+    # A repeated full upload of unchanged content would otherwise issue
+    # zero-delta commits; for an unchanged LFS pointer the server rejects the
+    # empty commit with ``commit failed: {"message":""}``.
+    remote_sha: dict[str, str] = {}
+    try:
+        remote_sha = {
+            f.path: f.sha256
+            for f in client.list_repo_files_detail(username, name)
+        }
+    except Exception as exc:
+        logger.debug(
+            "Cannot list remote detail for idempotent skip (%s); uploading all.",
+            exc,
+        )
+
     # Split into normal and LFS files.
     normal_actions: list[dict] = []
     lfs_files: list[tuple[str, bytes]] = []
+    skipped = 0
 
     for rel, content in sorted(resources.items()):
         size = len(content)
+        if remote_sha.get(rel) == sha256_content(content):
+            skipped += 1
+            continue
         if is_lfs_file(rel, size):
             lfs_files.append((rel, content))
         else:
@@ -190,8 +213,9 @@ def push_resources(
             action="create", commit_message=f"sync: upload LFS {rel}"))
         logger.info("  CREATE (LFS): %s (%d B)", rel, len(content))
 
-    logger.info("Pushed %d file(s) (%d normal, %d LFS).",
-                len(resources), len(normal_actions), len(lfs_files))
+    logger.info("Pushed %d file(s) (%d normal, %d LFS, %d unchanged).",
+                len(normal_actions) + len(lfs_files),
+                len(normal_actions), len(lfs_files), skipped)
 
     # Mirror semantics: prune remote files that fall within this upload's
     # scope but are no longer present locally.

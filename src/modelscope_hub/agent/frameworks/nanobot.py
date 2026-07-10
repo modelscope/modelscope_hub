@@ -24,7 +24,7 @@ class NanobotWorkspace(WorkspaceSpec):
         return "nanobot"
 
     @property
-    def default_workspace_root(self) -> Path:
+    def default_root(self) -> Path:
         return Path.home() / ".nanobot" / "workspace"
 
     @property

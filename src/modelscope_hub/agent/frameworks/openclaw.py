@@ -23,8 +23,12 @@ class OpenclawWorkspace(WorkspaceSpec):
         return "openclaw"
 
     @property
-    def default_workspace_root(self) -> Path:
-        base = Path.home() / ".openclaw"
+    def default_root(self) -> Path:
+        return Path.home() / ".openclaw"
+
+    @property
+    def workspace_root(self) -> Path:
+        base = self.root
         if self._is_all():
             return base
         if self.agent_name in ("", DEFAULT_AGENT_NAME):
@@ -81,7 +85,7 @@ class OpenclawWorkspace(WorkspaceSpec):
         return f"workspace-{agent_name}/{bare_path}"
 
     def list_agents(self) -> list[str]:
-        base = Path.home() / ".openclaw"
+        base = self.root
         agents: list[str] = []
         if (base / "workspace").is_dir():
             agents.append(DEFAULT_AGENT_NAME)

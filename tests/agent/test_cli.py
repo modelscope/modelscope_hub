@@ -781,9 +781,9 @@ class TestDownload(unittest.TestCase):
             endpoint="http://s", token="tok", username="u",
         )
         self.assertEqual(rc, 0)
-        self.assertTrue((self.out / "default" / "AGENTS.md").is_file())
-        self.assertTrue((self.out / "bot-a" / "AGENTS.md").is_file())
-        self.assertTrue((self.out / "bot-a" / "PROFILE.md").is_file())
+        self.assertTrue((self.out / "workspaces" / "default" / "AGENTS.md").is_file())
+        self.assertTrue((self.out / "workspaces" / "bot-a" / "AGENTS.md").is_file())
+        self.assertTrue((self.out / "workspaces" / "bot-a" / "PROFILE.md").is_file())
         # non-spec top-level files are skipped.
         self.assertFalse((self.out / "README.md").exists())
 
@@ -856,8 +856,9 @@ class TestFrameworkUploadCoverage(unittest.TestCase):
     @mock.patch("modelscope_hub.agent._commands.AgentApi", _StubClient)
     def _upload(self, framework, files):
         root = Path(self.tmp.name) / framework
+        ws = build_spec(framework, "default", str(root)).workspace_root
         for rel, content in files.items():
-            fp = root / rel
+            fp = ws / rel
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content)
         _StubClient.instances = []
@@ -941,8 +942,8 @@ class TestFrameworkDownloadCoverage(unittest.TestCase):
             endpoint="http://s", token="tok", username="u",
         )
         self.assertEqual(rc, 0)
-        self.assertEqual((self.out / "SOUL.md").read_text(), "# Soul\noc identity\n")
-        self.assertEqual((self.out / "USER.md").read_text(), "# User\noc user\n")
+        self.assertEqual((self.out / "workspace" / "SOUL.md").read_text(), "# Soul\noc identity\n")
+        self.assertEqual((self.out / "workspace" / "USER.md").read_text(), "# User\noc user\n")
 
     @mock.patch("modelscope_hub.agent._commands.AgentApi", _HermesStub)
     def test_download_hermes_writes_content(self):

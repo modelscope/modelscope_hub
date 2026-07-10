@@ -3,6 +3,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from modelscope_hub.agent import FRAMEWORK_REGISTRY
 from modelscope_hub.agent._commands import build_spec
@@ -55,7 +56,7 @@ class TestAgentAwareCollect(unittest.TestCase):
     def test_qwenpaw_default_root_uses_agent_name(self):
         spec = QwenpawWorkspace(agent_name="browse-agent")
         self.assertTrue(
-            str(spec.default_workspace_root).endswith("workspaces/browse-agent")
+            str(spec.workspace_root).endswith("workspaces/browse-agent")
         )
 
     def test_local_dir_override_wins(self):
@@ -150,6 +151,31 @@ class TestMsAgentWorkspace(unittest.TestCase):
                   "skill.json", "skills/foo/SKILL.md"):
             self.assertIn(f, got)
         self.assertNotIn("random.txt", got)
+
+
+class TestQwenpawConfigRoot(unittest.TestCase):
+    """qwenpaw probes ~/.qwenpaw (preferred) then legacy ~/.copaw, and falls
+    back to ~/.qwenpaw when neither exists (brand rename CoPaw -> QwenPaw)."""
+
+    def _root_name(self, present):
+        with tempfile.TemporaryDirectory() as d:
+            home = Path(d)
+            for name in present:
+                (home / name).mkdir()
+            with mock.patch("pathlib.Path.home", return_value=home):
+                return QwenpawWorkspace(agent_name="x").default_root.name
+
+    def test_prefers_qwenpaw_when_both_exist(self):
+        self.assertEqual(self._root_name([".qwenpaw", ".copaw"]), ".qwenpaw")
+
+    def test_uses_legacy_copaw_when_only_copaw(self):
+        self.assertEqual(self._root_name([".copaw"]), ".copaw")
+
+    def test_uses_qwenpaw_when_only_qwenpaw(self):
+        self.assertEqual(self._root_name([".qwenpaw"]), ".qwenpaw")
+
+    def test_defaults_to_qwenpaw_when_neither_exists(self):
+        self.assertEqual(self._root_name([]), ".qwenpaw")
 
 
 if __name__ == "__main__":

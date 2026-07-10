@@ -31,6 +31,8 @@ from modelscope_hub.agent._workspace import (
     DEFAULT_AGENT_NAME,
     FRAMEWORK_REGISTRY,
 )
+from modelscope_hub.agent._api import RemoteFileInfo
+from modelscope_hub.agent._sync import sha256_content
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +74,8 @@ class TestConvertTargetNameLanding(unittest.TestCase):
         self.base = Path(self.tmp.name)
         # A qwenpaw single sub-agent workspace (root-per-agent source).
         self.src = self.base / "src"
-        _write(self.src, {
+        # source is a qwenpaw bot-a sub-agent: write into its real workspace.
+        _write(build_spec("qwenpaw", "bot-a", str(self.src)).workspace_root, {
             "SOUL.md": "# Soul\nBot A creative AI.\n",
             "PROFILE.md": "# Profile A\nBot A profile.\n",
             "skills/write/SKILL.md": "# Write\nWriting skill.\n",
@@ -87,7 +90,7 @@ class TestConvertTargetNameLanding(unittest.TestCase):
         rc = cmd_convert(
             source_fw="qwenpaw", target_fw="openclaw",
             from_name="bot-a", target_name="bot-a",
-            local_dir=str(self.src), out_dir=str(out / "workspace-bot-a"),
+            local_dir=str(self.src), out_dir=str(out),
         )
         self.assertEqual(rc, 0)
         files = _read_all(out / "workspace-bot-a")
@@ -97,8 +100,8 @@ class TestConvertTargetNameLanding(unittest.TestCase):
         # skill carried over.
         self.assertIn("skills/write/SKILL.md", files)
 
-    def test_qwenpaw_to_hermes_targetname_no_path_effect(self):
-        """single-agent target: target-name does not create a per-agent dir."""
+    def test_qwenpaw_to_hermes_targetname_lands_in_profiles(self):
+        """root-per-agent target: bot-a identity lands in profiles/bot-a/."""
         out = self.base / "hermes_home"
         rc = cmd_convert(
             source_fw="qwenpaw", target_fw="hermes",
@@ -106,12 +109,9 @@ class TestConvertTargetNameLanding(unittest.TestCase):
             local_dir=str(self.src), out_dir=str(out),
         )
         self.assertEqual(rc, 0)
-        files = _read_all(out)
-        # hermes is single-agent: SOUL.md sits at root, no 'bot-a' dir anywhere.
+        # hermes is root-per-agent: a named agent lands under profiles/bot-a/.
+        files = _read_all(out / "profiles" / "bot-a")
         self.assertIn("SOUL.md", files)
-        self.assertFalse(any("bot-a" in p for p in files),
-                         "single-agent target must not create a bot-a directory")
-        # identity preserved.
         self.assertIn("Bot A creative AI.", files["SOUL.md"])
 
     def test_qwenpaw_to_qoder_targetname_lands_in_agents_file(self):
@@ -142,10 +142,16 @@ class TestConvertTargetNameLanding(unittest.TestCase):
     def test_qwenpaw_to_qoder_default_name_lands_in_agents_default(self):
         """file-per-agent target without --target-name: persona -> agents/default.md."""
         out = self.base / "qoder_default_home"
+        # from_name=default -> source lives in the default sub-agent workspace.
+        src_default = self.base / "src_default"
+        _write(build_spec("qwenpaw", "default", str(src_default)).workspace_root, {
+            "SOUL.md": "# Soul\nBot A creative AI.\n",
+            "PROFILE.md": "# Profile A\nBot A profile.\n",
+        })
         rc = cmd_convert(
             source_fw="qwenpaw", target_fw="qoder",
             from_name="default", target_name=None,
-            local_dir=str(self.src), out_dir=str(out),
+            local_dir=str(src_default), out_dir=str(out),
         )
         self.assertEqual(rc, 0)
         files = _read_all(out)
@@ -168,7 +174,7 @@ class TestConvertContentCorrectness(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name)
         self.src = self.base / "src"
-        _write(self.src, {
+        _write(build_spec("qwenpaw", "bot-a", str(self.src)).workspace_root, {
             "SOUL.md": "# Soul\nMy custom identity line.\n",
             "PROFILE.md": "# Profile\nMy profile.\n",
         })
@@ -203,7 +209,7 @@ class TestConvertContentCorrectness(unittest.TestCase):
             from_name="bot-a", local_dir=str(self.src), out_dir=str(out),
         )
         self.assertEqual(rc, 0)
-        files = _read_all(out)
+        files = _read_all(out / "profiles" / "bot-a")
         # identity survives.
         self.assertIn("SOUL.md", files)
         self.assertIn("My custom identity line.", files["SOUL.md"])
@@ -233,8 +239,15 @@ class _StoreStub:
     def repo_info(self, path, name):
         return {"Path": path, "Name": name, "Framework": self.FRAMEWORK, "Revision": 1}
 
-    def list_repo_files(self, path, name):
+    def list_repo_files(self, path, name, revision="master"):
         return list(self.STORE)
+
+    def list_repo_files_detail(self, path, name, revision="master"):
+        return [
+            RemoteFileInfo(path=p, sha256=sha256_content(c),
+                           committed_date=0, is_lfs=False)
+            for p, c in self.STORE.items()
+        ]
 
     def download_repo_file(self, path, name, file_path):
         return self.STORE[file_path]
@@ -283,7 +296,7 @@ class TestAllModeRoundTripContent(unittest.TestCase):
             endpoint="http://s", token="tok", username="u",
         )
         self.assertEqual(rc, 0)
-        written = _read_all(self.out)
+        written = _read_all(self.out / "workspaces")
         # every stored spec file present with identical content.
         for rel, expected in _QwenpawAllStore.STORE.items():
             self.assertIn(rel, written, f"{rel} missing after all-mode download")
@@ -328,7 +341,8 @@ class TestDefaultAgentBoundary(unittest.TestCase):
         self.assertTrue(str(all_spec.workspace_root).endswith("workspaces"))
         # an explicit local_dir override is used verbatim as the root.
         override = build_spec("qwenpaw", DEFAULT_AGENT_NAME, str(self.out))
-        self.assertEqual(str(override.workspace_root), str(self.out))
+        self.assertEqual(str(override.workspace_root),
+                         str(self.out / "workspaces" / "default"))
 
     @mock.patch("modelscope_hub.agent._commands.AgentApi", _QwenpawDefaultStore)
     def test_download_default_agent_writes_bare_paths(self):
@@ -338,7 +352,7 @@ class TestDefaultAgentBoundary(unittest.TestCase):
             endpoint="http://s", token="tok", username="u",
         )
         self.assertEqual(rc, 0)
-        written = _read_all(self.out)
+        written = _read_all(self.out / "workspaces" / "default")
         self.assertIn("SOUL.md", written)
         self.assertEqual(written["SOUL.md"], _QwenpawDefaultStore.STORE["SOUL.md"])
         # no agent-prefixed dirs for a single default download.
@@ -369,7 +383,7 @@ class TestSingleSubAgentDownload(unittest.TestCase):
             endpoint="http://s", token="tok", username="u",
         )
         self.assertEqual(rc, 0)
-        written = _read_all(self.out)
+        written = _read_all(self.out / "workspaces" / "bot-a")
         self.assertIn("SOUL.md", written)
         self.assertIn("PROFILE.md", written)
         self.assertEqual(written["SOUL.md"], _QwenpawDefaultStore.STORE["SOUL.md"])
@@ -399,13 +413,13 @@ class TestFourFrameworkConvertMatrix(unittest.TestCase):
     def _convert(self, src_files, source_fw, target_fw):
         src = self.base / f"{source_fw}_src"
         out = self.base / f"{source_fw}_to_{target_fw}"
-        _write(src, src_files)
+        _write(build_spec(source_fw, "bot-a", str(src)).workspace_root, src_files)
         rc = cmd_convert(
             source_fw=source_fw, target_fw=target_fw,
             from_name="bot-a", local_dir=str(src), out_dir=str(out),
         )
         self.assertEqual(rc, 0, f"{source_fw}->{target_fw} convert failed")
-        return _read_all(out)
+        return _read_all(build_spec(target_fw, "bot-a", str(out)).workspace_root)
 
     def test_ms_agent_to_qwenpaw_persona_maps_to_profile(self):
         """ms-agent (single-agent) -> qwenpaw (root-per-agent): profile.md

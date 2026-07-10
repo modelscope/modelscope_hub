@@ -36,6 +36,7 @@ import pytest
 from modelscope_hub.agent._api import AgentApi
 from modelscope_hub.errors import APIError
 from modelscope_hub.agent._commands import (
+    build_spec,
     cmd_download,
     cmd_status,
     cmd_upload,
@@ -166,6 +167,25 @@ class TestUploadDownload(unittest.TestCase):
                 fp.write_text(content, encoding="utf-8")
         return tmpdir
 
+    def _create_local_root(self, framework: str, name: str, files: dict) -> str:
+        """Write files into the framework's real workspace_root under a fresh
+        temp data-root, returning that root (to pass as ``local_dir``).
+
+        Needed for root-per-agent layouts (qwenpaw ``workspaces/``, hermes
+        ``profiles/<name>``) where ``local_dir`` is the data root and the files
+        live under a framework-derived middle directory.
+        """
+        root = tempfile.mkdtemp(prefix="agent_test_")
+        ws = build_spec(framework, name, root).workspace_root
+        for rel, content in files.items():
+            fp = ws / rel
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            if isinstance(content, bytes):
+                fp.write_bytes(content)
+            else:
+                fp.write_text(content, encoding="utf-8")
+        return root
+
     def _cleanup_dir(self, path: str):
         if path and Path(path).exists():
             shutil.rmtree(path, ignore_errors=True)
@@ -206,7 +226,7 @@ class TestUploadDownload(unittest.TestCase):
         ]
         for framework, files in cases:
             with self.subTest(framework=framework):
-                local = self._create_local_workspace(files)
+                local = self._create_local_root(framework, ALL_AGENT_NAME, files)
                 try:
                     rc = cmd_upload(
                         framework=framework, name=ALL_AGENT_NAME, local_dir=local,
@@ -432,7 +452,7 @@ class TestUploadDownload(unittest.TestCase):
         ]
         for framework, files, expected in cases:
             with self.subTest(framework=framework):
-                local_up = self._create_local_workspace(files)
+                local_up = self._create_local_root(framework, ALL_AGENT_NAME, files)
                 try:
                     rc = cmd_upload(
                         framework=framework, name=ALL_AGENT_NAME, local_dir=local_up,
@@ -547,7 +567,7 @@ class TestUploadDownload(unittest.TestCase):
                     files = {"profile.md": "# Profile\n", "MEMORY.md": "# Memory\n"}
                 else:
                     files = {"SOUL.md": "# Soul\n"}
-                local = self._create_local_workspace(files)
+                local = self._create_local_root(fw, agent_name, files)
                 try:
                     rc = cmd_upload(
                         framework=fw, name=agent_name, local_dir=local,
@@ -606,7 +626,7 @@ class TestUploadDownload(unittest.TestCase):
     # 26. qwenpaw all: collect prefixed
     # -----------------------------------------------------------------------
     def test_26_qwenpaw_all_collect_prefixed(self):
-        local = self._create_local_workspace(QWENPAW_ALL_FILES)
+        local = self._create_local_root("qwenpaw", ALL_AGENT_NAME, QWENPAW_ALL_FILES)
         try:
             spec = FRAMEWORK_REGISTRY["qwenpaw"](agent_name=ALL_AGENT_NAME, local_dir=Path(local))
             collected = spec.collect()

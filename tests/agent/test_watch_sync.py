@@ -36,7 +36,7 @@ import pytest
 from modelscope_hub.agent._api import AgentApi
 from modelscope_hub.errors import APIError
 from modelscope_hub.agent._cache import load_sync_state, save_sync_state, sync_state_file
-from modelscope_hub.agent._commands import cmd_watch
+from modelscope_hub.agent._commands import build_spec, cmd_watch
 from modelscope_hub.agent._workspace import (
     ALL_AGENT_NAME,
     FRAMEWORK_REGISTRY,
@@ -131,6 +131,17 @@ class TestWatchSync(unittest.TestCase):
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding="utf-8")
         return tmpdir
+
+    def _create_local_root(self, framework: str, name: str, files: dict) -> str:
+        """Write files into the framework's real workspace_root under a fresh
+        temp data-root, returning that root (to pass as ``local_dir``)."""
+        root = tempfile.mkdtemp(prefix="agent_test_watch_")
+        ws = build_spec(framework, name, root).workspace_root
+        for rel, content in files.items():
+            fp = ws / rel
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(content, encoding="utf-8")
+        return root
 
     def _cleanup(self, path: str):
         shutil.rmtree(path, ignore_errors=True)
@@ -270,7 +281,8 @@ class TestWatchSync(unittest.TestCase):
             "bot-a/PROFILE.md": "# Profile\nBot A profile.\n",
             "bot-b/SOUL.md": "# Soul\nBot B identity.\n",
         }
-        local_dir = self._create_local(files)
+        local_dir = self._create_local_root("qwenpaw", ALL_AGENT_NAME, files)
+        ws = build_spec("qwenpaw", ALL_AGENT_NAME, local_dir).workspace_root
         proc = None
         try:
             proc = self._start_watch("qwenpaw", ALL_AGENT_NAME, local_dir, repo_name, push_only=False)
@@ -287,7 +299,7 @@ class TestWatchSync(unittest.TestCase):
 
             self._wait_cycles(2)
 
-            mem_file = Path(local_dir) / "bot-a" / "MEMORY.md"
+            mem_file = ws / "bot-a" / "MEMORY.md"
             self.assertTrue(mem_file.exists())
             self.assertIn("learned something", mem_file.read_text(encoding="utf-8"))
         finally:
@@ -450,7 +462,8 @@ class TestWatchSync(unittest.TestCase):
             "SOUL.md": "# MT2\nMulti-thread test 2.\n",
             "PROFILE.md": "# Profile\nSecond bot.\n",
         }
-        local2 = self._create_local(files2)
+        local2 = self._create_local_root("qwenpaw", repo2, files2)
+        ws2 = build_spec("qwenpaw", repo2, local2).workspace_root
 
         proc1 = None
         proc2 = None
@@ -473,7 +486,7 @@ class TestWatchSync(unittest.TestCase):
             content1 = self.client.download_repo_file(self.username, repo1, "AGENTS.md")
             self.assertIn("Updated by watch process", content1)
 
-            soul2 = (Path(local2) / "SOUL.md").read_text(encoding="utf-8")
+            soul2 = (ws2 / "SOUL.md").read_text(encoding="utf-8")
             self.assertIn("Remotely updated", soul2)
         finally:
             if proc1:
@@ -590,7 +603,8 @@ class TestWatchSync(unittest.TestCase):
         """Sync state persists to disk - second watch start reuses baseline."""
         repo_name = f"{AGENT_PREFIX}-persist"
         files = {"SOUL.md": "# Soul\nPersist test.\n"}
-        local_dir = self._create_local(files)
+        local_dir = self._create_local_root("qwenpaw", repo_name, files)
+        ws = build_spec("qwenpaw", repo_name, local_dir).workspace_root
         proc = None
         try:
             proc = self._start_watch("qwenpaw", repo_name, local_dir, repo_name)
@@ -604,7 +618,7 @@ class TestWatchSync(unittest.TestCase):
 
             _wait(REQUEST_INTERVAL)
 
-            soul_path = Path(local_dir) / "SOUL.md"
+            soul_path = ws / "SOUL.md"
             mtime_before = soul_path.stat().st_mtime
 
             proc = self._start_watch("qwenpaw", repo_name, local_dir, repo_name)

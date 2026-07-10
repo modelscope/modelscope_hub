@@ -201,7 +201,7 @@ class AgentApi:
                     "path": item.get("Path") or item.get("path") or "",
                     "type": item.get("Type") or item.get("type") or "",
                     "sha256": item.get("Sha256") or item.get("sha256") or "",
-                    "committed_date": item.get("Committed_date") or item.get("committed_date") or 0,
+                    "committed_date": item.get("CommittedDate") or item.get("committed_date") or 0,
                     "is_lfs": bool(item.get("IsLfs") or item.get("is_lfs") or False),
                 })
 

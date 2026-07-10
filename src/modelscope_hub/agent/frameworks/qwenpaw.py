@@ -42,10 +42,11 @@ class QwenpawWorkspace(WorkspaceSpec):
     path prefix in the collected resource dict.
     """
 
-    # Brand rename CoPaw -> QwenPaw moved the data root from ``~/.copaw``
-    # to ``~/.qwenpaw``. Probe both, preferring the current brand name;
-    # fall back to the new name when neither exists yet (fresh install).
-    _CONFIG_DIRNAMES = (".qwenpaw", ".copaw")
+    # CoPaw/QwenPaw share a data root. The desktop app installs to
+    # ``~/.copaw`` (config.json + workspaces registry), so it takes top
+    # priority; ``~/.qwenpaw`` is only a fallback. Probe both, preferring
+    # ``.copaw``; default to it when neither exists yet (fresh install).
+    _CONFIG_DIRNAMES = (".copaw", ".qwenpaw")
 
     # channel keys whose values are machine-specific secrets/paths and must
     # never be carried across machines.
@@ -61,10 +62,10 @@ class QwenpawWorkspace(WorkspaceSpec):
         return "qwenpaw"
 
     @property
-    def _config_root(self) -> Path:
-        # Prefer an existing data root; ``.qwenpaw`` wins over the legacy
-        # ``.copaw`` when both are present. Default to ``.qwenpaw`` (the
-        # current brand) when neither exists yet.
+    def default_root(self) -> Path:
+        # Prefer an existing data root; ``.copaw`` (the desktop app home)
+        # wins over ``.qwenpaw`` when both are present. Default to ``.copaw``
+        # when neither exists yet.
         home = Path.home()
         for name in self._CONFIG_DIRNAMES:
             candidate = home / name
@@ -72,24 +73,10 @@ class QwenpawWorkspace(WorkspaceSpec):
                 return candidate
         return home / self._CONFIG_DIRNAMES[0]
 
-    def _effective_config_root(self) -> Path:
-        """Config root that owns the *current* workspace.
-
-        Derived from ``workspace_root`` so that a ``--local_dir`` override never
-        touches the user's real data root (sanitized ``workspace_dir`` and
-        the ``config.json`` registry both live beside the workspace on disk):
-
-        * single-agent: ``<config>/workspaces/<agent>`` -> up two levels.
-        * all-mode:     ``<config>/workspaces``          -> up one level.
-        """
-        root = self.workspace_root
-        if self._is_all():
-            return root.parent
-        return root.parent.parent
-
     @property
-    def default_workspace_root(self) -> Path:
-        base = self._config_root / "workspaces"
+    def workspace_root(self) -> Path:
+        # root-per-agent: derive the per-agent workspace from the data root.
+        base = self.root / "workspaces"
         if self._is_all():
             return base
         return base / self.agent_name
@@ -131,7 +118,7 @@ class QwenpawWorkspace(WorkspaceSpec):
         return f"{agent_name}/{bare_path}"
 
     def list_agents(self) -> list[str]:
-        base = self._config_root / "workspaces"
+        base = self.root / "workspaces"
         if not base.is_dir():
             return [DEFAULT_AGENT_NAME]
         agents = [d.name for d in sorted(base.iterdir()) if d.is_dir()]
@@ -157,7 +144,7 @@ class QwenpawWorkspace(WorkspaceSpec):
             return content
         # Rebind identity/location to the local target agent.
         data["id"] = agent_name
-        data["workspace_dir"] = str(self._effective_config_root() / "workspaces" / agent_name)
+        data["workspace_dir"] = str(self.root / "workspaces" / agent_name)
         # Strip secrets from every channel config.
         channels = data.get("channels")
         if isinstance(channels, dict):
@@ -186,7 +173,7 @@ class QwenpawWorkspace(WorkspaceSpec):
         """
         if agent_name in (ALL_AGENT_NAME, GLOBAL_AGENT_NAME):
             return
-        config_path = self._effective_config_root() / "config.json"
+        config_path = self.root / "config.json"
         if not config_path.is_file():
             logger.warning(
                 "QwenPaw config.json not found at %s; agent %r written but not "
@@ -209,7 +196,7 @@ class QwenpawWorkspace(WorkspaceSpec):
         if not isinstance(profiles, dict):
             profiles = {}
             agents["profiles"] = profiles
-        workspace_dir = str(self._effective_config_root() / "workspaces" / agent_name)
+        workspace_dir = str(self.root / "workspaces" / agent_name)
         existing = profiles.get(agent_name)
         profile = existing if isinstance(existing, dict) else {}
         profile.update({

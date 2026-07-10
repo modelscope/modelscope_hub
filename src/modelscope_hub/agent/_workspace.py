@@ -58,8 +58,10 @@ class WorkspaceSpec(ABC):
 
         The special value ``"all"`` selects *every* sub-agent at once.
 
-    :param local_dir: explicit workspace root override; when given, it replaces
-        the framework's default ``workspace_root``.
+    :param local_dir: explicit framework data-root override; when given, it
+        replaces the framework's default root. Its meaning is uniform across all
+        frameworks (always the data root); per-agent subdirectories are derived
+        from it (e.g. qwenpaw ``workspaces/<name>``).
     """
 
     def __init__(
@@ -79,8 +81,13 @@ class WorkspaceSpec(ABC):
 
     @property
     @abstractmethod
-    def default_workspace_root(self) -> Path:
-        """Workspace root for ``self.agent_name`` (before ``local_dir`` override)."""
+    def default_root(self) -> Path:
+        """Framework data root (before ``local_dir`` override).
+
+        This is the *root*, not necessarily the collected directory: single-agent
+        and file-per-agent frameworks collect directly here, while root-per-agent
+        frameworks derive ``workspace_root`` by appending a per-agent subdirectory
+        (e.g. ``workspaces/<name>``)."""
         ...
 
     @property
@@ -145,9 +152,22 @@ class WorkspaceSpec(ABC):
     # ------------------------------------------------------------------
 
     @property
+    def root(self) -> Path:
+        """Effective framework data root: ``local_dir`` override, else the default.
+
+        ``local_dir`` ALWAYS means the data root, uniformly across every
+        framework; per-agent subdirectories (if any) are derived from it by
+        ``workspace_root``."""
+        return self._local_dir if self._local_dir is not None else self.default_root
+
+    @property
     def workspace_root(self) -> Path:
-        """Effective root: ``local_dir`` override, else the framework default."""
-        return self._local_dir if self._local_dir is not None else self.default_workspace_root
+        """Directory ``collect``/``apply`` operate on.
+
+        Defaults to the data root (single-agent / file-per-agent, where the root
+        IS the workspace). Root-per-agent frameworks override this to append the
+        per-agent subdirectory."""
+        return self.root
 
     def _is_global(self) -> bool:
         """Whether we are in global-only mode (shared files only, no sub-agent)."""
@@ -194,6 +214,8 @@ class WorkspaceSpec(ABC):
                     continue
                 if not self.matches(rel, patterns):
                     continue
+                if self._is_excluded_asset(rel):
+                    continue
                 try:
                     if f.stat().st_size > MAX_FILE_SIZE:
                         continue
@@ -201,6 +223,15 @@ class WorkspaceSpec(ABC):
                     continue
                 matched.append((rel, f))
         return matched
+
+    def _is_excluded_asset(self, rel_path: str) -> bool:
+        """Hook: drop specific *matched* files from collection.
+
+        Base excludes nothing. Frameworks override to skip files that are
+        theirs by default and should not travel across machines/frameworks
+        (e.g. Hermes's bundled default skill library).
+        """
+        return False
 
     def collect(self) -> dict[str, str]:
         """Gather allowed workspace files as {relative_path: text_content}."""
@@ -255,8 +286,12 @@ class WorkspaceSpec(ABC):
         """
         return content
 
-    def apply(self, resources: dict[str, str]) -> list[str]:
-        """Write resource files back to the workspace.  Returns list of written paths."""
+    def apply(self, resources: dict) -> list[str]:
+        """Write resource files back to the workspace.  Returns list of written paths.
+
+        Values may be ``str`` (text, encoded as UTF-8) or ``bytes`` (binary
+        assets such as skill PDFs/images), written verbatim.
+        """
         root = self.workspace_root.resolve()
         written: list[str] = []
         for rel_path, content in resources.items():
@@ -264,7 +299,8 @@ class WorkspaceSpec(ABC):
             if not target.is_relative_to(root):
                 logger.warning("Path traversal blocked: %s", rel_path)
                 continue
-            sanitized = self.sanitize_inbound_file(rel_path, content.encode("utf-8"))
+            raw = content if isinstance(content, bytes) else content.encode("utf-8")
+            sanitized = self.sanitize_inbound_file(rel_path, raw)
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(sanitized)
             written.append(str(target))

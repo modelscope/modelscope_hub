@@ -504,6 +504,38 @@ def _file_per_agent_identity_path(dst_spec: WorkspaceSpec) -> str | None:
     return None
 
 
+def _collect_binary_passthrough(
+    src_spec: WorkspaceSpec,
+    text_resources: dict,
+    source_fw: str,
+    target_fw: str,
+    dst_spec: WorkspaceSpec,
+) -> dict:
+    """Binary skill assets (PDFs/images/...) that the text ``collect()`` drops.
+
+    They are pass-through (never merged): map 1:1 across single-agent
+    frameworks (identical ``skills/`` paths); all-mode re-prefixes per agent.
+    Only files valid for the target spec are kept.
+    """
+    raw = {k: v for k, v in src_spec.collect_bytes().items()
+           if k not in text_resources}
+    if not raw:
+        return {}
+    if source_fw == target_fw:
+        out = raw
+    elif src_spec._is_all() or dst_spec._is_all():
+        out = {}
+        for path, content in raw.items():
+            agent, bare = src_spec.split_all_path(path)
+            if agent is None:
+                continue
+            out[dst_spec.join_all_path(agent, bare)] = content
+    else:
+        out = raw
+    dst_patterns = dst_spec.resolved_patterns()
+    return {k: v for k, v in out.items() if dst_spec.matches(k, dst_patterns)}
+
+
 def convert_workspace(
     src_spec: WorkspaceSpec,
     source_fw: str,
@@ -582,6 +614,9 @@ def convert_workspace(
         k: v for k, v in converted.items()
         if k not in default_paths or k not in existing_paths
     }
+    # Carry binary skill assets the text collect() skipped (verbatim).
+    effective.update(_collect_binary_passthrough(
+        src_spec, resources, source_fw, target_fw, dst_spec))
     skipped_defaults = sorted(default_paths & existing_paths)
     added_defaults = sorted(default_paths - existing_paths)
 

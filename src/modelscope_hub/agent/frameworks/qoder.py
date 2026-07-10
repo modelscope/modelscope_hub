@@ -25,7 +25,7 @@ class QoderWorkspace(WorkspaceSpec):
         return False
 
     @property
-    def default_workspace_root(self) -> Path:
+    def default_root(self) -> Path:
         return Path.home() / ".qoder"
 
     @property
