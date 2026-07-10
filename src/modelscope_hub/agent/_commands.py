@@ -420,6 +420,23 @@ def cmd_download(
     return 0
 
 
+def _file_per_agent_identity_path(dst_spec: WorkspaceSpec) -> str | None:
+    """Resolve the per-agent identity file for a file-per-agent target.
+
+    File-per-agent frameworks (e.g. qoder) declare a ``{name}`` placeholder
+    pattern such as ``agents/{name}.md``.  Format it with the destination
+    agent name so converted persona content can be routed into that file.
+    Returns ``None`` when the layout has no single ``{name}`` file pattern.
+    """
+    name = dst_spec.agent_name or DEFAULT_AGENT_NAME
+    for pattern in dst_spec.patterns:
+        # Only single-file placeholders (no wildcard) identify the persona file;
+        # skip glob patterns like ``skills/{name}/*`` if any exist.
+        if "{name}" in pattern and "*" not in pattern:
+            return pattern.format(name=name)
+    return None
+
+
 def convert_workspace(
     src_spec: WorkspaceSpec,
     source_fw: str,
@@ -443,12 +460,20 @@ def convert_workspace(
         converted = resources
         default_paths: set = set()
     else:
+        # File-per-agent targets (e.g. qoder ``agents/{name}.md``) keep
+        # per-agent identity in a dedicated sub-agent file; route overflow
+        # (persona content with no shared mapping) there instead of the
+        # shared catch-all so it does not pollute other sub-agents.
+        overflow_target = None
+        if any("{name}" in p for p in dst_spec.patterns):
+            overflow_target = _file_per_agent_identity_path(dst_spec)
         result = merge_resources(
             incoming=resources,
             source_product=source_fw,
             target_product=target_fw,
             source_defaults=get_defaults(source_fw),
             target_defaults=get_defaults(target_fw),
+            overflow_target=overflow_target,
         )
         default_paths = {a.path for a in result.actions if a.action == "default"}
         converted = result.merged_files
@@ -719,19 +744,29 @@ def cmd_recover(
     if framework and framework not in FRAMEWORK_REGISTRY:
         return _fail(f"unknown framework '{framework}'. Available: {available_frameworks()}")
 
-    if not name:
-        stem = zip_path.stem
-        parts = stem.rsplit("_", 2)
-        name = parts[0] if len(parts) >= 3 else stem
-
+    # Parse (framework, name) from the zip filename once, honoring both the
+    # ``-`` (upload) and ``_`` (watch) delimiters, and fill in whatever the
+    # caller left unspecified.  Reusing _parse_backup_meta keeps this aligned
+    # with the --list/restore filtering above.
+    parsed_fw, parsed_name = _parse_backup_meta(zip_path.stem)
     if not framework:
-        possible_fw = name.split("_")[0] if "_" in name else name
-        if possible_fw in FRAMEWORK_REGISTRY:
-            framework = possible_fw
+        if parsed_fw in FRAMEWORK_REGISTRY:
+            framework = parsed_fw
         else:
             return _fail("cannot infer framework. Pass --framework explicitly.")
 
-    spec = build_spec(framework, "all", local_dir)
+    # Determine the restore SCOPE (which agent directory the backup belongs to).
+    # An all-scope backup is named ``{fw}_{date}_{time}`` (no name segment), so
+    # ``parsed_name`` is empty -> restore into the all-root.  A single-agent
+    # backup is ``{fw}{delim}{name}_...`` -> restore into that agent only.
+    # A hardcoded "all" here would lift root-per-agent frameworks to the shared
+    # workspaces/ parent and, because a single-agent zip stores bare (unprefixed)
+    # paths, wrongly treat every sibling agent's files as "extra" and delete them.
+    restore_name = name or parsed_name or ALL_AGENT_NAME
+    if not name:
+        name = parsed_name or parsed_fw
+
+    spec = build_spec(framework, restore_name, local_dir)
     root = spec.workspace_root
 
     # Backup current local files

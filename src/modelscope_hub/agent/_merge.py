@@ -461,6 +461,7 @@ def merge_resources(
     target_defaults: dict[str, str],
     existing_skills: list[str] | None = None,
     fill_missing_defaults: bool = True,
+    overflow_target: str | None = None,
 ) -> FullMergeResult:
     """Merge incoming resources into a target product workspace.
 
@@ -475,6 +476,12 @@ def merge_resources(
             file types that the source did not provide.  Set to *False* for
             convert / download so only files actually present in the source
             are written to the target.
+        overflow_target: when given, mutually-exclusive ("overflow") content
+            that has no semantic mapping on the target is routed to *this* path
+            instead of the shared catch-all file.  Used for file-per-agent
+            targets (e.g. qoder ``agents/{name}.md``) so a converted persona
+            lands in its own sub-agent file rather than polluting the shared
+            ``AGENTS.md``.
     """
     is_cross_product = source_product != target_product
     existing_skill_set = set(existing_skills or [])
@@ -524,7 +531,7 @@ def merge_resources(
                     detail=f"{path} has no equivalent in {target_product} and no user changes, skipped",
                 ))
                 continue
-            catch_all = _catch_all_file(target_product)
+            catch_all = overflow_target or _catch_all_file(target_product)
             block = f"## Imported from {source_product} {path}\n\n{user_diff}\n"
             overflow_blocks.append((catch_all, block))
             result.actions.append(MergeAction(

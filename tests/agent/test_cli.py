@@ -11,9 +11,12 @@ from modelscope_hub.agent._commands import (
     build_spec,
     cmd_convert,
     cmd_download,
+    cmd_list,
     cmd_recover,
     cmd_status,
+    cmd_stop,
     cmd_upload,
+    cmd_watch,
     repo_name,
     resolve_local_name,
     resolve_remote,
@@ -410,6 +413,123 @@ class TestBackupsFilterCmd(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Restore *behaviour* tests: actual delete + extract, scoped per backup.
+# These cover cmd_recover's core restore path (previously untested) and lock
+# the P0 regression where a single-agent restore wiped sibling agents because
+# the scope was hardcoded to "all".
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreBehaviour(unittest.TestCase):
+    """Exercise cmd_recover's delete-extra + extract logic against a real
+    on-disk workspace, asserting the restore is scoped to the backup's agent.
+
+    NOTE: these deliberately do NOT pass ``local_dir`` -- an explicit override
+    makes ``workspace_root`` ignore ``agent_name`` entirely, which would bypass
+    the exact scoping logic under test.  Instead we redirect ``Path.home()`` to
+    a temp dir so qwenpaw resolves to ``{home}/.qwenpaw/workspaces[/<agent>]``
+    just like in production.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name) / "home"
+        self.cache_dir = Path(self.tmp.name) / "cache"
+        self.cache_dir.mkdir()
+        # qwenpaw all-root workspace with three sibling agents on disk.
+        self.ws = self.home / ".qwenpaw" / "workspaces"
+        for agent in ("default", "bot-a", "bot-b"):
+            d = self.ws / agent
+            d.mkdir(parents=True)
+            (d / "SOUL.md").write_text(f"# Soul\n{agent} original.\n")
+            (d / "PROFILE.md").write_text(f"# Profile\n{agent} profile.\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _make_backup(self, stem: str, files: dict) -> Path:
+        """Write a backup zip {rel: content} into the cache dir."""
+        zpath = self.cache_dir / f"{stem}.zip"
+        with zipfile.ZipFile(zpath, "w") as zf:
+            for rel, content in files.items():
+                zf.writestr(rel, content)
+        return zpath
+
+    def _read(self, agent: str, fname: str):
+        f = self.ws / agent / fname
+        return f.read_text() if f.exists() else None
+
+    @mock.patch("pathlib.Path.home")
+    @mock.patch("modelscope_hub.agent._sync.cache_dir")
+    @mock.patch("modelscope_hub.agent._cache.cache_dir")
+    def test_restore_single_agent_does_not_wipe_siblings(self, mock_cache, mock_sync_cache, mock_home):
+        """P0 regression: restoring a single-agent (default) backup must NOT
+        delete or touch sibling agents bot-a / bot-b."""
+        mock_cache.return_value = self.cache_dir
+        mock_sync_cache.return_value = self.cache_dir
+        mock_home.return_value = self.home
+        # A watch-style single-agent backup: bare (unprefixed) paths for default.
+        self._make_backup(
+            "qwenpaw_default_20260702_170208",
+            {"SOUL.md": "# Soul\ndefault restored.\n"},
+        )
+        rc = cmd_recover(target="qwenpaw_default_20260702_170208")
+        self.assertEqual(rc, 0)
+        # default restored from the zip.
+        self.assertEqual(self._read("default", "SOUL.md"), "# Soul\ndefault restored.\n")
+        # siblings untouched -- the whole point of the fix.
+        self.assertEqual(self._read("bot-a", "SOUL.md"), "# Soul\nbot-a original.\n")
+        self.assertEqual(self._read("bot-a", "PROFILE.md"), "# Profile\nbot-a profile.\n")
+        self.assertEqual(self._read("bot-b", "SOUL.md"), "# Soul\nbot-b original.\n")
+
+    @mock.patch("pathlib.Path.home")
+    @mock.patch("modelscope_hub.agent._sync.cache_dir")
+    @mock.patch("modelscope_hub.agent._cache.cache_dir")
+    def test_restore_removes_extra_files_within_same_agent(self, mock_cache, mock_sync_cache, mock_home):
+        """Files present locally but absent from the (same-agent) backup are
+        removed -- but only within the restored agent's own directory."""
+        mock_cache.return_value = self.cache_dir
+        mock_sync_cache.return_value = self.cache_dir
+        mock_home.return_value = self.home
+        # backup has only SOUL.md -> local default/PROFILE.md is 'extra'.
+        self._make_backup(
+            "qwenpaw_default_20260702_170208",
+            {"SOUL.md": "# Soul\ndefault restored.\n"},
+        )
+        rc = cmd_recover(target="qwenpaw_default_20260702_170208")
+        self.assertEqual(rc, 0)
+        # extra file within default is removed.
+        self.assertIsNone(self._read("default", "PROFILE.md"))
+        # but sibling PROFILE.md files survive.
+        self.assertEqual(self._read("bot-a", "PROFILE.md"), "# Profile\nbot-a profile.\n")
+
+    @mock.patch("pathlib.Path.home")
+    @mock.patch("modelscope_hub.agent._sync.cache_dir")
+    @mock.patch("modelscope_hub.agent._cache.cache_dir")
+    def test_restore_all_scope_backup_uses_prefixed_paths(self, mock_cache, mock_sync_cache, mock_home):
+        """An all-scope backup (name-less filename, agent-prefixed entries)
+        restores across every agent directory."""
+        mock_cache.return_value = self.cache_dir
+        mock_sync_cache.return_value = self.cache_dir
+        mock_home.return_value = self.home
+        # all-scope backup: filename has no name segment; entries are prefixed.
+        self._make_backup(
+            "qwenpaw_20260702_170208",
+            {
+                "default/SOUL.md": "# Soul\ndefault all-restored.\n",
+                "bot-a/SOUL.md": "# Soul\nbot-a all-restored.\n",
+                "bot-b/SOUL.md": "# Soul\nbot-b all-restored.\n",
+            },
+        )
+        rc = cmd_recover(target="qwenpaw_20260702_170208")
+        self.assertEqual(rc, 0)
+        # every agent restored from its prefixed entry.
+        self.assertEqual(self._read("default", "SOUL.md"), "# Soul\ndefault all-restored.\n")
+        self.assertEqual(self._read("bot-a", "SOUL.md"), "# Soul\nbot-a all-restored.\n")
+        self.assertEqual(self._read("bot-b", "SOUL.md"), "# Soul\nbot-b all-restored.\n")
+
+
+# ---------------------------------------------------------------------------
 # Download command tests (stubbed client)
 # ---------------------------------------------------------------------------
 
@@ -618,15 +738,10 @@ class TestConvert(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_convert_local_nanobot_to_hermes(self):
-        rc = cmd_convert(
-            source_fw="nanobot", target_fw="hermes",
-            local_dir=str(self.src), out_dir=str(self.out),
-        )
-        self.assertEqual(rc, 0)
-        self.assertTrue((self.out / "SOUL.md").is_file())
-        # nanobot USER.md maps to hermes memories/USER.md
-        self.assertTrue((self.out / "memories" / "USER.md").is_file())
+    # NOTE: basic nanobot->hermes convert (presence-only) is covered more
+    # strongly by test_convert_targetname.py::test_convert_to_hermes_output_is_clean
+    # (identity survival + landing path + corruption-free), so it is not
+    # duplicated here.  This class keeps only the failure/edge paths below.
 
     def test_convert_dry_run_writes_nothing(self):
         rc = cmd_convert(
@@ -648,6 +763,281 @@ class TestConvert(unittest.TestCase):
         rc = cmd_convert(
             source_fw="nanobot", target_fw="hermes",
             local_dir=str(self.src / "missing"),
+        )
+        self.assertEqual(rc, 1)
+
+
+class TestFrameworkUploadCoverage(unittest.TestCase):
+    """Offline upload coverage for openclaw / hermes / ms-agent / qwenpaw,
+    each using its own native file layout.  Complements TestUploadCmd (qoder)."""
+
+    LAYOUTS = {
+        "openclaw": {"SOUL.md": "# Soul\noc\n", "USER.md": "# User\noc\n"},
+        "hermes": {"SOUL.md": "# Soul\nhm\n", "memories/USER.md": "# User\nhm\n"},
+        "ms-agent": {"profile.md": "# Profile\nms\n", "MEMORY.md": "# Memory\nms\n"},
+        "qwenpaw": {"SOUL.md": "# Soul\nqp\n", "PROFILE.md": "# Profile\nqp\n"},
+    }
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        _StubClient.instances = []
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _StubClient)
+    def _upload(self, framework, files):
+        root = Path(self.tmp.name) / framework
+        for rel, content in files.items():
+            fp = root / rel
+            fp.parent.mkdir(parents=True, exist_ok=True)
+            fp.write_text(content)
+        _StubClient.instances = []
+        rc = cmd_upload(
+            framework=framework, name=None, local_dir=str(root),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0, f"{framework} upload failed")
+        return _StubClient.instances[0]
+
+    def test_upload_openclaw(self):
+        client = self._upload("openclaw", self.LAYOUTS["openclaw"])
+        self.assertEqual(client.created[0], ("u", "openclaw-default", "openclaw"))
+        self.assertIn("SOUL.md", client.uploaded_resources)
+        self.assertIn("USER.md", client.uploaded_resources)
+
+    def test_upload_hermes(self):
+        client = self._upload("hermes", self.LAYOUTS["hermes"])
+        self.assertEqual(client.created[0], ("u", "hermes-default", "hermes"))
+        self.assertIn("memories/USER.md", client.uploaded_resources)
+
+    def test_upload_ms_agent(self):
+        client = self._upload("ms-agent", self.LAYOUTS["ms-agent"])
+        self.assertEqual(client.created[0], ("u", "ms-agent-default", "ms-agent"))
+        self.assertIn("profile.md", client.uploaded_resources)
+        self.assertIn("MEMORY.md", client.uploaded_resources)
+
+    def test_upload_qwenpaw(self):
+        client = self._upload("qwenpaw", self.LAYOUTS["qwenpaw"])
+        self.assertEqual(client.created[0], ("u", "qwenpaw-default", "qwenpaw"))
+        self.assertIn("PROFILE.md", client.uploaded_resources)
+
+
+class _OpenclawStub:
+    """Serves an openclaw single sub-agent repo (bare paths)."""
+
+    STORE = {"SOUL.md": "# Soul\noc identity\n", "USER.md": "# User\noc user\n"}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def repo_info(self, path, name):
+        return {"Path": path, "Name": name, "Framework": "openclaw", "Revision": 1}
+
+    def list_repo_files(self, path, name):
+        return list(self.STORE)
+
+    def download_repo_file(self, path, name, file_path):
+        return self.STORE[file_path]
+
+
+class _HermesStub:
+    """Serves a hermes single-agent repo."""
+
+    STORE = {"SOUL.md": "# Soul\nhermes identity\n",
+             "memories/USER.md": "# User\nhermes user\n"}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def repo_info(self, path, name):
+        return {"Path": path, "Name": name, "Framework": "hermes", "Revision": 1}
+
+    def list_repo_files(self, path, name):
+        return list(self.STORE)
+
+    def download_repo_file(self, path, name, file_path):
+        return self.STORE[file_path]
+
+
+class _MsAgentStub:
+    """Serves an ms-agent single-agent repo (lowercase profile.md persona)."""
+
+    STORE = {"profile.md": "# Profile\nms persona\n",
+             "MEMORY.md": "# Memory\nms memory\n"}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def repo_info(self, path, name):
+        return {"Path": path, "Name": name, "Framework": "ms-agent", "Revision": 1}
+
+    def list_repo_files(self, path, name):
+        return list(self.STORE)
+
+    def download_repo_file(self, path, name, file_path):
+        return self.STORE[file_path]
+
+
+class TestFrameworkDownloadCoverage(unittest.TestCase):
+    """Direct (non-convert) download coverage for openclaw / hermes / ms-agent,
+    complementing the qwenpaw download tests already in TestDownload."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.out = Path(self.tmp.name) / "ws"
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _OpenclawStub)
+    def test_download_openclaw_writes_content(self):
+        rc = cmd_download(
+            framework="openclaw", repo="oc", local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.out / "SOUL.md").read_text(), "# Soul\noc identity\n")
+        self.assertEqual((self.out / "USER.md").read_text(), "# User\noc user\n")
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _HermesStub)
+    def test_download_hermes_writes_content(self):
+        rc = cmd_download(
+            framework="hermes", repo="hm", local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.out / "SOUL.md").read_text(), "# Soul\nhermes identity\n")
+        self.assertEqual(
+            (self.out / "memories" / "USER.md").read_text(), "# User\nhermes user\n")
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _MsAgentStub)
+    def test_download_ms_agent_writes_content(self):
+        rc = cmd_download(
+            framework="ms-agent", repo="msa", local_dir=str(self.out),
+            endpoint="http://s", token="tok", username="u",
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual((self.out / "profile.md").read_text(), "# Profile\nms persona\n")
+        self.assertEqual((self.out / "MEMORY.md").read_text(), "# Memory\nms memory\n")
+
+
+# ---------------------------------------------------------------------------
+# List command tests (--owner / --page / --page-size, stubbed client)
+# ---------------------------------------------------------------------------
+
+
+class _ListStub:
+    """Records the pagination/owner args and serves a fixed agent listing."""
+
+    calls = []
+    RESULT = {
+        "items": [
+            {"Path": "alice", "Name": "bot-a", "Framework": "qwenpaw",
+             "Visibility": "public", "LastUpdatedDate": "2026-07-01T10:00:00"},
+        ],
+        "total_count": 1,
+    }
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def list_agents(self, owner=None, page_number=1, page_size=10):
+        _ListStub.calls.append(
+            {"owner": owner, "page_number": page_number, "page_size": page_size})
+        return _ListStub.RESULT
+
+
+class TestListCmd(unittest.TestCase):
+    def setUp(self):
+        _ListStub.calls = []
+
+    def test_list_requires_login(self):
+        # No endpoint -> command fails without touching the client.
+        rc = cmd_list(endpoint=None, token=None)
+        self.assertEqual(rc, 1)
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _ListStub)
+    def test_list_passes_owner_and_pagination(self):
+        rc = cmd_list(
+            owner="alice", page_number=3, page_size=25,
+            endpoint="http://s", token="tok",
+        )
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(_ListStub.calls), 1)
+        self.assertEqual(
+            _ListStub.calls[0],
+            {"owner": "alice", "page_number": 3, "page_size": 25},
+        )
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _ListStub)
+    def test_list_defaults_pagination(self):
+        rc = cmd_list(endpoint="http://s", token="tok")
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            _ListStub.calls[0],
+            {"owner": None, "page_number": 1, "page_size": 10},
+        )
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi")
+    def test_list_empty_result(self, mock_api):
+        inst = mock_api.return_value
+        inst.list_agents.return_value = {"items": [], "total_count": 0}
+        rc = cmd_list(endpoint="http://s", token="tok")
+        self.assertEqual(rc, 0)
+
+
+# ---------------------------------------------------------------------------
+# Stop command tests (stubbed daemon)
+# ---------------------------------------------------------------------------
+
+
+class TestStopCmd(unittest.TestCase):
+    @mock.patch("modelscope_hub.agent._watcher.stop_daemon")
+    def test_stop_reports_stopped(self, mock_stop):
+        mock_stop.return_value = True
+        rc = cmd_stop()
+        self.assertEqual(rc, 0)
+        mock_stop.assert_called_once()
+
+    @mock.patch("modelscope_hub.agent._watcher.stop_daemon")
+    def test_stop_reports_none_running(self, mock_stop):
+        mock_stop.return_value = False
+        rc = cmd_stop()
+        self.assertEqual(rc, 0)
+        mock_stop.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Watch command entry tests (--pull / -n guards, no daemon spawned)
+# ---------------------------------------------------------------------------
+
+
+class TestWatchCmdEntry(unittest.TestCase):
+    """Exercises cmd_watch validation branches that return before daemonizing."""
+
+    def test_watch_unknown_framework_fails(self):
+        rc = cmd_watch(framework="nope", repo="r",
+                       endpoint="http://s", token="tok", username="u")
+        self.assertEqual(rc, 1)
+
+    def test_watch_requires_login(self):
+        rc = cmd_watch(framework="nanobot", repo="r",
+                       endpoint=None, token=None, username="u")
+        self.assertEqual(rc, 1)
+
+    def test_watch_requires_username(self):
+        rc = cmd_watch(framework="nanobot", repo="r",
+                       endpoint="http://s", token="tok", username=None)
+        self.assertEqual(rc, 1)
+
+    @mock.patch("modelscope_hub.agent._watcher.stop_daemon")
+    def test_watch_individual_on_shared_framework_rejected(self, mock_stop):
+        # qoder shares files across sub-agents; a named individual watch is
+        # rejected (--pull / -n path) before any daemon is launched.
+        rc = cmd_watch(
+            framework="qoder", name="bot-a", repo="r", pull=True,
+            endpoint="http://s", token="tok", username="u",
         )
         self.assertEqual(rc, 1)
 

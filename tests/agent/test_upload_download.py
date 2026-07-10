@@ -194,46 +194,28 @@ class TestUploadDownload(unittest.TestCase):
             self._cleanup_dir(local)
 
     # -----------------------------------------------------------------------
-    # 02. Upload: --name all for file-per-agent (qoder)
+    # 02. Upload: --name all across layouts (qoder / qwenpaw / openclaw / nanobot)
     # -----------------------------------------------------------------------
-    def test_02_upload_all_qoder(self):
-        local = self._create_local_workspace(QODER_ALL_FILES)
-        try:
-            rc = cmd_upload(
-                framework="qoder", name=ALL_AGENT_NAME, local_dir=local,
-                endpoint=SERVER, token=TOKEN, username=self.username,
-            )
-            self.assertEqual(rc, 0, "upload all should succeed")
-        finally:
-            self._cleanup_dir(local)
-
-    # -----------------------------------------------------------------------
-    # 03. Upload: --name all for root-per-agent (qwenpaw)
-    # -----------------------------------------------------------------------
-    def test_03_upload_all_qwenpaw(self):
-        local = self._create_local_workspace(QWENPAW_ALL_FILES)
-        try:
-            rc = cmd_upload(
-                framework="qwenpaw", name=ALL_AGENT_NAME, local_dir=local,
-                endpoint=SERVER, token=TOKEN, username=self.username,
-            )
-            self.assertEqual(rc, 0, "upload all qwenpaw should succeed")
-        finally:
-            self._cleanup_dir(local)
-
-    # -----------------------------------------------------------------------
-    # 04. Upload: --name all for openclaw (workspace* prefix)
-    # -----------------------------------------------------------------------
-    def test_04_upload_all_openclaw(self):
-        local = self._create_local_workspace(OPENCLAW_ALL_FILES)
-        try:
-            rc = cmd_upload(
-                framework="openclaw", name=ALL_AGENT_NAME, local_dir=local,
-                endpoint=SERVER, token=TOKEN, username=self.username,
-            )
-            self.assertEqual(rc, 0, "upload all openclaw should succeed")
-        finally:
-            self._cleanup_dir(local)
+    def test_02_upload_all_frameworks(self):
+        """--name all upload succeeds for every layout family."""
+        cases = [
+            ("qoder", QODER_ALL_FILES),
+            ("qwenpaw", QWENPAW_ALL_FILES),
+            ("openclaw", OPENCLAW_ALL_FILES),
+            ("nanobot", NANOBOT_ALL_FILES),
+        ]
+        for framework, files in cases:
+            with self.subTest(framework=framework):
+                local = self._create_local_workspace(files)
+                try:
+                    rc = cmd_upload(
+                        framework=framework, name=ALL_AGENT_NAME, local_dir=local,
+                        endpoint=SERVER, token=TOKEN, username=self.username,
+                    )
+                    self.assertEqual(rc, 0, f"upload all {framework} should succeed")
+                finally:
+                    self._cleanup_dir(local)
+                _wait(REQUEST_INTERVAL)
 
     # -----------------------------------------------------------------------
     # 05. Upload: --dry-run
@@ -296,20 +278,6 @@ class TestUploadDownload(unittest.TestCase):
                 endpoint=SERVER, token=TOKEN, username=self.username,
             )
             self.assertEqual(rc, 1)
-        finally:
-            self._cleanup_dir(local)
-
-    # -----------------------------------------------------------------------
-    # 10. Upload: nanobot all mode
-    # -----------------------------------------------------------------------
-    def test_10_upload_all_nanobot(self):
-        local = self._create_local_workspace(NANOBOT_ALL_FILES)
-        try:
-            rc = cmd_upload(
-                framework="nanobot", name=ALL_AGENT_NAME, local_dir=local,
-                endpoint=SERVER, token=TOKEN, username=self.username,
-            )
-            self.assertEqual(rc, 0, "upload all nanobot should succeed")
         finally:
             self._cleanup_dir(local)
 
@@ -450,72 +418,38 @@ class TestUploadDownload(unittest.TestCase):
                                  f"content mismatch for {rel}")
 
     # -----------------------------------------------------------------------
-    # 17. Round-trip: all-mode qoder
+    # 17. Round-trip: all-mode across layouts (qoder / qwenpaw / openclaw)
     # -----------------------------------------------------------------------
-    def test_17_roundtrip_all_qoder(self):
-        local_up = self._create_local_workspace(QODER_ALL_FILES)
-        try:
-            rc = cmd_upload(
-                framework="qoder", name=ALL_AGENT_NAME, local_dir=local_up,
-                endpoint=SERVER, token=TOKEN, username=self.username,
-            )
-            self.assertEqual(rc, 0)
-        finally:
-            self._cleanup_dir(local_up)
+    def test_17_roundtrip_all_frameworks(self):
+        """all-mode upload then list, asserting each layout's prefixed paths."""
+        cases = [
+            ("qoder", QODER_ALL_FILES,
+             ["agents/reviewer.md", "agents/coder.md", "AGENTS.md"]),
+            ("qwenpaw", QWENPAW_ALL_FILES,
+             ["bot-a/SOUL.md", "bot-b/SOUL.md", "bot-a/skills/write/SKILL.md"]),
+            ("openclaw", OPENCLAW_ALL_FILES,
+             ["workspace/SOUL.md", "workspace-helper/SOUL.md"]),
+        ]
+        for framework, files, expected in cases:
+            with self.subTest(framework=framework):
+                local_up = self._create_local_workspace(files)
+                try:
+                    rc = cmd_upload(
+                        framework=framework, name=ALL_AGENT_NAME, local_dir=local_up,
+                        endpoint=SERVER, token=TOKEN, username=self.username,
+                    )
+                    self.assertEqual(rc, 0)
+                finally:
+                    self._cleanup_dir(local_up)
 
-        _wait(5)
+                _wait(5)
 
-        repo = _repo_name("qoder", ALL_AGENT_NAME)
-        server_files = self.client.list_repo_files(self.username, repo)
-        server_set = set(server_files)
-        self.assertIn("agents/reviewer.md", server_set)
-        self.assertIn("agents/coder.md", server_set)
-        self.assertIn("AGENTS.md", server_set)
-
-    # -----------------------------------------------------------------------
-    # 18. Round-trip: all-mode qwenpaw
-    # -----------------------------------------------------------------------
-    def test_18_roundtrip_all_qwenpaw(self):
-        local_up = self._create_local_workspace(QWENPAW_ALL_FILES)
-        try:
-            rc = cmd_upload(
-                framework="qwenpaw", name=ALL_AGENT_NAME, local_dir=local_up,
-                endpoint=SERVER, token=TOKEN, username=self.username,
-            )
-            self.assertEqual(rc, 0)
-        finally:
-            self._cleanup_dir(local_up)
-
-        _wait(5)
-
-        repo = _repo_name("qwenpaw", ALL_AGENT_NAME)
-        server_files = self.client.list_repo_files(self.username, repo)
-        server_set = set(server_files)
-        self.assertIn("bot-a/SOUL.md", server_set)
-        self.assertIn("bot-b/SOUL.md", server_set)
-        self.assertIn("bot-a/skills/write/SKILL.md", server_set)
-
-    # -----------------------------------------------------------------------
-    # 19. Round-trip: all-mode openclaw
-    # -----------------------------------------------------------------------
-    def test_19_roundtrip_all_openclaw(self):
-        local_up = self._create_local_workspace(OPENCLAW_ALL_FILES)
-        try:
-            rc = cmd_upload(
-                framework="openclaw", name=ALL_AGENT_NAME, local_dir=local_up,
-                endpoint=SERVER, token=TOKEN, username=self.username,
-            )
-            self.assertEqual(rc, 0)
-        finally:
-            self._cleanup_dir(local_up)
-
-        _wait(5)
-
-        repo = _repo_name("openclaw", ALL_AGENT_NAME)
-        server_files = self.client.list_repo_files(self.username, repo)
-        server_set = set(server_files)
-        self.assertIn("workspace/SOUL.md", server_set)
-        self.assertIn("workspace-helper/SOUL.md", server_set)
+                repo = _repo_name(framework, ALL_AGENT_NAME)
+                server_set = set(self.client.list_repo_files(self.username, repo))
+                for rel in expected:
+                    self.assertIn(rel, server_set,
+                                  f"{framework}: {rel} missing on server")
+                _wait(REQUEST_INTERVAL)
 
     # -----------------------------------------------------------------------
     # 20. Idempotent re-upload
