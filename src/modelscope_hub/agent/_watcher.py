@@ -146,13 +146,14 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
     sf.unlink(missing_ok=True)
 
 
-def _push_local(client, username, name, framework, local_resources, state, logger, *, remote_paths=None, remote_lfs_paths=None) -> bool:
+def _push_local(client, username, name, framework, local_resources, state, logger, *, remote_paths=None, remote_lfs_paths=None, prune_patterns=None) -> bool:
     """Push local changes: full upload on first time, incremental thereafter."""
     if not local_resources:
         logger.debug("No local resources to push -- skipping.")
         return False
     if not state.get("remote_files"):
-        push_resources(client, username, name, framework, local_resources)
+        push_resources(client, username, name, framework, local_resources,
+                       prune_patterns=prune_patterns)
         logger.info("Pushed local changes (full upload -- first time).")
         return True
     else:
@@ -198,7 +199,8 @@ def _sync_action(
         if not local_changed:
             return False
         return _push_local(client, username, name, framework, local_resources, state, logger,
-                           remote_paths=remote_paths, remote_lfs_paths=remote_lfs_paths)
+                           remote_paths=remote_paths, remote_lfs_paths=remote_lfs_paths,
+                           prune_patterns=spec.resolved_patterns())
 
     if remote_changed and local_changed:
         backup_path = backup_local(spec, backup_label)
@@ -210,7 +212,8 @@ def _sync_action(
         logger.info("Pulled remote changes (backup: %s).", backup_path)
     elif local_changed:
         _push_local(client, username, name, framework, local_resources, state, logger,
-                    remote_paths=remote_paths, remote_lfs_paths=remote_lfs_paths)
+                    remote_paths=remote_paths, remote_lfs_paths=remote_lfs_paths,
+                    prune_patterns=spec.resolved_patterns())
     else:
         return False
     return True

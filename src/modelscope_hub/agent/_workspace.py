@@ -241,6 +241,20 @@ class WorkspaceSpec(ABC):
             agents = [DEFAULT_AGENT_NAME] + agents
         return agents
 
+    def sanitize_inbound_file(self, rel_path: str, content: bytes) -> bytes:
+        """Sanitize a single inbound (remote -> local) file before it is written.
+
+        This is the single choke point every inbound write path MUST pass
+        through (full ``apply`` and incremental ``pull_incremental`` alike), so
+        framework-specific cleaning (e.g. stripping secrets from QwenPaw
+        ``agent.json``) is applied uniformly regardless of sync mode.
+
+        The base implementation returns *content* unchanged. Subclasses may
+        override to rewrite specific files. Implementations must be
+        byte-preserving for files they do not care about.
+        """
+        return content
+
     def apply(self, resources: dict[str, str]) -> list[str]:
         """Write resource files back to the workspace.  Returns list of written paths."""
         root = self.workspace_root.resolve()
@@ -250,8 +264,9 @@ class WorkspaceSpec(ABC):
             if not target.is_relative_to(root):
                 logger.warning("Path traversal blocked: %s", rel_path)
                 continue
+            sanitized = self.sanitize_inbound_file(rel_path, content.encode("utf-8"))
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            target.write_bytes(sanitized)
             written.append(str(target))
         return written
 

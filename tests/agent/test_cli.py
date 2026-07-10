@@ -151,15 +151,26 @@ class _StubClient:
 
     instances = []
 
+    # Subclasses/tests may set this to simulate pre-existing remote files.
+    preset_remote = []
+
     def __init__(self, *args, **kwargs):
         self.created = []
         self.committed_actions = []
         self.uploaded_resources = None
         self.lfs_uploads = []
+        self.deleted = []
         _StubClient.instances.append(self)
 
     def check_repo(self, path, name):
         return False
+
+    def list_repo_files(self, path, name, revision="master"):
+        return list(type(self).preset_remote)
+
+    def delete_file(self, path, name, file_path, **kwargs):
+        self.deleted.append(file_path)
+        return {"success": True}
 
     def create_repo(self, path, name, framework=None):
         self.created.append((path, name, framework))
@@ -237,6 +248,51 @@ class TestUploadCmd(unittest.TestCase):
         self.assertIn("AGENTS.md", client.uploaded_resources)
         for v in client.uploaded_resources.values():
             self.assertIsInstance(v, bytes)
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _StubClient)
+    def test_full_upload_prunes_stale_remote_in_scope(self):
+        """Mirror semantics: remote files in scope but not local are deleted."""
+        # Remote has a stale skill (in scope, no local match) plus a file
+        # belonging to a DIFFERENT sub-agent (agents/other.md, out of scope).
+        _StubClient.preset_remote = [
+            "AGENTS.md",                       # will be re-uploaded (kept)
+            "agents/reviewer.md",              # re-uploaded (kept)
+            "skills/stale-skill/SKILL.md",     # stale, in scope -> DELETE
+            "agents/other.md",                 # other sub-agent -> KEEP
+        ]
+        try:
+            rc = cmd_upload(
+                framework="qoder", name="reviewer",
+                local_dir=str(self.root),
+                endpoint="http://s", token="tok", username="u",
+            )
+        finally:
+            _StubClient.preset_remote = []
+        self.assertEqual(rc, 0)
+        client = _StubClient.instances[0]
+        # The stale in-scope skill is pruned.
+        self.assertIn("skills/stale-skill/SKILL.md", client.deleted)
+        # The other sub-agent's file is out of scope and preserved.
+        self.assertNotIn("agents/other.md", client.deleted)
+        # Files re-uploaded this run are never deleted.
+        self.assertNotIn("AGENTS.md", client.deleted)
+        self.assertNotIn("agents/reviewer.md", client.deleted)
+
+    @mock.patch("modelscope_hub.agent._commands.AgentApi", _StubClient)
+    def test_full_upload_no_prune_when_remote_clean(self):
+        """No deletes when remote has nothing beyond the uploaded set."""
+        _StubClient.preset_remote = ["AGENTS.md", "agents/reviewer.md"]
+        try:
+            rc = cmd_upload(
+                framework="qoder", name="reviewer",
+                local_dir=str(self.root),
+                endpoint="http://s", token="tok", username="u",
+            )
+        finally:
+            _StubClient.preset_remote = []
+        self.assertEqual(rc, 0)
+        client = _StubClient.instances[0]
+        self.assertEqual(client.deleted, [])
 
     def test_upload_without_login_fails(self):
         rc = cmd_upload(

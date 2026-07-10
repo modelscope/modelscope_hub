@@ -299,14 +299,22 @@ def cmd_upload(
     )
 
     try:
-        from ._sync import push_resources
-        push_resources(client, group, repo_n, framework, resources)
+        from ._sync import push_mirror
+        # Incremental mirror: list remote (sha256), upload only new/changed
+        # files, and prune stale remote files within this upload's scope
+        # (spec.resolved_patterns constrains deletes to the current agent's
+        # prefix, never other sub-agents). Falls back to a full push when the
+        # remote repo is empty/new.
+        push_mirror(
+            client, group, repo_n, framework, resources,
+            prune_patterns=spec.resolved_patterns(),
+        )
     except APIError as e:
         return _fail(api_error_message(e, "upload"))
     except Exception as e:
         return _fail(f"upload failed: {e}")
 
-    print(f"\nUploaded {len(resources)} file(s) to {group}/{repo_n}.")
+    print(f"\nSynced {len(resources)} local file(s) to {group}/{repo_n} (incremental).")
     return 0
 
 
@@ -352,14 +360,52 @@ def cmd_download(
     )
 
     client = AgentApi(endpoint=endpoint, token=token)
+    # When no conversion is requested we can pull incrementally: list the remote
+    # tree (with sha256), skip downloading files whose content already matches
+    # the local copy, and later mirror-delete local files the remote dropped.
+    # Conversion needs the full remote payload, so it stays full-download.
+    incremental = (target or framework) == framework
+    remote_all_paths: set[str] | None = None
     try:
         info = client.repo_info(group, repo_n)
         if info is None:
             return _fail(f"repository {group}/{repo_n} not found.")
-        paths = client.list_repo_files(group, repo_n)
-        if not paths:
-            return _fail(f"repository {group}/{repo_n} has no files.")
-        resources = {p: client.download_repo_file(group, repo_n, p) for p in paths}
+        if incremental:
+            from ._sync import sha256_content
+            remote_detail = client.list_repo_files_detail(group, repo_n)
+            if not remote_detail:
+                return _fail(f"repository {group}/{repo_n} has no files.")
+            remote_all_paths = {f.path for f in remote_detail}
+            # Local baseline for sha comparison (raw bytes -> sha256).
+            probe_spec = build_spec(framework, name or DEFAULT_AGENT_NAME, local_dir)
+            local_bytes = probe_spec.collect_bytes()
+            local_sha = {k: sha256_content(v) for k, v in local_bytes.items()}
+            # Split remote files into unchanged (skip) and to-download.
+            skipped_same: list[str] = []
+            to_download = []
+            for f in remote_detail:
+                if f.path in local_sha and local_sha[f.path] == f.sha256:
+                    skipped_same.append(f.path)
+                else:
+                    to_download.append(f)
+            if skipped_same:
+                print(f"Skipped {len(skipped_same)} unchanged file(s) (sha256 match):")
+                for sp in sorted(skipped_same):
+                    print(f"  [skip] {sp}")
+            resources = {}
+            total = len(to_download)
+            for i, f in enumerate(to_download, 1):
+                print(f"  [{i}/{total}] downloading {f.path}", flush=True)
+                resources[f.path] = client.download_repo_file(group, repo_n, f.path)
+        else:
+            paths = client.list_repo_files(group, repo_n)
+            if not paths:
+                return _fail(f"repository {group}/{repo_n} has no files.")
+            resources = {}
+            total = len(paths)
+            for i, pth in enumerate(paths, 1):
+                print(f"  [{i}/{total}] downloading {pth}", flush=True)
+                resources[pth] = client.download_repo_file(group, repo_n, pth)
     except APIError as e:
         return _fail(api_error_message(e, "download"))
     except Exception as e:
@@ -404,10 +450,14 @@ def cmd_download(
         for s in sorted(skipped):
             print(f"  [skip] {s}")
 
-    if not filtered:
+    # In incremental mode an empty ``filtered`` just means every remote file is
+    # already present locally with matching content -- not an error. Mirror
+    # deletion may still need to run below. In full mode an empty match is a
+    # real failure (nothing usable was downloaded).
+    if not filtered and remote_all_paths is None:
         return _fail("no downloaded files match the local workspace spec patterns.")
 
-    print(f"{len(filtered)} file(s) for {group}/{repo_n} (framework={target_fw}):")
+    print(f"{len(filtered)} changed file(s) for {group}/{repo_n} (framework={target_fw}):")
     for rel in sorted(filtered):
         print(f"  {rel} -> {root / rel}")
 
@@ -417,6 +467,23 @@ def cmd_download(
 
     written = spec.apply(filtered)
     print(f"\nWrote {len(written)} file(s) under {root}.")
+
+    # Mirror delete (incremental only): remove local files the remote no longer
+    # has. Constrained to files matching the workspace spec, so unrelated local
+    # content is never touched. ``remote_all_paths`` holds the full remote set.
+    if remote_all_paths is not None:
+        resolved_root = root.resolve()
+        deleted = 0
+        for rel in sorted(set(spec.collect_bytes().keys()) - remote_all_paths):
+            target_f = (root / rel).resolve()
+            if not target_f.is_relative_to(resolved_root):
+                continue
+            if target_f.exists():
+                target_f.unlink()
+                deleted += 1
+                print(f"  DELETE (mirror): {rel}")
+        if deleted:
+            print(f"Deleted {deleted} local file(s) absent from remote.")
     return 0
 
 

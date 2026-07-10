@@ -23,6 +23,7 @@ __all__ = [
     "detect_local_changes",
     "push_resources",
     "push_incremental",
+    "push_mirror",
     "pull_incremental",
 ]
 
@@ -122,11 +123,21 @@ def push_resources(
     name: str,
     framework: str,
     resources: dict[str, bytes],
+    prune_patterns: list[str] | None = None,
 ) -> None:
     """Full upload via commit interface (normal + LFS).
 
     Creates the repo if needed, then commits all files in batches.
     Raises on failure (caller should NOT update baseline on exception).
+
+    Full upload has *mirror* semantics: after create/update, remote files that
+    belong to this upload's scope but are absent from *resources* are deleted,
+    so a re-used repo does not accumulate stale files across uploads. The
+    delete scope is constrained by *prune_patterns* (workspace-relative globs,
+    typically ``spec.resolved_patterns()``): only remote paths matching them
+    are eligible for deletion, so a single-agent upload never touches other
+    sub-agents' files. When *prune_patterns* is ``None`` pruning is skipped
+    (backward-compatible create/update-only behavior).
     """
     from ._api import is_lfs_file
 
@@ -181,6 +192,29 @@ def push_resources(
 
     logger.info("Pushed %d file(s) (%d normal, %d LFS).",
                 len(resources), len(normal_actions), len(lfs_files))
+
+    # Mirror semantics: prune remote files that fall within this upload's
+    # scope but are no longer present locally.
+    if prune_patterns:
+        import fnmatch
+        try:
+            remote_paths = set(client.list_repo_files(username, name))
+        except Exception as exc:
+            logger.warning("Cannot list remote for prune (%s); skip prune.", exc)
+            remote_paths = set()
+        local_paths = set(resources.keys())
+        stale = [
+            rp for rp in sorted(remote_paths - local_paths)
+            if any(fnmatch.fnmatch(rp, pat) for pat in prune_patterns)
+        ]
+        for fpath in stale:
+            logger.info("  DELETE (prune): %s", fpath)
+            try:
+                client.delete_file(username, name, fpath)
+            except Exception as exc:
+                logger.warning("  prune delete failed for %s (%s)", fpath, exc)
+        if stale:
+            logger.info("Pruned %d stale remote file(s).", len(stale))
 
 
 def push_incremental(
@@ -277,11 +311,20 @@ def pull_incremental(
             logger.warning("  Skipped (path traversal): %s", rfile.path)
             continue
         local_content = local_resources.get(rfile.path)
-        if local_content is not None:
-            local_sha = sha256_content(local_content)
-            if local_sha == rfile.sha256:
-                continue
+        # Fast path: identical raw sha means the local file already matches the
+        # remote (only possible when the inbound hook does not rewrite it), so
+        # skip the download entirely.
+        if local_content is not None and sha256_content(local_content) == rfile.sha256:
+            continue
         content = client.download_repo_file(username, name, rfile.path, binary=True)
+        # Every inbound write path funnels through the sanitize hook so secrets
+        # (e.g. in QwenPaw agent.json) never reach disk regardless of sync mode.
+        content = spec.sanitize_inbound_file(rfile.path, content)
+        # Re-compare against the sanitized bytes: if the hook rewrote the file,
+        # its raw sha differs from remote but may equal what is already on disk,
+        # in which case there is nothing to write.
+        if local_content is not None and sha256_content(local_content) == sha256_content(content):
+            continue
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         changes += 1
@@ -299,3 +342,74 @@ def pull_incremental(
 
     return changes
 
+
+def push_mirror(
+    client: "AgentApi",
+    username: str,
+    name: str,
+    framework: str,
+    resources: dict[str, bytes],
+    prune_patterns: list[str] | None = None,
+) -> None:
+    """Incremental mirror push (local -> remote) with sha256 diffing.
+
+    Lists the remote tree (with per-file sha256), compares against *resources*,
+    and only commits files that are new or whose content changed. Mirror
+    semantics apply: remote files within *prune_patterns* scope that are absent
+    locally are deleted. Falls back to a full :func:`push_resources` when the
+    remote is empty / not yet created (first push).
+
+    Unlike the inbound (download) path, no sanitization is applied here: local
+    bytes are uploaded as-is and compared by raw sha256, matching the server's
+    sha256 so unchanged files are skipped.
+    """
+    import fnmatch
+    from ._api import APIError
+
+    if not resources:
+        logger.warning("push_mirror called with empty resources; skipping.")
+        return
+
+    # Fetch remote baseline. A brand-new / missing repo surfaces as 400/404/500
+    # (see watcher); treat all of those as an empty remote so we do a full push.
+    try:
+        remote_files = client.list_repo_files_detail(username, name)
+    except APIError as e:
+        if e.status_code in (400, 404, 500):
+            remote_files = []
+        else:
+            raise
+    except Exception:
+        remote_files = []
+
+    if not remote_files:
+        logger.info("Remote empty/new; doing full push for %s/%s.", username, name)
+        push_resources(client, username, name, framework, resources,
+                       prune_patterns=prune_patterns)
+        return
+
+    remote_sha_map = {f.path: f.sha256 for f in remote_files}
+    remote_paths = set(remote_sha_map.keys())
+    remote_lfs_paths = {f.path for f in remote_files if f.is_lfs}
+    local_paths = set(resources.keys())
+
+    changed: dict[str, bytes | None] = {}
+    # New or content-changed files -> create/update.
+    for rel, content in resources.items():
+        if rel not in remote_sha_map or sha256_content(content) != remote_sha_map[rel]:
+            changed[rel] = content
+    # Mirror delete: remote files in scope but absent locally -> delete.
+    if prune_patterns:
+        for rp in sorted(remote_paths - local_paths):
+            if any(fnmatch.fnmatch(rp, pat) for pat in prune_patterns):
+                changed[rp] = None
+
+    if not changed:
+        logger.info("Remote already up to date for %s/%s (no changes).", username, name)
+        return
+
+    n_upsert = sum(1 for v in changed.values() if v is not None)
+    n_delete = sum(1 for v in changed.values() if v is None)
+    logger.info("Incremental push: %d upsert, %d delete for %s/%s.",
+                n_upsert, n_delete, username, name)
+    push_incremental(client, username, name, changed, remote_paths, remote_lfs_paths)
