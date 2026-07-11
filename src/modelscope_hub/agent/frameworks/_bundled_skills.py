@@ -27,6 +27,22 @@ class BundledSkillFilterMixin:
     ``optional-skills/`` is left untouched).
     """
 
+    def _walk_matched(self):
+        """Reset per-collection skill caches, then run the normal walk.
+
+        ``_user_skill_cache`` / ``_bundled_cache`` are only a *within one
+        collection* optimization (so ``_is_excluded_asset`` does not re-walk
+        ``skills/`` for every file). A watch daemon reuses a single spec object
+        for its whole lifetime, so persisting them across collections would
+        freeze the user-skill set at the first poll -- skills created (or
+        removed) afterwards would be permanently mis-classified and never sync.
+        Clearing here keeps the O(n) benefit inside one pass while making every
+        poll observe the current on-disk skill set.
+        """
+        self.__dict__.pop("_user_skill_cache", None)
+        self.__dict__.pop("_bundled_cache", None)
+        return super()._walk_matched()
+
     def _bundled_skill_names(self, skills_rel: str) -> frozenset:
         """Declared names of bundled skills from ``<skills_rel>/.bundled_manifest``
         (lines ``name:hash``). Empty when the manifest is absent (e.g. CoPaw,

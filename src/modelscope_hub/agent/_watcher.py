@@ -94,60 +94,16 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
         if not running:
             break
 
-        # ---- Fetch remote file list ----
+        # One poll iteration. Guard the whole body so any unexpected error
+        # (network read timeout, connection reset, JSON/parse error, ...) is
+        # logged WITH a traceback and the loop survives to retry next cycle --
+        # instead of a single fragile call silently wedging the daemon or an
+        # uncaught non-APIError killing the loop while the process lingers.
         try:
-            remote_files = client.list_repo_files_detail(username, repo)
-        except APIError as e:
-            # A non-existent remote repo returns 400 (code 10025801016), and
-            # 404/500 cover transient/unreadable states.  Treat all as an empty
-            # baseline so the first push can create the repo instead of looping
-            # forever (an empty-but-created repo returns 200 with a tree).
-            if e.status_code in (400, 404, 500):
-                remote_files = []
-            else:
-                logger.error("Failed to list remote files: %s", e)
-                continue
-
-        # ---- Collect local resources & detect changes ----
-        # Track only the user's customized files: unchanged framework defaults
-        # are not synced (same rule as upload/convert), so they are neither
-        # pushed nor counted when mirror-deleting local files on pull.
-        local_resources = drop_unchanged_defaults(spec.collect_bytes(), framework, spec)
-        baseline = state.get("remote_files", {})
-        # A remote file counts toward change detection if it was in our baseline
-        # (so edits/deletions are seen) OR it is a workspace file the collect
-        # patterns would pick up (so a file *added* on the remote gets pulled).
-        # Incidental files the server auto-creates (README.md, .gitattributes)
-        # and framework-bundled assets match neither, so they never trigger a
-        # spurious pull.
-        patterns = spec.resolved_patterns()
-        remote_sha_map = {
-            f.path: f.sha256 for f in remote_files
-            if f.path in baseline
-            or (spec.matches(f.path, patterns) and not spec._is_excluded_asset(f.path))
-        }
-
-        remote_changed = (remote_sha_map != baseline)
-        local_changed = bool(detect_local_changes(local_resources, state["remote_files"]))
-
-        # ---- Sync decision ----
-        did_sync = False
-        try:
-            did_sync = _sync_action(
-                push_only, remote_changed, local_changed,
-                client, username, repo, framework, spec,
-                remote_files, local_resources, logger,
-                state,
-            )
-        except Exception as exc:
-            logger.error("Sync failed (will retry): %s", exc)
-
-        # ---- Update baseline on successful sync ----
-        if did_sync:
-            if not push_only:
-                local_resources = drop_unchanged_defaults(spec.collect_bytes(), framework, spec)
-            _refresh_baseline(local_resources, state)
-            save_sync_state(repo, state["remote_files"])
+            _poll_once(client, username, repo, framework, spec,
+                       push_only, state, logger)
+        except Exception:
+            logger.exception("Sync poll failed (will retry next cycle)")
 
     logger.info("Watch stopped (signal received).")
     pf = pid_file()
@@ -158,6 +114,68 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
         except Exception:
             pass
     sf.unlink(missing_ok=True)
+
+
+def _poll_once(client, username, repo, framework, spec, push_only, state, logger) -> None:
+    """Run one sync poll: list remote, detect changes, sync, refresh baseline.
+
+    Raised exceptions propagate to :func:`watch_loop`, which logs them with a
+    traceback and keeps the daemon alive.  Only the *expected* empty-repo
+    ``APIError`` states are handled inline; everything else is intentionally
+    allowed to surface so a real failure is visible rather than silent.
+    """
+    # ---- Fetch remote file list ----
+    try:
+        remote_files = client.list_repo_files_detail(username, repo)
+    except APIError as e:
+        # A non-existent remote repo returns 400 (code 10025801016), and
+        # 404/500 cover transient/unreadable states.  Treat all as an empty
+        # baseline so the first push can create the repo instead of looping
+        # forever (an empty-but-created repo returns 200 with a tree).
+        if e.status_code in (400, 404, 500):
+            remote_files = []
+        else:
+            logger.error("Failed to list remote files: %s", e)
+            return
+
+    # ---- Collect local resources & detect changes ----
+    # Track only the user's customized files: unchanged framework defaults
+    # are not synced (same rule as upload/convert), so they are neither
+    # pushed nor counted when mirror-deleting local files on pull.
+    local_resources = drop_unchanged_defaults(spec.collect_bytes(), framework, spec)
+    baseline = state.get("remote_files", {})
+    # A remote file counts toward change detection if it was in our baseline
+    # (so edits/deletions are seen) OR it is a workspace file the collect
+    # patterns would pick up (so a file *added* on the remote gets pulled).
+    # Incidental files the server auto-creates (README.md, .gitattributes)
+    # and framework-bundled assets match neither, so they never trigger a
+    # spurious pull.
+    patterns = spec.resolved_patterns()
+    remote_sha_map = {
+        f.path: f.sha256 for f in remote_files
+        if f.path in baseline
+        or (spec.matches(f.path, patterns) and not spec._is_excluded_asset(f.path))
+    }
+
+    remote_changed = (remote_sha_map != baseline)
+    local_changed = bool(detect_local_changes(local_resources, state["remote_files"]))
+    logger.debug("poll: local=%d remote=%d remote_changed=%s local_changed=%s",
+                 len(local_resources), len(remote_files), remote_changed, local_changed)
+
+    # ---- Sync decision ----
+    did_sync = _sync_action(
+        push_only, remote_changed, local_changed,
+        client, username, repo, framework, spec,
+        remote_files, local_resources, logger,
+        state,
+    )
+
+    # ---- Update baseline on successful sync ----
+    if did_sync:
+        if not push_only:
+            local_resources = drop_unchanged_defaults(spec.collect_bytes(), framework, spec)
+        _refresh_baseline(local_resources, state)
+        save_sync_state(repo, state["remote_files"])
 
 
 def _push_local(client, username, name, framework, local_resources, state, logger, *, remote_paths=None, remote_lfs_paths=None, prune_patterns=None) -> bool:
