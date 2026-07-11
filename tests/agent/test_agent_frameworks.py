@@ -445,15 +445,34 @@ class TestClientIntegration(unittest.TestCase):
             with self.subTest(framework=fw):
                 files = ALL_FRAMEWORK_FILES[fw]
                 agent = f"{AGENT_NAME}-struct-{fw}"
-                try:
-                    _log_429(push_resources, self.client, self.username, agent, fw, _to_bytes(files))
-                except APIError:
-                    pass
 
-                _wait_server(REQUEST_INTERVAL)
+                # Push with retry: a freshly created repo can transiently reject
+                # the first commit (master ref not yet ready) or hit a 429.
+                # Retry instead of swallowing -- a *persistent* failure must
+                # surface as itself, not masquerade as "missing marker files".
+                last_err = None
+                for attempt in range(4):
+                    try:
+                        _log_429(push_resources, self.client, self.username, agent, fw, _to_bytes(files))
+                        last_err = None
+                        break
+                    except APIError as e:
+                        last_err = e
+                        print(f"    ({fw} push attempt {attempt + 1} failed: {e}; retrying in 3s...)", file=sys.stderr)
+                        time.sleep(3)
+                if last_err is not None:
+                    self.fail(f"{fw} push failed after retries: {last_err}")
 
-                server_files = self.client.list_repo_files(self.username, agent)
-                server_set = set(server_files)
+                # Read-after-write: listing can lag the commit, so retry until
+                # every marker appears (eventual consistency), mirroring the
+                # retry loop in test_09_list_files.
+                server_set: set = set()
+                for attempt in range(5):
+                    _wait_server(REQUEST_INTERVAL)
+                    server_set = set(self.client.list_repo_files(self.username, agent))
+                    if all(m in server_set for m in markers):
+                        break
+                    print(f"    ({fw} list attempt {attempt + 1}: markers not all present yet, retrying...)")
 
                 missing = [m for m in markers if m not in server_set]
                 self.assertFalse(

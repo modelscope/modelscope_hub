@@ -72,12 +72,21 @@ class HermesWorkspace(BundledSkillFilterMixin, WorkspaceSpec):
         # ``config.yaml`` carries the ``mcp_servers`` MCP block (plus model /
         # terminal settings); it is collected here and stripped of secrets on
         # the inbound path via ``sanitize_inbound_file``.
+        #
+        # ``hooks/*`` are Hermes lifecycle hook definitions/scripts (a genuine
+        # HERMES_HOME feature, cf. ``hermes_cli/hooks.py``). They shape runtime
+        # behavior, so they travel for *same-framework* fidelity. No other
+        # framework has a ``hooks/`` slot and hooks are absent from
+        # ``SEMANTIC_GROUPS``, so on a cross-framework convert they resolve to
+        # their own path, match no target pattern, and are dropped by the
+        # ``dst_spec`` filter -- never folded into the catch-all persona file.
         return [
             "SOUL.md",
             "memories/*.md",
             "skills/*",
             "optional-skills/*",
             "config.yaml",
+            "hooks/*",
         ]
 
     def _effective_patterns(self) -> list[str]:

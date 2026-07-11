@@ -52,6 +52,35 @@ class TestAgentAwareCollect(unittest.TestCase):
         self.assertIn("skills/write/SKILL.md", collected)
         self.assertNotIn("skills/docx/SKILL.md", collected)
 
+    def test_hermes_collects_hooks_same_framework(self):
+        """hermes collects ``hooks/*`` (lifecycle hooks) for same-framework
+        fidelity, both for the default agent and named agents in all-mode."""
+        spec = build_spec("hermes", "default", str(self.root))
+        base = spec.workspace_root
+        (base / "hooks").mkdir(parents=True, exist_ok=True)
+        (base / "hooks" / "session_start.sh").write_text(
+            "#!/bin/sh\ngit pull\n", encoding="utf-8")
+        (base / "SOUL.md").write_text("soul", encoding="utf-8")
+        self.assertIn("hooks/session_start.sh", spec.collect())
+
+        # all-mode: a named agent's hooks land under profiles/<name>/hooks/.
+        prof = self.root / "profiles" / "qa" / "hooks"
+        prof.mkdir(parents=True, exist_ok=True)
+        (prof / "pre.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        all_spec = build_spec("hermes", "all", str(self.root))
+        self.assertIn("profiles/qa/hooks/pre.sh", all_spec.collect())
+
+    def test_hooks_dropped_when_converting_to_other_frameworks(self):
+        """``hooks/*`` is hermes-only and absent from SEMANTIC_GROUPS, so every
+        other framework rejects the path (convert drops it via the dst filter;
+        it is never folded into the catch-all persona file)."""
+        for fw in ("qwenpaw", "openclaw", "nanobot", "openhuman", "qoder", "ms-agent"):
+            spec = build_spec(fw, "default", str(self.root))
+            self.assertFalse(
+                spec.matches("hooks/session_start.sh", spec.resolved_patterns()),
+                f"{fw} should not match hooks/* (must be dropped on convert)",
+            )
+
     def test_qwenpaw_excludes_framework_skills_keeps_user_skills(self):
         """qwenpaw (CoPaw) shares BundledSkillFilterMixin: framework skills
         (license / metadata.copaw|qwenpaw markers, no .bundled_manifest) are
