@@ -113,12 +113,21 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
         # are not synced (same rule as upload/convert), so they are neither
         # pushed nor counted when mirror-deleting local files on pull.
         local_resources = drop_unchanged_defaults(spec.collect_bytes(), framework, spec)
-        scope = set(local_resources.keys()) | set(state.get("remote_files", {}).keys())
-        remote_sha_map = {f.path: f.sha256 for f in remote_files if f.path in scope}
+        baseline = state.get("remote_files", {})
+        # A remote file counts toward change detection if it was in our baseline
+        # (so edits/deletions are seen) OR it is a workspace file the collect
+        # patterns would pick up (so a file *added* on the remote gets pulled).
+        # Incidental files the server auto-creates (README.md, .gitattributes)
+        # and framework-bundled assets match neither, so they never trigger a
+        # spurious pull.
+        patterns = spec.resolved_patterns()
+        remote_sha_map = {
+            f.path: f.sha256 for f in remote_files
+            if f.path in baseline
+            or (spec.matches(f.path, patterns) and not spec._is_excluded_asset(f.path))
+        }
 
-        remote_changed = (
-            remote_sha_map != state.get("remote_files", {})
-        )
+        remote_changed = (remote_sha_map != baseline)
         local_changed = bool(detect_local_changes(local_resources, state["remote_files"]))
 
         # ---- Sync decision ----

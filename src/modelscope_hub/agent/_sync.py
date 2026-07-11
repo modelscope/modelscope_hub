@@ -317,18 +317,22 @@ def push_incremental(
                     "encoding": "base64",
                 })
 
-    # Commit normal file actions in one batch.
+    # Commit normal file actions in one batch.  The commit hits the same
+    # fresh-repo master race as push_resources (create_repo is async, so master
+    # may not be ready when the first commit fires), hence the same retry.
     if normal_actions:
         for a in normal_actions:
             logger.info("  %s: %s", a["action"].upper(), a["path"])
-        client.commit_files(username, name, normal_actions,
-                            commit_message="watch sync")
+        _retry_on_master_missing(lambda: client.commit_files(
+            username, name, normal_actions, commit_message="watch sync"))
 
-    # Upload LFS files one-by-one.
+    # Upload LFS files one-by-one (their commit races master too).
     for fpath, content, action_type in lfs_items:
         logger.info("  %s (LFS): %s", action_type.upper(), fpath)
-        client.upload_lfs_file(username, name, fpath, content,
-                              action=action_type, commit_message="watch sync")
+        _retry_on_master_missing(
+            lambda fpath=fpath, content=content, action_type=action_type:
+            client.upload_lfs_file(username, name, fpath, content,
+                                   action=action_type, commit_message="watch sync"))
 
     # Delete files via the DELETE endpoint.
     for fpath in delete_paths:

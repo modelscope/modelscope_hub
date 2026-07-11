@@ -47,7 +47,7 @@ from modelscope_hub.agent._workspace import (
 # ---------------------------------------------------------------------------
 SERVER = os.environ.get("MODELSCOPE_ENDPOINT", "http://www.modelscope.cn")
 TOKEN = os.environ.get("TOKEN", "")
-AGENT_PREFIX = "test-watch-v2"
+AGENT_PREFIX = f"test-watch-{int(time.time())}"
 REQUEST_INTERVAL = int(os.environ.get("REQUEST_INTERVAL", "8"))
 
 # Short interval for watch loops in tests (seconds)

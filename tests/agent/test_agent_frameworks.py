@@ -33,7 +33,7 @@ from modelscope_hub.agent._merge import merge_resources
 # ---------------------------------------------------------------------------
 SERVER = os.environ.get("MODELSCOPE_ENDPOINT", "https://www.modelscope.cn")
 TOKEN = os.environ.get("TOKEN", "")
-AGENT_NAME = "test-agent-integration-v2"
+AGENT_NAME = f"test-agent-integration-{int(time.time())}"
 
 # Throttle between each test method to avoid 429
 REQUEST_INTERVAL = int(os.environ.get("REQUEST_INTERVAL", "5"))
