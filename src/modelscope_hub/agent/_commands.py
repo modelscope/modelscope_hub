@@ -22,9 +22,10 @@ from ._workspace import (
     WorkspaceSpec,
 )
 from ._defaults import get_defaults
-from ._merge import merge_resources
+from ._merge import merge_resources, merged_away_pairs
 from ._api import AgentApi
 from ..errors import APIError
+from . import _display as display
 
 logger = get_logger("agent")
 
@@ -156,6 +157,7 @@ def convert_resources(
     src_spec: WorkspaceSpec | None = None,
     dst_spec: WorkspaceSpec | None = None,
     fill_missing_defaults: bool = True,
+    collect_merges: list[tuple[str, str]] | None = None,
 ) -> dict:
     """Convert workspace resources from one framework format to another.
 
@@ -169,12 +171,17 @@ def convert_resources(
     agent prefix; each agent is split out, converted independently as a single
     agent, then re-prefixed for the target framework.  Requires *src_spec* and
     *dst_spec*.
+
+    When *collect_merges* is provided it is extended with ``(src, dst)`` pairs
+    for files folded into a catch-all (no standalone target equivalent), so the
+    caller can surface a "merged" hint.
     """
     if source_fw == target_fw:
         return resources
     if all_mode:
         return _convert_resources_all(resources, source_fw, target_fw, src_spec, dst_spec,
-                                      fill_missing_defaults=fill_missing_defaults)
+                                      fill_missing_defaults=fill_missing_defaults,
+                                      collect_merges=collect_merges)
     result = merge_resources(
         incoming=resources,
         source_product=source_fw,
@@ -183,6 +190,8 @@ def convert_resources(
         target_defaults=get_defaults(target_fw),
         fill_missing_defaults=fill_missing_defaults,
     )
+    if collect_merges is not None:
+        collect_merges.extend(merged_away_pairs(result))
     merged = result.merged_files
     if existing_files is not None:
         default_paths = {a.path for a in result.actions if a.action == "default"}
@@ -200,6 +209,7 @@ def _convert_resources_all(
     src_spec: WorkspaceSpec,
     dst_spec: WorkspaceSpec,
     fill_missing_defaults: bool = True,
+    collect_merges: list[tuple[str, str]] | None = None,
 ) -> dict:
     """All-mode cross-framework convert (root-per-agent -> root-per-agent).
 
@@ -229,6 +239,14 @@ def _convert_resources_all(
         )
         for bare_path, content in result.merged_files.items():
             out[dst_spec.join_all_path(agent, bare_path)] = content
+        if collect_merges is not None:
+            # Re-prefix both sides with the target's per-agent convention so the
+            # hint aligns with the written listing's paths.
+            for src, dst in merged_away_pairs(result):
+                collect_merges.append((
+                    dst_spec.join_all_path(agent, src),
+                    dst_spec.join_all_path(agent, dst),
+                ))
     return out
 
 
@@ -296,9 +314,16 @@ def cmd_upload(
         )
 
     total_bytes = sum(len(v) for v in resources.values())
-    print(f"Found {len(resources)} file(s) ({total_bytes} bytes) under {root}:")
-    for rel in sorted(resources):
-        print(f"  {rel} ({len(resources[rel])} B)")
+    from ..utils.format import format_size
+    display.header("Upload", f"{framework}/{local_name}")
+    display.meta("source", root)
+    display.meta("size", format_size(total_bytes))
+    display.table(
+        "Files",
+        [(rel, format_size(len(resources[rel]))) for rel in sorted(resources)],
+        headers=["FILE", "SIZE"],
+        color=display.COLOR_WRITTEN,
+    )
 
     if dry_run:
         print("\n[dry-run] nothing uploaded.")
@@ -332,7 +357,7 @@ def cmd_upload(
     except Exception as e:
         return _fail(f"upload failed: {e}")
 
-    print(f"\nSynced {len(resources)} local file(s) to {group}/{repo_n} (incremental).")
+    display.done(f"Synced {len(resources)} file(s) to {group}/{repo_n} (incremental)")
     return 0
 
 
@@ -377,6 +402,8 @@ def cmd_download(
         repo=repo, name=name, framework=framework, username=username,
     )
 
+    display.header("Download", f"{group}/{repo_n}", target or framework)
+
     client = AgentApi(endpoint=endpoint, token=token)
     # When no conversion is requested we can pull incrementally: list the remote
     # tree (with sha256), skip downloading files whose content already matches
@@ -407,9 +434,8 @@ def cmd_download(
                 else:
                     to_download.append(f)
             if skipped_same:
-                print(f"Skipped {len(skipped_same)} unchanged file(s) (sha256 match):")
-                for sp in sorted(skipped_same):
-                    print(f"  [skip] {sp}")
+                display.file_list("Unchanged", skipped_same, color=display.COLOR_SKIP,
+                                  marker="[skip]", note="sha256 matches local")
             resources = {}
             total = len(to_download)
             for i, f in enumerate(to_download, 1):
@@ -438,6 +464,7 @@ def cmd_download(
     spec = build_spec(target_fw, local_name, local_dir)
     root = spec.workspace_root
 
+    download_merges: list[tuple[str, str]] = []
     if target_fw != framework:
         if name == ALL_AGENT_NAME:
             # All-mode conversion only makes sense between two root-per-agent
@@ -454,19 +481,17 @@ def cmd_download(
             resources = convert_resources(
                 resources, framework, target_fw,
                 all_mode=True, src_spec=src_spec, dst_spec=spec,
+                collect_merges=download_merges,
             )
         else:
             existing_files = set(spec.collect().keys())
-            resources = convert_resources(resources, framework, target_fw, existing_files=existing_files)
-        print(f"Converted {framework} -> {target_fw} ({len(resources)} file(s)).")
+            resources = convert_resources(resources, framework, target_fw,
+                                          existing_files=existing_files,
+                                          collect_merges=download_merges)
 
     patterns = spec.resolved_patterns()
     filtered = {k: v for k, v in resources.items() if spec.matches(k, patterns)}
-    skipped = set(resources.keys()) - set(filtered.keys())
-    if skipped:
-        print(f"Skipped {len(skipped)} file(s) not matching workspace spec:")
-        for s in sorted(skipped):
-            print(f"  [skip] {s}")
+    dropped = sorted(set(resources.keys()) - set(filtered.keys()))
 
     # In incremental mode an empty ``filtered`` just means every remote file is
     # already present locally with matching content -- not an error. Mirror
@@ -475,16 +500,24 @@ def cmd_download(
     if not filtered and remote_all_paths is None:
         return _fail("no downloaded files match the local workspace spec patterns.")
 
-    print(f"{len(filtered)} changed file(s) for {group}/{repo_n} (framework={target_fw}):")
-    for rel in sorted(filtered):
-        print(f"  {rel} -> {root / rel}")
+    if target_fw != framework:
+        display.map_table(
+            "Merged", download_merges, color=display.COLOR_MERGED,
+            headers=("SOURCE", "FOLDED INTO"),
+            note=f"no {target_fw} equivalent; content preserved in the target file",
+        )
+    display.file_list(
+        "Dropped", dropped, color=display.COLOR_DROPPED, marker="[drop]",
+        note=f"not part of the {target_fw} workspace spec",
+    )
+    display.file_list("Changed", filtered, color=display.COLOR_WRITTEN, root=root)
 
     if dry_run:
         print("\n[dry-run] nothing written.")
         return 0
 
     written = spec.apply(filtered)
-    print(f"\nWrote {len(written)} file(s) under {root}.")
+    display.done(f"Wrote {len(written)} file(s) under {root}")
 
     # Download is overwrite/add-only and never deletes local files. The remote
     # holds only the user's customized content (unchanged framework defaults are
@@ -582,6 +615,10 @@ def convert_workspace(
     existing = dst_spec.collect()
     existing_paths = set(existing.keys())
 
+    # (src, dst) pairs for files folded into a catch-all (no standalone target
+    # equivalent). Surfaced as a "Merged" hint so they are not seen as lost.
+    merge_pairs: list[tuple[str, str]] = []
+
     if source_fw == target_fw:
         converted = resources
         default_paths: set = set()
@@ -600,7 +637,7 @@ def convert_workspace(
         converted = convert_resources(
             resources, source_fw, target_fw,
             all_mode=True, src_spec=src_spec, dst_spec=dst_spec,
-            fill_missing_defaults=False,
+            fill_missing_defaults=False, collect_merges=merge_pairs,
         )
         default_paths = set()
     else:
@@ -621,6 +658,7 @@ def convert_workspace(
             fill_missing_defaults=False,
         )
         default_paths = {a.path for a in result.actions if a.action == "default"}
+        merge_pairs = merged_away_pairs(result)
         converted = result.merged_files
 
     dst_root = dst_spec.workspace_root
@@ -628,13 +666,10 @@ def convert_workspace(
     # merge_resources imports unmapped files (e.g. qwenpaw agent.json/skill.json)
     # as-is; without this filter they would leak into the target framework.
     # Mirrors the dst-spec guard in cmd_download's download path.
+    dropped: list[str] = []
     if source_fw != target_fw:
         dst_patterns = dst_spec.resolved_patterns()
         dropped = sorted(k for k in converted if not dst_spec.matches(k, dst_patterns))
-        if dropped:
-            print(f"Dropped {len(dropped)} file(s) not matching {target_fw} spec:")
-            for d in dropped:
-                print(f"  [drop] {d}")
         converted = {k: v for k, v in converted.items()
                      if dst_spec.matches(k, dst_patterns)}
     # Non-default files: always write (overwrite if exists).
@@ -649,19 +684,38 @@ def convert_workspace(
     skipped_defaults = sorted(default_paths & existing_paths)
     added_defaults = sorted(default_paths - existing_paths)
 
-    print(
-        f"Convert {source_fw}/{src_spec.agent_name} ({src_root}) -> "
-        f"{target_fw}/{dst_spec.agent_name} ({dst_root}): "
-        f"{len(resources)} in, {len(effective)} out"
+    # ---- Render ----
+    display.header(
+        "Convert",
+        f"{source_fw}/{src_spec.agent_name}",
+        f"{target_fw}/{dst_spec.agent_name}",
     )
-    for rel in sorted(effective):
-        print(f"  {rel} -> {dst_root / rel}")
+    display.meta("source", src_root)
+    display.meta("target", dst_root)
+    counts = [("in", len(resources), "bold"),
+              ("written", len(effective), display.COLOR_WRITTEN)]
+    if merge_pairs:
+        counts.append(("merged", len(merge_pairs), display.COLOR_MERGED))
+    if dropped:
+        counts.append(("dropped", len(dropped), display.COLOR_DROPPED))
+    display.summary(counts)
+
+    display.file_list("Written", effective, color=display.COLOR_WRITTEN)
+    display.map_table(
+        "Merged", merge_pairs, color=display.COLOR_MERGED,
+        headers=("SOURCE", "FOLDED INTO"),
+        note=f"no {target_fw} equivalent; content preserved in the target file",
+    )
+    display.file_list(
+        "Dropped", dropped, color=display.COLOR_DROPPED, marker="[drop]",
+        note=f"not part of the {target_fw} workspace spec",
+    )
     if skipped_defaults:
-        print(f"  ({len(skipped_defaults)} existing default(s) preserved: "
-              f"{', '.join(skipped_defaults)})")
+        display.meta("kept", f"{len(skipped_defaults)} existing default(s): "
+                     f"{', '.join(skipped_defaults)}")
     if added_defaults:
-        print(f"  ({len(added_defaults)} default template(s) added: "
-              f"{', '.join(added_defaults)})")
+        display.meta("added", f"{len(added_defaults)} default template(s): "
+                     f"{', '.join(added_defaults)}")
 
     if dry_run:
         print("\n[dry-run] nothing written.")
@@ -675,10 +729,10 @@ def convert_workspace(
     from ._sync import backup_local
     if existing:
         backup_path = backup_local(dst_spec, f"{target_fw}_{dst_spec.agent_name}")
-        print(f"  Backup: {backup_path}")
+        display.meta("backup", backup_path)
 
     written = dst_spec.apply(effective)
-    print(f"\nWrote {len(written)} file(s) under {dst_root}.")
+    display.done(f"Wrote {len(written)} file(s) under {dst_root}")
     return 0
 
 

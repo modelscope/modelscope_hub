@@ -23,6 +23,11 @@ class MergeAction:
     path: str
     action: str   # 'import' | 'default' | 'merged' | 'skip'
     detail: str   # human-readable description
+    # For overflow merges (a source file with no target equivalent whose content
+    # is folded into a catch-all file), record the mapping structurally so the
+    # CLI can surface a "merged X -> Y" hint without parsing ``detail``.
+    src_path: str = ""
+    dst_path: str = ""
 
 
 @dataclass
@@ -546,6 +551,7 @@ def merge_resources(
             result.actions.append(MergeAction(
                 path=catch_all, action="merged",
                 detail=f"Mutually-exclusive content from {path} merged into {catch_all}",
+                src_path=path, dst_path=catch_all,
             ))
             continue
 
@@ -671,3 +677,18 @@ def merge_resources(
         )
 
     return result
+
+
+def merged_away_pairs(result: FullMergeResult) -> list[tuple[str, str]]:
+    """Return ``(src_path, dst_path)`` for every overflow merge in *result*.
+
+    These are source files that have no standalone equivalent on the target
+    framework: their user content was folded into a catch-all file (e.g.
+    qwenpaw ``PROFILE.md`` -> openclaw ``AGENTS.md``). The CLI uses this to
+    show a "merged" hint so such files are not perceived as silently lost.
+    """
+    return [
+        (a.src_path, a.dst_path)
+        for a in result.actions
+        if a.action == "merged" and a.src_path and a.dst_path
+    ]
