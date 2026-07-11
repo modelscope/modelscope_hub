@@ -155,6 +155,7 @@ def convert_resources(
     all_mode: bool = False,
     src_spec: WorkspaceSpec | None = None,
     dst_spec: WorkspaceSpec | None = None,
+    fill_missing_defaults: bool = True,
 ) -> dict:
     """Convert workspace resources from one framework format to another.
 
@@ -172,13 +173,15 @@ def convert_resources(
     if source_fw == target_fw:
         return resources
     if all_mode:
-        return _convert_resources_all(resources, source_fw, target_fw, src_spec, dst_spec)
+        return _convert_resources_all(resources, source_fw, target_fw, src_spec, dst_spec,
+                                      fill_missing_defaults=fill_missing_defaults)
     result = merge_resources(
         incoming=resources,
         source_product=source_fw,
         target_product=target_fw,
         source_defaults=get_defaults(source_fw),
         target_defaults=get_defaults(target_fw),
+        fill_missing_defaults=fill_missing_defaults,
     )
     merged = result.merged_files
     if existing_files is not None:
@@ -196,6 +199,7 @@ def _convert_resources_all(
     target_fw: str,
     src_spec: WorkspaceSpec,
     dst_spec: WorkspaceSpec,
+    fill_missing_defaults: bool = True,
 ) -> dict:
     """All-mode cross-framework convert (root-per-agent -> root-per-agent).
 
@@ -221,6 +225,7 @@ def _convert_resources_all(
             target_product=target_fw,
             source_defaults=src_defaults,
             target_defaults=tgt_defaults,
+            fill_missing_defaults=fill_missing_defaults,
         )
         for bare_path, content in result.merged_files.items():
             out[dst_spec.join_all_path(agent, bare_path)] = content
@@ -275,6 +280,19 @@ def cmd_upload(
         return _fail(
             f"no files found for {framework}/{display_name} under {root}. "
             f"Check the path or pass --local_dir."
+        )
+
+    # Upload the user-customized subset only: drop files identical to the
+    # framework default templates (same rule convert uses), so untouched
+    # boilerplate is never pushed -- keeps upload and convert 1:1-consistent
+    # about what "the user's own files" are.
+    from ._sync import drop_unchanged_defaults
+    resources = drop_unchanged_defaults(resources, framework, spec)
+    if not resources:
+        display_name = local_name if local_name != GLOBAL_AGENT_NAME else "global"
+        return _fail(
+            f"only default template files under {root} for {framework}/"
+            f"{display_name}; nothing user-created to upload."
         )
 
     total_bytes = sum(len(v) for v in resources.values())
@@ -468,22 +486,12 @@ def cmd_download(
     written = spec.apply(filtered)
     print(f"\nWrote {len(written)} file(s) under {root}.")
 
-    # Mirror delete (incremental only): remove local files the remote no longer
-    # has. Constrained to files matching the workspace spec, so unrelated local
-    # content is never touched. ``remote_all_paths`` holds the full remote set.
-    if remote_all_paths is not None:
-        resolved_root = root.resolve()
-        deleted = 0
-        for rel in sorted(set(spec.collect_bytes().keys()) - remote_all_paths):
-            target_f = (root / rel).resolve()
-            if not target_f.is_relative_to(resolved_root):
-                continue
-            if target_f.exists():
-                target_f.unlink()
-                deleted += 1
-                print(f"  DELETE (mirror): {rel}")
-        if deleted:
-            print(f"Deleted {deleted} local file(s) absent from remote.")
+    # Download is overwrite/add-only and never deletes local files. The remote
+    # holds only the user's customized content (unchanged framework defaults are
+    # never uploaded), so a local file absent from the remote is normally a
+    # default template -- or a not-yet-uploaded local file -- NOT a deletion.
+    # Mirror-deleting here would wipe the framework's default scaffolding, so we
+    # deliberately leave local-only files in place.
     return 0
 
 
@@ -552,6 +560,25 @@ def convert_workspace(
     if not resources:
         return _fail(f"no {source_fw} files found under {src_root}.")
 
+    # Full source text set captured BEFORE dropping unchanged defaults. The
+    # binary passthrough below subtracts this so only genuinely-binary assets
+    # (never seen by text collect) pass through -- text files we intentionally
+    # drop as unchanged defaults must NOT sneak back in as "binary".
+    source_text_paths = set(resources)
+
+    # Carry only files the user actually modified from the source framework
+    # default. Files byte-identical to the source default template are
+    # boilerplate (no user content); dropping them means conversion yields real
+    # content only, and no target scaffolding is created for them either.
+    if source_fw != target_fw:
+        from ._sync import drop_unchanged_defaults
+        resources = drop_unchanged_defaults(resources, source_fw, src_spec)
+        if not resources:
+            return _fail(
+                f"no user-modified {source_fw} files under {src_root} "
+                f"(all files match the framework default templates)."
+            )
+
     existing = dst_spec.collect()
     existing_paths = set(existing.keys())
 
@@ -573,6 +600,7 @@ def convert_workspace(
         converted = convert_resources(
             resources, source_fw, target_fw,
             all_mode=True, src_spec=src_spec, dst_spec=dst_spec,
+            fill_missing_defaults=False,
         )
         default_paths = set()
     else:
@@ -590,6 +618,7 @@ def convert_workspace(
             source_defaults=get_defaults(source_fw),
             target_defaults=get_defaults(target_fw),
             overflow_target=overflow_target,
+            fill_missing_defaults=False,
         )
         default_paths = {a.path for a in result.actions if a.action == "default"}
         converted = result.merged_files
@@ -616,7 +645,7 @@ def convert_workspace(
     }
     # Carry binary skill assets the text collect() skipped (verbatim).
     effective.update(_collect_binary_passthrough(
-        src_spec, resources, source_fw, target_fw, dst_spec))
+        src_spec, source_text_paths, source_fw, target_fw, dst_spec))
     skipped_defaults = sorted(default_paths & existing_paths)
     added_defaults = sorted(default_paths - existing_paths)
 

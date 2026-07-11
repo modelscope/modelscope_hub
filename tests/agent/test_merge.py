@@ -297,3 +297,60 @@ class TestMergeResources(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDropUnchangedDefaults(unittest.TestCase):
+    """drop_unchanged_defaults: the single shared 'user-customized subset' filter
+    used by upload, convert AND watch. Files byte-identical to a framework
+    default template carry no user content and must be dropped; modified files,
+    non-default files (skills) and frameworks without defaults stay untouched."""
+
+    def _spec(self, fw, name="bot-a"):
+        from modelscope_hub.agent._commands import build_spec
+        return build_spec(fw, name)
+
+    def test_drops_unchanged_default_text(self):
+        from modelscope_hub.agent._sync import drop_unchanged_defaults
+        from modelscope_hub.agent._defaults import get_defaults
+        defaults = get_defaults("hermes")
+        resources = {
+            "SOUL.md": defaults["SOUL.md"],                      # unchanged -> drop
+            "memories/USER.md": "# custom\nreal user note\n",    # modified   -> keep
+            "skills/write/SKILL.md": "# Write\n",                # not default -> keep
+        }
+        out = drop_unchanged_defaults(resources, "hermes", self._spec("hermes"))
+        self.assertNotIn("SOUL.md", out)
+        self.assertIn("memories/USER.md", out)
+        self.assertIn("skills/write/SKILL.md", out)
+
+    def test_drops_unchanged_default_bytes(self):
+        from modelscope_hub.agent._sync import drop_unchanged_defaults
+        from modelscope_hub.agent._defaults import get_defaults
+        defaults = get_defaults("hermes")
+        resources = {
+            "SOUL.md": defaults["SOUL.md"].encode("utf-8"),      # bytes, unchanged -> drop
+            "memories/MEMORY.md": b"# real memory\n",            # bytes, modified  -> keep
+        }
+        out = drop_unchanged_defaults(resources, "hermes", self._spec("hermes"))
+        self.assertNotIn("SOUL.md", out)
+        self.assertIn("memories/MEMORY.md", out)
+
+    def test_noop_for_framework_without_defaults(self):
+        from modelscope_hub.agent._sync import drop_unchanged_defaults
+        resources = {"AGENTS.md": "x", "commands/c.md": "y"}
+        out = drop_unchanged_defaults(resources, "qoder", self._spec("qoder", "default"))
+        self.assertEqual(out, resources)
+
+    def test_all_mode_strips_agent_prefix_before_compare(self):
+        from modelscope_hub.agent._sync import drop_unchanged_defaults
+        from modelscope_hub.agent._defaults import get_defaults
+        from modelscope_hub.agent._commands import build_spec
+        defaults = get_defaults("qwenpaw")
+        spec = build_spec("qwenpaw", "all")
+        resources = {
+            "bot-a/SOUL.md": defaults["SOUL.md"],       # prefixed unchanged default -> drop
+            "bot-a/PROFILE.md": "# Profile\nreal\n",    # modified -> keep
+        }
+        out = drop_unchanged_defaults(resources, "qwenpaw", spec)
+        self.assertNotIn("bot-a/SOUL.md", out)
+        self.assertIn("bot-a/PROFILE.md", out)

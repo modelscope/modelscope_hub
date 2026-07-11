@@ -17,9 +17,11 @@ from ..errors import APIError
 from ._sync import (
     backup_local,
     detect_local_changes,
+    drop_unchanged_defaults,
     pull_incremental,
     push_incremental,
     push_resources,
+    sha256_content,
 )
 
 __all__ = ["watch_loop", "daemonize", "stop_daemon"]
@@ -107,7 +109,10 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
                 continue
 
         # ---- Collect local resources & detect changes ----
-        local_resources = spec.collect_bytes()
+        # Track only the user's customized files: unchanged framework defaults
+        # are not synced (same rule as upload/convert), so they are neither
+        # pushed nor counted when mirror-deleting local files on pull.
+        local_resources = drop_unchanged_defaults(spec.collect_bytes(), framework, spec)
         scope = set(local_resources.keys()) | set(state.get("remote_files", {}).keys())
         remote_sha_map = {f.path: f.sha256 for f in remote_files if f.path in scope}
 
@@ -131,9 +136,9 @@ def watch_loop(spec, client, username: str, repo: str, framework: str, interval:
         # ---- Update baseline on successful sync ----
         if did_sync:
             if not push_only:
-                local_resources = spec.collect_bytes()
-            _refresh_baseline(client, username, repo, local_resources, state, logger)
-            save_sync_state(repo, state["last_commit_date"], state["remote_files"])
+                local_resources = drop_unchanged_defaults(spec.collect_bytes(), framework, spec)
+            _refresh_baseline(local_resources, state)
+            save_sync_state(repo, state["remote_files"])
 
     logger.info("Watch stopped (signal received).")
     pf = pid_file()
@@ -219,24 +224,18 @@ def _sync_action(
     return True
 
 
-def _refresh_baseline(client, username: str, name: str, local_resources: dict, state: dict, logger) -> None:
-    """Re-fetch remote file list and update state in-place."""
-    managed = set(local_resources.keys())
-    for attempt in range(3):
-        try:
-            fresh = client.list_repo_files_detail(username, name)
-            state["last_commit_date"] = max((f.committed_date for f in fresh), default=0)
-            state["remote_files"] = {f.path: f.sha256 for f in fresh if f.path in managed}
-            return
-        except APIError as e:
-            if e.status_code == 500 and attempt < 2:
-                time.sleep(3)
-                continue
-            logger.error("Failed to refresh baseline: %s", e)
-            return
-        except Exception as exc:
-            logger.error("Failed to refresh baseline: %s", exc)
-            return
+def _refresh_baseline(local_resources: dict, state: dict) -> None:
+    """Update the sha256 sync baseline in-place after a successful sync.
+
+    A successful sync leaves the remote and local in agreement on the managed
+    scope, so the baseline is simply the sha256 of the current local files.
+    Deriving it locally avoids re-listing the remote tree -- whose listing can
+    be momentarily inconsistent right after a commit -- and keeps change
+    detection purely sha256-based.
+    """
+    state["remote_files"] = {
+        rel: sha256_content(content) for rel, content in local_resources.items()
+    }
 
 
 def daemonize(target, *args, **kwargs):

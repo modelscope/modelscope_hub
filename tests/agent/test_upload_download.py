@@ -52,7 +52,7 @@ from modelscope_hub.agent._workspace import (
 # ---------------------------------------------------------------------------
 SERVER = os.environ.get("MODELSCOPE_ENDPOINT", "http://www.modelscope.cn")
 TOKEN = os.environ.get("TOKEN", "")
-AGENT_PREFIX = "test-updown"
+AGENT_PREFIX = "test-updown-v2"
 
 # Throttle between each test method to avoid 429 and WAF blocks
 REQUEST_INTERVAL = int(os.environ.get("REQUEST_INTERVAL", "8"))

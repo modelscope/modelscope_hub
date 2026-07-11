@@ -100,6 +100,62 @@ class TestConvertTargetNameLanding(unittest.TestCase):
         # skill carried over.
         self.assertIn("skills/write/SKILL.md", files)
 
+    def test_unchanged_source_defaults_dropped_and_no_target_scaffold(self):
+        """convert carries only user-modified files: a source file byte-identical
+        to the source default is dropped, and the target's own default templates
+        are NOT scaffolded for files the user never customized."""
+        qp_defaults = get_defaults("qwenpaw")
+        src = self.base / "src_defaults"
+        _write(build_spec("qwenpaw", "bot-a", str(src)).workspace_root, {
+            "SOUL.md": "# Soul\nBot A creative AI.\n",     # modified -> carried
+            "PROFILE.md": qp_defaults["PROFILE.md"],         # == default -> dropped
+            "skills/write/SKILL.md": "# Write\nWriting skill.\n",
+        })
+        out = self.base / "openclaw_scaffold"
+        rc = cmd_convert(
+            source_fw="qwenpaw", target_fw="openclaw",
+            from_name="bot-a", target_name="bot-a",
+            local_dir=str(src), out_dir=str(out),
+        )
+        self.assertEqual(rc, 0)
+        files = _read_all(out / "workspace-bot-a")
+        # Real user content crossed over.
+        self.assertIn("SOUL.md", files)
+        self.assertIn("Bot A creative AI.", files["SOUL.md"])
+        self.assertIn("skills/write/SKILL.md", files)
+        # No target-default scaffolding for never-customized files.
+        for scaffold in ("BOOTSTRAP.md", "HEARTBEAT.md", "TOOLS.md",
+                         "IDENTITY.md", "USER.md", "AGENTS.md"):
+            self.assertNotIn(scaffold, files,
+                             f"{scaffold} is a target default and must not be scaffolded")
+
+    def test_all_mode_dropped_default_not_resurrected_as_binary(self):
+        """Regression: an unchanged-default sub-agent file dropped by
+        drop_unchanged_defaults must NOT reappear via the binary passthrough.
+        The passthrough subtracts the full PRE-drop text set, so only genuine
+        binaries pass; dropped default text stays dropped."""
+        qp = get_defaults("qwenpaw")
+        src = self.base / "qp_all_src"
+        _write(build_spec("qwenpaw", "default", str(src)).workspace_root, {
+            "SOUL.md": "# Soul\nRoot real.\n",
+        })
+        _write(build_spec("qwenpaw", "bot-a", str(src)).workspace_root, {
+            "SOUL.md": "# Soul\nBot A real.\n",
+            "HEARTBEAT.md": qp["HEARTBEAT.md"],   # byte-identical default -> dropped
+        })
+        out = self.base / "oc_all_out"
+        rc = cmd_convert(
+            source_fw="qwenpaw", target_fw="openclaw",
+            from_name="all", target_name="all",
+            local_dir=str(src), out_dir=str(out),
+        )
+        self.assertEqual(rc, 0)
+        files = _read_all(out)
+        self.assertIn("workspace-bot-a/SOUL.md", files)
+        self.assertNotIn(
+            "workspace-bot-a/HEARTBEAT.md", files,
+            "dropped unchanged default must not resurface via binary passthrough")
+
     def test_qwenpaw_to_hermes_targetname_lands_in_profiles(self):
         """root-per-agent target: bot-a identity lands in profiles/bot-a/."""
         out = self.base / "hermes_home"
@@ -244,8 +300,7 @@ class _StoreStub:
 
     def list_repo_files_detail(self, path, name, revision="master"):
         return [
-            RemoteFileInfo(path=p, sha256=sha256_content(c),
-                           committed_date=0, is_lfs=False)
+            RemoteFileInfo(path=p, sha256=sha256_content(c), is_lfs=False)
             for p, c in self.STORE.items()
         ]
 

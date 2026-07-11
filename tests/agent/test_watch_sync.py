@@ -47,7 +47,7 @@ from modelscope_hub.agent._workspace import (
 # ---------------------------------------------------------------------------
 SERVER = os.environ.get("MODELSCOPE_ENDPOINT", "http://www.modelscope.cn")
 TOKEN = os.environ.get("TOKEN", "")
-AGENT_PREFIX = "test-watch"
+AGENT_PREFIX = "test-watch-v2"
 REQUEST_INTERVAL = int(os.environ.get("REQUEST_INTERVAL", "8"))
 
 # Short interval for watch loops in tests (seconds)
@@ -104,17 +104,26 @@ class TestWatchSync(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        # Point the agent cache at an isolated dir and reset the cached global
+        # config singleton so cache_dir() re-reads MODELSCOPE_CACHE here. An
+        # earlier test may have already resolved (and cached) a different dir;
+        # the watch subprocess persists sync state under this dir, so the test
+        # process must read it from the same place.
+        cls._data_dir = tempfile.mkdtemp(prefix="agent_test_watch_data_")
+        os.environ["MODELSCOPE_CACHE"] = cls._data_dir
+        from modelscope_hub.config import set_default_config
+        set_default_config(None)
         cls.client = AgentApi(SERVER, TOKEN)
         user_data = cls.client._openapi.get_current_user()
         cls.username = user_data.get("username") or user_data.get("Username") or ""
         assert cls.username, "login failed"
         print(f"    Logged in as {cls.username}")
-        cls._data_dir = tempfile.mkdtemp(prefix="agent_test_watch_data_")
-        os.environ["MODELSCOPE_CACHE"] = cls._data_dir
 
     @classmethod
     def tearDownClass(cls):
         os.environ.pop("MODELSCOPE_CACHE", None)
+        from modelscope_hub.config import set_default_config
+        set_default_config(None)
         shutil.rmtree(cls._data_dir, ignore_errors=True)
 
     def setUp(self):
@@ -317,7 +326,8 @@ class TestWatchSync(unittest.TestCase):
             "SOUL.md": "# Soul\nMy bot identity.\n",
             "PROFILE.md": "# Profile\nCreative writer.\n",
         }
-        local_dir = self._create_local(files)
+        local_dir = self._create_local_root("qwenpaw", repo_name, files)
+        ws = build_spec("qwenpaw", repo_name, local_dir).workspace_root
         proc = None
         try:
             proc = self._start_watch("qwenpaw", repo_name, local_dir, repo_name)
@@ -326,7 +336,7 @@ class TestWatchSync(unittest.TestCase):
             remote = self.client.list_repo_files(self.username, repo_name)
             self.assertIn("SOUL.md", remote)
 
-            (Path(local_dir) / "PROFILE.md").write_text(
+            (ws / "PROFILE.md").write_text(
                 "# Profile\nCreative writer. Loves sci-fi.\n", encoding="utf-8"
             )
 
@@ -506,7 +516,7 @@ class TestWatchSync(unittest.TestCase):
             "SOUL.md": "# Soul\nBrand new agent.\n",
             "PROFILE.md": "# Profile\nNew profile.\n",
         }
-        local_dir = self._create_local(files)
+        local_dir = self._create_local_root("qwenpaw", repo_name, files)
         proc = None
         try:
             sf = sync_state_file(repo_name)
@@ -576,13 +586,14 @@ class TestWatchSync(unittest.TestCase):
         """Adding a new file locally should push it to remote via watch_loop."""
         repo_name = f"{AGENT_PREFIX}-add-file"
         files = {"SOUL.md": "# Soul\nBase.\n"}
-        local_dir = self._create_local(files)
+        local_dir = self._create_local_root("qwenpaw", repo_name, files)
+        ws = build_spec("qwenpaw", repo_name, local_dir).workspace_root
         proc = None
         try:
             proc = self._start_watch("qwenpaw", repo_name, local_dir, repo_name)
             self._wait_cycles(2)
 
-            new_path = Path(local_dir) / "MEMORY.md"
+            new_path = ws / "MEMORY.md"
             new_path.write_text("# Memory\nSomething new.\n", encoding="utf-8")
 
             self._wait_cycles(2)
@@ -613,8 +624,10 @@ class TestWatchSync(unittest.TestCase):
             proc = None
 
             state = load_sync_state(repo_name)
-            self.assertGreater(state["last_commit_date"], 0)
+            # State persistence is sha256-based: the remote_files map is the
+            # baseline used for change detection across restarts.
             self.assertIn("SOUL.md", state["remote_files"])
+            self.assertTrue(state["remote_files"]["SOUL.md"])
 
             _wait(REQUEST_INTERVAL)
 

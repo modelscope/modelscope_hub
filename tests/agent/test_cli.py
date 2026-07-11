@@ -42,8 +42,7 @@ class _RepoStub:
 
     def list_repo_files_detail(self, path, name, revision="master"):
         return [
-            RemoteFileInfo(path=p, sha256=sha256_content(c),
-                           committed_date=0, is_lfs=False)
+            RemoteFileInfo(path=p, sha256=sha256_content(c), is_lfs=False)
             for p, c in self.STORE.items()
         ]
 

@@ -13,12 +13,13 @@ from .._workspace import (
     WorkspaceSpec,
     register_framework,
 )
+from ._bundled_skills import BundledSkillFilterMixin
 from ...utils.logger import get_logger
 
 logger = get_logger("agent")
 
 
-class QwenpawWorkspace(WorkspaceSpec):
+class QwenpawWorkspace(BundledSkillFilterMixin, WorkspaceSpec):
     """Workspace spec for the QwenPaw (a.k.a. CoPaw) agent framework.
 
     QwenPaw stores per-agent workspaces under ``~/.qwenpaw/workspaces/{id}`` (legacy ``~/.copaw``);

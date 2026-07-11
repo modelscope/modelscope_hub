@@ -33,7 +33,7 @@ from modelscope_hub.agent._merge import merge_resources
 # ---------------------------------------------------------------------------
 SERVER = os.environ.get("MODELSCOPE_ENDPOINT", "https://www.modelscope.cn")
 TOKEN = os.environ.get("TOKEN", "")
-AGENT_NAME = "test-agent-integration"
+AGENT_NAME = "test-agent-integration-v2"
 
 # Throttle between each test method to avoid 429
 REQUEST_INTERVAL = int(os.environ.get("REQUEST_INTERVAL", "5"))
@@ -165,6 +165,11 @@ class TestClientIntegration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.client = AgentApi(SERVER, TOKEN)
+        # Resolve the repo owner once per class so every test is self-sufficient
+        # and does not depend on test_01 running first to populate username.
+        if TOKEN:
+            user_data = cls.client._openapi.get_current_user()
+            cls.username = user_data.get("username") or user_data.get("Username") or ""
 
     def setUp(self):
         """Throttle between tests to avoid 429 rate limiting."""
@@ -174,11 +179,9 @@ class TestClientIntegration(unittest.TestCase):
     # 01. Login
     # -----------------------------------------------------------------------
     def test_01_login_valid_token(self):
-        user_data = self.__class__.client._openapi.get_current_user()
-        username = user_data.get("username") or user_data.get("Username") or ""
-        self.assertTrue(username, "login should return non-empty username")
-        self.__class__.username = username
-        print(f"    username={username}")
+        # username is resolved in setUpClass; verify login yielded a real owner.
+        self.assertTrue(self.username, "login should return non-empty username")
+        print(f"    username={self.username}")
 
     def test_02_login_invalid_token(self):
         bad = AgentApi(SERVER, "invalid-token-xyz")

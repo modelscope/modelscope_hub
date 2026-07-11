@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 from ..utils.logger import get_logger
 from ._cache import cache_dir
+from ._defaults import get_defaults
 
 if TYPE_CHECKING:
     from ._api import AgentApi, RemoteFileInfo
@@ -59,6 +60,35 @@ def backup_local(spec, name: str) -> Path:
     zip_path = cache_dir() / f"{name}_{timestamp}.zip"
     zip_path.write_bytes(zip_resources(resources))
     return zip_path
+
+
+def drop_unchanged_defaults(resources: dict, framework: str, spec) -> dict:
+    """Drop files byte-identical to the framework's default template.
+
+    These carry no user content, so upload, convert AND watch all treat them as
+    "not the user's own data": they are never pushed, and for watch pull they
+    are not counted when mirror-deleting local files -- so the framework's
+    default scaffolding is neither uploaded nor wiped. One shared definition of
+    "the user-customized subset of a workspace" for every sync path.
+
+    Handles both text (``collect``) and byte (``collect_bytes``) resources.
+    Skills are already filtered by the spec's collect hook and are absent from
+    the default-template set, so they are never dropped here.
+    """
+    defaults = get_defaults(framework)
+    if not defaults:
+        return resources
+    is_all = spec._is_all()
+    out: dict = {}
+    for path, content in resources.items():
+        bare = spec.split_all_path(path)[1] if is_all else path
+        default = defaults.get(bare)
+        if default is not None:
+            default_val = default.encode("utf-8") if isinstance(content, bytes) else default
+            if content == default_val:
+                continue
+        out[path] = content
+    return out
 
 
 # ---- Bidirectional sync helpers ----

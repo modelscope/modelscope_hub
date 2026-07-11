@@ -49,7 +49,6 @@ class RemoteFileInfo:
     """Metadata for a single file in the remote repository."""
     path: str
     sha256: str
-    committed_date: int  # unix timestamp
     is_lfs: bool = False
 
 
@@ -155,7 +154,7 @@ class AgentApi:
         return [e["path"] for e in entries if e["type"] == "blob" and e["path"]]
 
     def list_repo_files_detail(self, path: str, name: str, revision: str = 'master') -> list[RemoteFileInfo]:
-        """All blob files with sha256, committed_date, and is_lfs flag."""
+        """All blob files with sha256 and is_lfs flag."""
         entries = self._fetch_tree_entries(path, name, revision)
         results: list[RemoteFileInfo] = []
         for item in entries:
@@ -164,7 +163,6 @@ class AgentApi:
             results.append(RemoteFileInfo(
                 path=item["path"],
                 sha256=item.get("sha256") or "",
-                committed_date=int(item.get("committed_date") or 0),
                 is_lfs=bool(item.get("is_lfs", False)),
             ))
         return results
@@ -201,7 +199,6 @@ class AgentApi:
                     "path": item.get("Path") or item.get("path") or "",
                     "type": item.get("Type") or item.get("type") or "",
                     "sha256": item.get("Sha256") or item.get("sha256") or "",
-                    "committed_date": item.get("CommittedDate") or item.get("committed_date") or 0,
                     "is_lfs": bool(item.get("IsLfs") or item.get("is_lfs") or False),
                 })
 

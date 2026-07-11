@@ -36,6 +36,56 @@ class TestAgentAwareCollect(unittest.TestCase):
         self.assertIn("skills/x/SKILL.md", collected)
         self.assertNotIn("agents/other.md", collected)
 
+    def test_hermes_excludes_framework_skills_keeps_user_skills(self):
+        """hermes collect drops bundled/framework skills (identified by a
+        license / builtin_skill_version / metadata.copaw frontmatter marker) but
+        keeps the user's own skills (which have no such markers)."""
+        spec = build_spec("hermes", "default", str(self.root))
+        base = spec.workspace_root
+        (base / "skills" / "docx").mkdir(parents=True, exist_ok=True)
+        (base / "skills" / "docx" / "SKILL.md").write_text(
+            "---\nname: docx\nlicense: MIT\n---\n# docx\nbuiltin\n", encoding="utf-8")
+        (base / "skills" / "write").mkdir(parents=True, exist_ok=True)
+        (base / "skills" / "write" / "SKILL.md").write_text(
+            "# Write\nUser's own writing skill.\n", encoding="utf-8")
+        collected = spec.collect()
+        self.assertIn("skills/write/SKILL.md", collected)
+        self.assertNotIn("skills/docx/SKILL.md", collected)
+
+    def test_qwenpaw_excludes_framework_skills_keeps_user_skills(self):
+        """qwenpaw (CoPaw) shares BundledSkillFilterMixin: framework skills
+        (license / metadata.copaw|qwenpaw markers, no .bundled_manifest) are
+        dropped with all their assets; user skills are kept."""
+        spec = build_spec("qwenpaw", "default", str(self.root))
+        base = spec.workspace_root
+        docx = base / "skills" / "docx" / "scripts"
+        docx.mkdir(parents=True, exist_ok=True)
+        (base / "skills" / "docx" / "SKILL.md").write_text(
+            "---\nname: docx\nlicense: Proprietary\n---\n# docx\n", encoding="utf-8")
+        (docx / "helper.py").write_text("# bundled asset\n", encoding="utf-8")
+        cron = base / "skills" / "cron"
+        cron.mkdir(parents=True, exist_ok=True)
+        (cron / "SKILL.md").write_text(
+            '---\nname: cron\nmetadata: {"copaw": {"emoji": "x"}}\n---\n# cron\n',
+            encoding="utf-8")
+        user = base / "skills" / "my-skill"
+        user.mkdir(parents=True, exist_ok=True)
+        (user / "SKILL.md").write_text(
+            "---\nname: my-skill\ndescription: mine\n---\n# mine\n", encoding="utf-8")
+        # marketplace/bundled skill keyed by a *different* product name with
+        # nested install hints -- must still be detected as framework-provided.
+        himalaya = base / "skills" / "himalaya"
+        himalaya.mkdir(parents=True, exist_ok=True)
+        (himalaya / "SKILL.md").write_text(
+            "---\nname: himalaya\nmetadata:\n  openclaw:\n    emoji: mail\n"
+            "    install: []\n---\n# himalaya\n", encoding="utf-8")
+        collected = spec.collect()
+        self.assertIn("skills/my-skill/SKILL.md", collected)
+        self.assertNotIn("skills/docx/SKILL.md", collected)
+        self.assertNotIn("skills/docx/scripts/helper.py", collected)
+        self.assertNotIn("skills/cron/SKILL.md", collected)
+        self.assertNotIn("skills/himalaya/SKILL.md", collected)
+
     def test_name_templating_is_isolated_per_agent(self):
         (self.root / "agents").mkdir()
         (self.root / "agents" / "a.md").write_text("a")
@@ -166,7 +216,7 @@ class TestQwenpawConfigRoot(unittest.TestCase):
                 return QwenpawWorkspace(agent_name="x").default_root.name
 
     def test_prefers_qwenpaw_when_both_exist(self):
-        self.assertEqual(self._root_name([".qwenpaw", ".copaw"]), ".qwenpaw")
+        self.assertEqual(self._root_name([".qwenpaw", ".copaw"]), ".copaw")
 
     def test_uses_legacy_copaw_when_only_copaw(self):
         self.assertEqual(self._root_name([".copaw"]), ".copaw")
@@ -175,7 +225,7 @@ class TestQwenpawConfigRoot(unittest.TestCase):
         self.assertEqual(self._root_name([".qwenpaw"]), ".qwenpaw")
 
     def test_defaults_to_qwenpaw_when_neither_exists(self):
-        self.assertEqual(self._root_name([]), ".qwenpaw")
+        self.assertEqual(self._root_name([]), ".copaw")
 
 
 if __name__ == "__main__":
