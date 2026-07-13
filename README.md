@@ -457,8 +457,7 @@ Low-level raw file transfer for remote agent repositories: `download`, `upload`,
 
 ```bash
 ms agent download -r user/my-agent --local-dir ./my-agent   # download raw files
-ms agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw files
-ms agent list --owner user                                  # list remote repos
+ms agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw
 ```
 
 > **Framework-aware operations** (cross-framework `convert`, `watch`/bidirectional sync, `status`, `backups`, `restore`, `stop`) live in **[modelscope-agent](https://github.com/modelscope/ms-agent)** — use `ms-agent agent ...` instead. For example, to download and convert in one step: `ms-agent agent download -f qoder -r user/my-agent --target-framework qwenpaw`.
@@ -496,20 +495,6 @@ ms agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 | `--local-dir DIR` | no | Source path (file or directory) to upload (default: CWD) |
 | `--revision REV` | no | Repository revision (default: `master`) |
 | `--dry-run` | no | List files that would be uploaded without uploading |
-
-#### `ms agent list`
-
-Query and display remote agent repositories with pagination.
-
-```bash
-ms agent list --owner user --page-size 20
-```
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `--owner OWNER` | no | Filter by owner username or organization |
-| `--page N` | no | Page number (default: `1`) |
-| `--page-size N` | no | Items per page (default: `10`) |
 
 </details>
 
