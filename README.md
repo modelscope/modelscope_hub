@@ -453,76 +453,49 @@ ms cache clear --repo-id my-org/old-model --repo-type model --yes
 
 ### `ms agent`
 
-Manage agent workspace files across local directories and remote repositories. Supports multiple frameworks with cross-framework conversion.
+Low-level raw file transfer for remote agent repositories: `download`, `upload`, `list`. This command transfers files as-is, with **no framework awareness**.
 
 ```bash
-ms agent upload -f qwenpaw -r user/my-agent                    # upload local files
-ms agent download -f qwenpaw -r user/my-agent                  # download to local
-ms agent watch -f qwenpaw -r user/my-agent --pull              # bidirectional sync
-ms agent convert --from-framework nanobot --target-framework qwenpaw  # convert format
-ms agent status -f qwenpaw                                      # show local status
-ms agent list --owner user                                      # list remote repos
-ms agent backups -f qwenpaw                                     # list backups
-ms agent restore --from-backup last -f qwenpaw                 # restore from backup
-ms agent stop                                                   # stop watch daemon
+ms agent download -r user/my-agent --local-dir ./my-agent   # download raw files
+ms agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw files
+ms agent list --owner user                                  # list remote repos
 ```
 
-> **Supported frameworks:** nanobot, openclaw, hermes, qwenpaw, openhuman, qoder
+> **Framework-aware operations** (cross-framework `convert`, `watch`/bidirectional sync, `status`, `backups`, `restore`, `stop`) live in **[modelscope-agent](https://github.com/modelscope/ms-agent)** — use `ms-agent agent ...` instead. For example, to download and convert in one step: `ms-agent agent download -f qoder -r user/my-agent --target-framework qwenpaw`.
 
 <details>
 <summary>Subcommands</summary>
 
-#### `ms agent upload`
-
-Pack and upload local agent workspace files to a remote repository.
-
-```bash
-ms agent upload -f qwenpaw -r user/my-agent
-ms agent upload -f nanobot -r user/my-agent -n my-agent --dry-run
-```
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `-f, --framework FW` | yes | Agent framework |
-| `-r, --repo REPO` | yes | Remote repo identifier (`owner/name`) |
-| `-n, --name NAME` | no | Local agent name; auto-selects if only one exists |
-| `--local-dir DIR` | no | Override local workspace root |
-| `--dry-run` | no | List files that would be uploaded without uploading |
-
 #### `ms agent download`
 
-Download remote agent files and write to local workspace.
+Download all files of a remote agent repository to a local directory (raw, no conversion).
 
 ```bash
-ms agent download -f qwenpaw -r user/my-agent
-ms agent download -f nanobot -r user/my-agent --target-framework qwenpaw
+ms agent download -r user/my-agent
+ms agent download -r user/my-agent --local-dir ./my-agent --revision master
 ```
 
 | Option | Required | Description |
 |--------|----------|-------------|
-| `-f, --framework FW` | yes | Agent framework |
 | `-r, --repo REPO` | yes | Remote repo identifier (`owner/name`) |
-| `-n, --name NAME` | no | Local agent name to write as (default: `default`) |
-| `--local-dir DIR` | no | Override local workspace root |
-| `--target-framework FW` | no | Convert to a different framework on download |
-| `--dry-run` | no | List files that would be written without writing |
+| `--local-dir DIR` | no | Destination directory (default: `./<repo-name>` under CWD) |
+| `--revision REV` | no | Repository revision (default: `master`) |
 
-#### `ms agent watch`
+#### `ms agent upload`
 
-Launch a background daemon that watches local changes and pushes to remote. With `--pull`, also pulls remote changes (bidirectional sync).
+Upload files from a local path (file or directory) to a remote agent repository (raw, no conversion). Creates the repo if it does not exist.
 
 ```bash
-ms agent watch -f qwenpaw -r user/my-agent           # push-only (default)
-ms agent watch -f qwenpaw -r user/my-agent --pull     # bidirectional
+ms agent upload -r user/my-agent --local-dir ./my-agent
+ms agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 ```
 
 | Option | Required | Description |
 |--------|----------|-------------|
-| `-f, --framework FW` | yes | Agent framework |
 | `-r, --repo REPO` | yes | Remote repo identifier (`owner/name`) |
-| `-n, --name NAME` | no | Agent name to sync (default: ALL agents in workspace) |
-| `--local-dir DIR` | no | Override local workspace root |
-| `--pull` | no | Enable bidirectional sync (default: push-only) |
+| `--local-dir DIR` | no | Source path (file or directory) to upload (default: CWD) |
+| `--revision REV` | no | Repository revision (default: `master`) |
+| `--dry-run` | no | List files that would be uploaded without uploading |
 
 #### `ms agent list`
 
@@ -537,77 +510,6 @@ ms agent list --owner user --page-size 20
 | `--owner OWNER` | no | Filter by owner username or organization |
 | `--page N` | no | Page number (default: `1`) |
 | `--page-size N` | no | Items per page (default: `10`) |
-
-#### `ms agent status`
-
-Display discovered agents, file counts, and file paths for a framework.
-
-```bash
-ms agent status -f qwenpaw
-```
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `-f, --framework FW` | yes | Agent framework |
-| `--local-dir DIR` | no | Override local workspace root |
-
-#### `ms agent backups`
-
-List backup zip files. Backups are named `{framework}_{name}_{date}_{time}.zip`.
-
-```bash
-ms agent backups -f qwenpaw
-ms agent backups -f qwenpaw -n my-agent
-```
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `-f, --framework FW` | no | Filter backups by framework name prefix |
-| `-n, --name NAME` | no | Filter backups by agent name |
-| `--local-dir DIR` | no | Override local workspace root |
-
-#### `ms agent restore`
-
-Restore workspace from a backup zip. Backs up current state before overwriting.
-
-```bash
-ms agent restore --from-backup last -f qwenpaw
-ms agent restore --from-backup qwenpaw_default_20260701_120000.zip
-```
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `--from-backup TARGET` | yes | `last` (most recent matching) or a specific filename |
-| `-f, --framework FW` | no | Filter backup candidates by framework (with `last`) |
-| `-n, --name NAME` | no | Filter backup candidates by agent name (with `last`) |
-| `--local-dir DIR` | no | Override restore target directory |
-
-#### `ms agent convert`
-
-Convert agent workspace files from one framework format to another (local only, no network). Skips default template files with no custom content; backs up existing target files before writing.
-
-```bash
-ms agent convert --from-framework nanobot --target-framework qwenpaw
-ms agent convert --from-framework hermes --target-framework qwenpaw --from-name my-agent --dry-run
-```
-
-| Option | Required | Description |
-|--------|----------|-------------|
-| `--from-framework FW` | yes | Source framework to read from |
-| `--target-framework FW` | yes | Target framework to write to |
-| `--from-name NAME` | no | Source agent name (default: `default`) |
-| `--target-name NAME` | no | Target agent name (default: same as `--from-name`) |
-| `--local-dir DIR` | no | Source workspace root (default: source framework path) |
-| `--out-dir DIR` | no | Destination directory (default: target framework path) |
-| `--dry-run` | no | Show what would be written without writing |
-
-#### `ms agent stop`
-
-Gracefully stop the background watch daemon (cross-platform: stop-file + SIGTERM).
-
-```bash
-ms agent stop
-```
 
 </details>
 
