@@ -1,90 +1,21 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
-"""Agent workspace management SDK for ModelScope Hub.
+"""Agent repository transport SDK for ModelScope Hub.
+
+This package provides only the low-level HTTP client for agent repositories.
+Framework-aware workspace management (frameworks, conversion, sync, watch,
+backups) lives in **modelscope-agent** (``ms_agent.agent_hub``).
 
 Public API
 ----------
-- :class:`AgentApi` -- HTTP client for agent repository operations.
-- :class:`WorkspaceSpec` -- Abstract base for framework workspace definitions.
-- :data:`FRAMEWORK_REGISTRY` -- Mapping of framework names to WorkspaceSpec classes.
-- :func:`register_framework` -- Register a new framework at runtime.
-- :func:`get_defaults` -- Load default templates for a framework.
-
-Built-in frameworks (auto-registered on import):
-  qoder, qwenpaw, openclaw, hermes, nanobot, openhuman
+- :class:`AgentApi` -- HTTP client for agent repository operations
+  (download/commit/LFS/list/create/delete).
+- :class:`RemoteFileInfo` -- metadata for a single remote file.
+- :func:`is_lfs_file` -- decide whether a file must use the LFS upload path.
 """
-from ._api import AgentApi
-from ._workspace import (
-    DEFAULT_AGENT_NAME,
-    ALL_AGENT_NAME,
-    GLOBAL_AGENT_NAME,
-    FRAMEWORK_REGISTRY,
-    WorkspaceSpec,
-    register_framework,
-)
-from ._defaults import get_defaults
-from ._merge import (
-    FullMergeResult,
-    MergeAction,
-    MergeResult,
-    SectionMerger,
-    HeartbeatMerger,
-    merge_resources,
-)
-from ._commands import (
-    api_error_message,
-    available_frameworks,
-    build_spec,
-    cmd_backups,
-    cmd_convert,
-    cmd_download,
-    cmd_list,
-    cmd_recover,
-    cmd_restore,
-    cmd_status,
-    cmd_stop,
-    cmd_upload,
-    cmd_watch,
-    convert_resources,
-    convert_workspace,
-    repo_name,
-    resolve_local_name,
-    resolve_remote,
-)
-
-# Trigger auto-registration of all built-in frameworks.
-from . import frameworks as _frameworks  # noqa: F401
+from ._api import AgentApi, RemoteFileInfo, is_lfs_file
 
 __all__ = [
     "AgentApi",
-    "WorkspaceSpec",
-    "FRAMEWORK_REGISTRY",
-    "register_framework",
-    "get_defaults",
-    "DEFAULT_AGENT_NAME",
-    "ALL_AGENT_NAME",
-    "GLOBAL_AGENT_NAME",
-    "FullMergeResult",
-    "MergeAction",
-    "MergeResult",
-    "SectionMerger",
-    "HeartbeatMerger",
-    "merge_resources",
-    "api_error_message",
-    "available_frameworks",
-    "build_spec",
-    "cmd_backups",
-    "cmd_convert",
-    "cmd_download",
-    "cmd_list",
-    "cmd_recover",
-    "cmd_restore",
-    "cmd_status",
-    "cmd_stop",
-    "cmd_upload",
-    "cmd_watch",
-    "convert_resources",
-    "convert_workspace",
-    "repo_name",
-    "resolve_local_name",
-    "resolve_remote",
+    "RemoteFileInfo",
+    "is_lfs_file",
 ]

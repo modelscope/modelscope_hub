@@ -1,4 +1,6 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
+"""Tests for the slim ``ms agent`` CLI (raw file transfer) and AgentApi."""
+# Copyright (c) Alibaba, Inc. and its affiliates.
 # Copyright (c) Alibaba, Inc. and its affiliates.
 """Shared helpers for agent tests."""
 

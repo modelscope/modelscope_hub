@@ -2,60 +2,8 @@
 
 from __future__ import annotations
 
-import os
-import sys
 import time
-from typing import IO, Iterable, Sequence
-
-# ---------------------------------------------------------------------------
-# Terminal color
-# ---------------------------------------------------------------------------
-# Minimal ANSI palette. Rendering is opt-in per stream and degrades to plain
-# text whenever the stream is not an interactive TTY or the caller/environment
-# opts out via ``NO_COLOR`` (https://no-color.org). ``FORCE_COLOR`` overrides
-# the TTY check so piped output (e.g. tests, CI logs) can still be colored.
-_ANSI: dict[str, str] = {
-    "reset": "\033[0m",
-    "bold": "\033[1m",
-    "dim": "\033[2m",
-    "red": "\033[31m",
-    "green": "\033[32m",
-    "yellow": "\033[33m",
-    "blue": "\033[34m",
-    "magenta": "\033[35m",
-    "cyan": "\033[36m",
-}
-
-
-def supports_color(stream: IO | None = None) -> bool:
-    """Return True when ANSI color should be emitted to *stream*.
-
-    ``NO_COLOR`` (any value) disables color; ``FORCE_COLOR`` (any value) forces
-    it on; otherwise color is used only for interactive TTYs.
-    """
-    if os.environ.get("NO_COLOR"):
-        return False
-    if os.environ.get("FORCE_COLOR"):
-        return True
-    stream = stream if stream is not None else sys.stdout
-    try:
-        return bool(stream.isatty())
-    except Exception:
-        return False
-
-
-def style(text: str, *names: str, stream: IO | None = None) -> str:
-    """Wrap *text* in the ANSI codes named by *names* (e.g. ``"bold"``, ``"cyan"``).
-
-    Returns *text* unchanged when no names are given or when *stream* does not
-    support color, so call sites never need their own TTY guard.
-    """
-    if not names or not supports_color(stream):
-        return text
-    codes = "".join(_ANSI.get(n, "") for n in names)
-    if not codes:
-        return text
-    return f"{codes}{text}{_ANSI['reset']}"
+from typing import Iterable, Sequence
 
 # ---------------------------------------------------------------------------
 # Size formatting
@@ -173,4 +121,4 @@ def tabulate(
     return "\n".join(lines)
 
 
-__all__ = ["format_size", "format_timesince", "style", "supports_color", "tabulate"]
+__all__ = ["format_size", "format_timesince", "tabulate"]

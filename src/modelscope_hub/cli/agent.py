@@ -1,63 +1,256 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
-"""``ms agent`` command -- manage agent workspace files."""
+"""``ms agent`` command -- low-level raw file transfer for agent repositories.
+
+This is the *slim* Hub CLI. It supports only ``download``/``upload``/``list``
+for raw file transfer to and from remote agent repositories, with no framework
+awareness.  Framework-aware operations (convert, watch/sync, status, backups,
+restore, stop) live in **modelscope-agent** -- use ``ms-agent agent ...``.
+"""
 
 from __future__ import annotations
 
+import base64
 import sys
 from argparse import Action, RawDescriptionHelpFormatter
+from pathlib import Path
 
-from ..agent import (
-    FRAMEWORK_REGISTRY,
-    available_frameworks,
-    cmd_backups,
-    cmd_convert,
-    cmd_download,
-    cmd_list,
-    cmd_restore,
-    cmd_status,
-    cmd_stop,
-    cmd_upload,
-    cmd_watch,
-)
+from ..agent import AgentApi, is_lfs_file
+from ..errors import APIError
 from .base import CLICommand
 
+_CONVERT_HINT = (
+    "This command transfers raw files only. For framework-aware conversion, "
+    "watch/sync, status, backups and restore, use the modelscope-agent CLI: "
+    "`ms-agent agent ...`."
+)
 
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _fail(message: str) -> int:
+    print(f"Error: {message}", file=sys.stderr)
+    return 1
+
+
+def _api_error_message(e: APIError, action: str = "request") -> str:
+    status = e.status_code or 0
+    if status == 401:
+        return "authentication failed. Please login again."
+    if status == 403:
+        return "permission denied. You do not have access to this resource."
+    if status == 404:
+        return "resource not found. Check the repository name and try again."
+    if status >= 500:
+        return "server encountered an issue. Please wait a moment and try again."
+    return f"{action} failed (HTTP {status}: {e.message})"
+
+
+def _resolve_repo(repo: str, username: str) -> tuple[str, str]:
+    """Resolve ``repo`` into ``(group, name)``.
+
+    - ``owner/name`` -> ``(owner, name)`` (username ignored)
+    - ``name``       -> ``(username, name)``
+    """
+    if "/" in repo:
+        owner, _, name = repo.partition("/")
+        return owner, name
+    return username, repo
+
+
+# ---------------------------------------------------------------------------
+# Command implementations (raw transfer, no framework logic)
+# ---------------------------------------------------------------------------
+def _cmd_list(owner, page_number, page_size, *, endpoint, token) -> int:
+    """List remote agent repositories."""
+    if not endpoint:
+        return _fail("not logged in. Provide endpoint.")
+    client = AgentApi(endpoint=endpoint, token=token or "")
+    try:
+        result = client.list_agents(
+            owner=owner, page_number=page_number, page_size=page_size)
+    except APIError as e:
+        return _fail(_api_error_message(e, "list"))
+    except Exception as e:
+        return _fail(f"list failed: {e}")
+
+    items = result.get("items") or []
+    total = result.get("total_count", len(items))
+    if not items:
+        print("(no agent repositories found)")
+        return 0
+
+    headers = ["repo_id", "framework", "visibility", "updated"]
+    rows = []
+    for item in items:
+        owner_name = item.get("Path") or item.get("path") or ""
+        name = item.get("Name") or item.get("name") or ""
+        repo_id = f"{owner_name}/{name}" if owner_name else name
+        fw = item.get("Framework") or item.get("framework") or "-"
+        vis = item.get("Visibility") or item.get("visibility") or "-"
+        updated = item.get("LastUpdatedDate") or item.get("last_updated_date") or "-"
+        if isinstance(updated, str) and "T" in updated:
+            updated = updated.split("T")[0]
+        rows.append((repo_id, fw, vis, updated))
+
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for i, val in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(val)))
+    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
+    print(fmt.format(*headers))
+    print(fmt.format(*["-" * w for w in col_widths]))
+    for row in rows:
+        print(fmt.format(*[str(v) for v in row]))
+    print(f"\npage {page_number} / total {total} (page_size={page_size})")
+    return 0
+
+
+def _cmd_download(repo, local_dir, revision, *, endpoint, token, username) -> int:
+    """Download all raw files of a remote repository to a local directory."""
+    if not repo:
+        return _fail("--repo is required (the remote repository name).")
+    if not endpoint:
+        return _fail("not logged in. Provide endpoint.")
+    if "/" not in repo and not username:
+        return _fail(
+            f"--repo '{repo}' requires login to resolve owner. "
+            f"Use 'owner/name' format or run 'ms login' first.")
+
+    group, name = _resolve_repo(repo, username or "")
+    client = AgentApi(endpoint=endpoint, token=token or "")
+    try:
+        if client.repo_info(group, name) is None:
+            return _fail(f"repository {group}/{name} not found.")
+        paths = client.list_repo_files(group, name, revision=revision)
+    except APIError as e:
+        return _fail(_api_error_message(e, "download"))
+    except Exception as e:
+        return _fail(f"download failed: {e}")
+    if not paths:
+        return _fail(f"repository {group}/{name} has no files.")
+
+    dest = Path(local_dir).expanduser() if local_dir else Path.cwd() / name
+    dest.mkdir(parents=True, exist_ok=True)
+    total = len(paths)
+    for i, rel in enumerate(paths, 1):
+        print(f"  [{i}/{total}] downloading {rel}", flush=True)
+        try:
+            data = client.download_repo_file(
+                group, name, rel, revision=revision, binary=True)
+        except APIError as e:
+            return _fail(_api_error_message(e, "download"))
+        except Exception as e:
+            return _fail(f"download failed for {rel}: {e}")
+        out = dest / rel
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(data)
+    print(f"Downloaded {total} file(s) to {dest}")
+    return 0
+
+
+def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username) -> int:
+    """Upload raw files from a local path to a remote repository."""
+    if not repo:
+        return _fail("--repo is required (the remote repository name).")
+
+    src = Path(local_dir).expanduser() if local_dir else Path.cwd()
+    if not src.exists():
+        return _fail(f"local path not found: {src}")
+
+    files: dict[str, bytes] = {}
+    if src.is_file():
+        files[src.name] = src.read_bytes()
+    else:
+        for fp in sorted(src.rglob("*")):
+            if fp.is_file():
+                files[fp.relative_to(src).as_posix()] = fp.read_bytes()
+    if not files:
+        return _fail(f"no files found under {src}.")
+
+    if dry_run:
+        print(f"[dry-run] would upload {len(files)} file(s) to '{repo}':")
+        for rel in sorted(files):
+            print(f"  {rel} ({len(files[rel])} B)")
+        return 0
+
+    if not endpoint or not token:
+        return _fail("not logged in. Run 'ms login' first.")
+    if "/" not in repo and not username:
+        return _fail(
+            f"--repo '{repo}' requires login to resolve owner. "
+            f"Use 'owner/name' format or run 'ms login' first.")
+
+    group, name = _resolve_repo(repo, username or "")
+    client = AgentApi(endpoint=endpoint, token=token)
+    try:
+        if not client.check_repo(group, name):
+            client.create_repo(group, name)
+    except Exception as exc:
+        print(f"warning: create_repo check failed ({exc}), proceeding anyway.",
+              file=sys.stderr)
+
+    normal_actions: list[dict] = []
+    lfs_files: list[tuple[str, bytes]] = []
+    for rel, content in sorted(files.items()):
+        size = len(content)
+        if is_lfs_file(rel, size):
+            lfs_files.append((rel, content))
+        else:
+            normal_actions.append({
+                "action": "create",
+                "path": rel,
+                "type": "normal",
+                "size": size,
+                "sha256": "",
+                "content": base64.b64encode(content).decode("ascii"),
+                "encoding": "base64",
+            })
+    try:
+        if normal_actions:
+            client.commit_files(
+                group, name, normal_actions, revision=revision,
+                commit_message="upload normal files")
+        for rel, content in lfs_files:
+            client.upload_lfs_file(
+                group, name, rel, content, action="create",
+                revision=revision, commit_message=f"upload LFS {rel}")
+    except APIError as e:
+        return _fail(_api_error_message(e, "upload"))
+    except Exception as e:
+        return _fail(f"upload failed: {e}")
+
+    print(f"Uploaded {len(files)} file(s) to {group}/{name}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# CLI command
+# ---------------------------------------------------------------------------
 class AgentCommand(CLICommand):
-    """Agent workspace management: upload, download, watch, list, status, restore, backups, convert, stop."""
+    """Raw agent-repository file transfer: download, upload, list."""
 
     @staticmethod
     def register(subparsers: Action) -> None:
-        _FW_LIST = available_frameworks()
         _epilog = (
             "subcommand arguments:\n"
-            "  upload    -f FRAMEWORK -r REPO [-n NAME] [--local-dir DIR] [--dry-run]\n"
-            "  download  -f FRAMEWORK -r REPO [-n NAME] [--local-dir DIR] [--target-framework FW] [--dry-run]\n"
-            "  watch     -f FRAMEWORK -r REPO [-n NAME] [--local-dir DIR] [--pull]\n"
+            "  download  -r REPO [--local-dir DIR] [--revision REV]\n"
+            "  upload    -r REPO [--local-dir DIR] [--revision REV] [--dry-run]\n"
             "  list      [--owner OWNER] [--page N] [--page-size N]\n"
-            "  status    -f FRAMEWORK [--local-dir DIR]\n"
-            "  backups   [-f FRAMEWORK] [-n NAME] [--local-dir DIR]\n"
-            "  restore   --from-backup TARGET [-f FRAMEWORK] [-n NAME] [--local-dir DIR]\n"
-            "  convert   --from-framework FW --target-framework FW [--from-name NAME] [--target-name NAME] [--local-dir DIR] [--out-dir DIR] [--dry-run]\n"
-            "  stop      (no arguments)\n"
             "\n"
-            "supported frameworks:\n"
-            f"  {_FW_LIST}\n"
+            "note:\n"
+            f"  {_CONVERT_HINT}\n"
             "\n"
             "examples:\n"
-            "  ms agent upload -f qwenpaw -r user/my-agent\n"
-            "  ms agent download -f qwenpaw -r user/my-agent\n"
-            "  ms agent watch -f qwenpaw -r user/my-agent --pull\n"
-            "  ms agent convert --from-framework qoder --target-framework qwenpaw\n"
-            "  ms agent status -f qwenpaw\n"
-            "  ms agent backups -f qwenpaw\n"
-            "  ms agent restore --from-backup last -f qwenpaw\n"
+            "  ms agent download -r user/my-agent --local-dir ./my-agent\n"
+            "  ms agent upload -r user/my-agent --local-dir ./my-agent\n"
             "  ms agent list --owner user\n"
-            "  ms agent stop\n"
         )
         agent_parser = subparsers.add_parser(
             "agent",
-            help="Manage agent files (upload, download, watch, list, status, restore, backups, convert, stop).",
-            description="Manage agent files across local workspace and remote repositories.",
+            help="Transfer raw agent repository files (download, upload, list).",
+            description="Low-level raw file transfer for remote agent repositories. "
+                        + _CONVERT_HINT,
             epilog=_epilog,
             formatter_class=RawDescriptionHelpFormatter,
         )
@@ -65,85 +258,44 @@ class AgentCommand(CLICommand):
         agent_sub = agent_parser.add_subparsers(dest="agent_command", metavar="ACTION")
         agent_sub.required = True
 
-        _fw_help = f"Agent framework ({_FW_LIST})"
+        # ---- download ----
+        p_download = agent_sub.add_parser(
+            "download",
+            help="Download raw agent files from a remote repository",
+            formatter_class=RawDescriptionHelpFormatter,
+            description="Download all files of a remote agent repository to a local directory.\n"
+                        + _CONVERT_HINT,
+        )
+        p_download.add_argument(
+            "-r", "--repo", required=True,
+            help="Remote repo identifier, supports owner/name format (e.g. user/my-agent)")
+        p_download.add_argument(
+            "--local-dir", default=None,
+            help="Destination directory (default: ./<repo-name> under CWD)")
+        p_download.add_argument(
+            "--revision", default="master", help="Repository revision (default: master)")
 
         # ---- upload ----
         p_upload = agent_sub.add_parser(
             "upload",
-            help="Upload local agent files to remote repository",
+            help="Upload raw agent files to a remote repository",
             formatter_class=RawDescriptionHelpFormatter,
-            description="Pack and upload local agent workspace files to a remote repository.",
-            epilog=f"supported frameworks: {_FW_LIST}",
+            description="Upload files from a local path to a remote agent repository.\n"
+                        + _CONVERT_HINT,
         )
-        p_upload.add_argument(
-            "-f", "--framework", required=True,
-            help=_fw_help)
-        p_upload.add_argument(
-            "-n", "--name", default=None,
-            help="Local agent name; auto-selects if only one exists, errors if multiple")
         p_upload.add_argument(
             "-r", "--repo", required=True,
             help="Remote repo identifier, supports owner/name format (e.g. user/my-agent)")
         p_upload.add_argument(
             "--local-dir", default=None,
-            help="Override local workspace root (default: framework standard path)")
+            help="Source path (file or directory) to upload (default: CWD)")
+        p_upload.add_argument(
+            "--revision", default="master", help="Repository revision (default: master)")
         p_upload.add_argument(
             "--dry-run", action="store_true",
             help="List files that would be uploaded, without actually uploading")
 
-        # ---- download ----
-        p_download = agent_sub.add_parser(
-            "download",
-            help="Download agent files from remote repository",
-            formatter_class=RawDescriptionHelpFormatter,
-            description="Download remote agent files and write to local workspace.",
-            epilog=f"supported frameworks: {_FW_LIST}",
-        )
-        p_download.add_argument(
-            "-f", "--framework", required=True,
-            help=_fw_help)
-        p_download.add_argument(
-            "-r", "--repo", required=True,
-            help="Remote repo identifier, supports owner/name format (e.g. user/my-agent)")
-        p_download.add_argument(
-            "-n", "--name", default=None,
-            help='Local agent name to write as (default: "default")')
-        p_download.add_argument(
-            "--local-dir", default=None,
-            help="Override local workspace root (default: framework standard path)")
-        p_download.add_argument(
-            "--target-framework", default=None,
-            help=f"Convert to a different framework on download ({_FW_LIST})")
-        p_download.add_argument(
-            "--dry-run", action="store_true",
-            help="List files that would be written, without actually writing")
-
-        # ---- watch ----
-        p_watch = agent_sub.add_parser(
-            "watch",
-            help="Start background sync for agent files",
-            formatter_class=RawDescriptionHelpFormatter,
-            description="Launch a background daemon that watches local changes and pushes to remote.\n"
-                        "With --pull, also pulls remote changes to local (bidirectional sync).",
-            epilog=f"supported frameworks: {_FW_LIST}",
-        )
-        p_watch.add_argument(
-            "-f", "--framework", required=True,
-            help=_fw_help)
-        p_watch.add_argument(
-            "-n", "--name", default=None,
-            help="Agent name to sync (default: ALL agents in the workspace)")
-        p_watch.add_argument(
-            "-r", "--repo", required=True,
-            help="Remote repo identifier, supports owner/name format (e.g. user/my-agent)")
-        p_watch.add_argument(
-            "--local-dir", default=None,
-            help="Override local workspace root (default: framework standard path)")
-        p_watch.add_argument(
-            "--pull", action="store_true",
-            help="Enable bidirectional sync; pull remote changes to local (default: push-only)")
-
-        # ---- list (remote) ----
+        # ---- list ----
         p_list = agent_sub.add_parser(
             "list",
             help="List remote agent repositories",
@@ -159,216 +311,59 @@ class AgentCommand(CLICommand):
             "--page-size", dest="page_size", type=int, default=10,
             help="Number of items per page (default: 10)")
 
-        # ---- status (local) ----
-        p_status = agent_sub.add_parser(
-            "status",
-            help="Show local agent status for a framework",
-            formatter_class=RawDescriptionHelpFormatter,
-            description="Display discovered agents, file counts, and file paths for a framework.",
-            epilog=f"supported frameworks: {_FW_LIST}",
-        )
-        p_status.add_argument(
-            "-f", "--framework", required=True,
-            help=_fw_help)
-        p_status.add_argument(
-            "--local-dir", default=None,
-            help="Override local workspace root (default: framework standard path)")
-
-        # ---- backups ----
-        p_backups = agent_sub.add_parser(
-            "backups",
-            help="List available backups",
-            formatter_class=RawDescriptionHelpFormatter,
-            description="List backup zip files. Backups are named: {framework}_{name}_{date}_{time}.zip",
-            epilog=f"supported frameworks: {_FW_LIST}",
-        )
-        p_backups.add_argument(
-            "-f", "--framework", default=None,
-            help="Filter backups by framework name prefix")
-        p_backups.add_argument(
-            "-n", "--name", default=None,
-            help="Filter backups by agent name (matches _{name}_ in filename)")
-        p_backups.add_argument(
-            "--local-dir", default=None,
-            help="Override local workspace root")
-
-        # ---- restore ----
-        p_restore = agent_sub.add_parser(
-            "restore",
-            help="Restore agent files from a backup",
-            formatter_class=RawDescriptionHelpFormatter,
-            description="Restore workspace from a backup zip. Backs up current state before overwriting.",
-            epilog=f"supported frameworks: {_FW_LIST}",
-        )
-        p_restore.add_argument(
-            "--from-backup", required=True,
-            help="'last' (most recent matching backup) or a specific backup filename")
-        p_restore.add_argument(
-            "-f", "--framework", default=None,
-            help="Filter backup candidates by framework (used with 'last')")
-        p_restore.add_argument(
-            "-n", "--name", default=None,
-            help="Filter backup candidates by agent name (used with 'last')")
-        p_restore.add_argument(
-            "--local-dir", default=None,
-            help="Override restore target directory")
-
-        # ---- convert (local only, no network) ----
-        p_convert = agent_sub.add_parser(
-            "convert",
-            help="Convert local agent files between frameworks",
-            formatter_class=RawDescriptionHelpFormatter,
-            description="Convert agent workspace files from one framework format to another.\n"
-                        "Skips default template files that have no custom content.\n"
-                        "Automatically backs up existing target files before writing.",
-            epilog=f"supported frameworks: {_FW_LIST}",
-        )
-        p_convert.add_argument(
-            "--from-framework", required=True,
-            help=f"Source framework to read from ({_FW_LIST})")
-        p_convert.add_argument(
-            "--target-framework", required=True,
-            help=f"Target framework to write to ({_FW_LIST})")
-        p_convert.add_argument(
-            "--from-name", default=None,
-            help='Source agent name to read (default: "default")')
-        p_convert.add_argument(
-            "--target-name", default=None,
-            help="Target agent name to write as (default: same as --from-name)")
-        p_convert.add_argument(
-            "--local-dir", default=None,
-            help="Source workspace root to read from (default: source framework path)")
-        p_convert.add_argument(
-            "--out-dir", default=None,
-            help="Destination directory to write to (default: target framework path)")
-        p_convert.add_argument(
-            "--dry-run", action="store_true",
-            help="Show what would be written without writing")
-
-        # ---- stop ----
-        agent_sub.add_parser(
-            "stop",
-            help="Stop background watch process",
-            description="Gracefully stop the background watch daemon (cross-platform: stop-file + SIGTERM).")
-
     def execute(self) -> None:
         args = self.args
         action = args.agent_command
 
-        # Resolve credentials from global args (token/endpoint from parent parser).
-        token = getattr(args, "token", None)
-        endpoint = getattr(args, "endpoint", None)
+        from ..config import HubConfig
+        config = HubConfig(
+            endpoint=getattr(args, "endpoint", None),
+            token=getattr(args, "token", None),
+        )
+        token = config.token
+        endpoint = config.endpoint
 
-        # For commands that need auth, resolve username via OpenAPIClient.
-        # HubConfig falls back to `ms login` credentials when args are None.
-        username = None
-        if action in ("upload", "watch"):
-            from ..config import HubConfig
+        # Resolve current username for repos given without an explicit owner.
+        username = ""
+        needs_user = (
+            action == "upload"
+            or (action == "download" and "/" not in getattr(args, "repo", ""))
+        )
+        if needs_user and token:
             from .._openapi import OpenAPIClient
-            config = HubConfig(endpoint=endpoint, token=token)
-            token = config.token
-            endpoint = config.endpoint
-            if not token:
-                print("Error: not logged in. Run 'ms login' first.", file=sys.stderr)
-                raise SystemExit(1)
             try:
                 openapi = OpenAPIClient(config=config)
-                user_data = openapi.get_current_user()
-                if not user_data:
-                    print("Error: failed to resolve current user: empty response from server.", file=sys.stderr)
-                    raise SystemExit(1)
+                user_data = openapi.get_current_user() or {}
                 username = user_data.get("username") or user_data.get("Username") or ""
-            except Exception as e:
-                print(f"Error: failed to resolve current user: {e}", file=sys.stderr)
-                raise SystemExit(1)
-            if not username:
-                print("Error: failed to resolve current user: server returned empty username.", file=sys.stderr)
-                raise SystemExit(1)
-        elif action in ("download", "list"):
-            from ..config import HubConfig
-            config = HubConfig(endpoint=endpoint, token=token)
-            token = config.token
-            endpoint = config.endpoint
-            if token and action == "download":
-                from .._openapi import OpenAPIClient
-                try:
-                    openapi = OpenAPIClient(config=config)
-                    user_data = openapi.get_current_user()
-                    username = user_data.get("username") or user_data.get("Username") or ""
-                except Exception:
-                    pass
+            except Exception:
+                username = ""
 
-        if action == "upload":
-            rc = cmd_upload(
-                framework=args.framework,
-                name=args.name,
-                local_dir=args.local_dir,
+        if action == "download":
+            rc = _cmd_download(
                 repo=args.repo,
+                local_dir=args.local_dir,
+                revision=args.revision,
+                endpoint=endpoint,
+                token=token,
+                username=username,
+            )
+        elif action == "upload":
+            rc = _cmd_upload(
+                repo=args.repo,
+                local_dir=args.local_dir,
+                revision=args.revision,
                 dry_run=args.dry_run,
                 endpoint=endpoint,
                 token=token,
                 username=username,
             )
-        elif action == "download":
-            rc = cmd_download(
-                framework=args.framework,
-                repo=args.repo,
-                name=args.name,
-                target=args.target_framework,
-                local_dir=args.local_dir,
-                dry_run=args.dry_run,
-                endpoint=endpoint,
-                token=token,
-                username=username,
-            )
-        elif action == "convert":
-            rc = cmd_convert(
-                source_fw=args.from_framework,
-                target_fw=args.target_framework,
-                from_name=args.from_name,
-                target_name=args.target_name,
-                local_dir=args.local_dir,
-                out_dir=args.out_dir,
-                dry_run=args.dry_run,
-            )
-        elif action == "watch":
-            rc = cmd_watch(
-                framework=args.framework,
-                name=args.name,
-                local_dir=args.local_dir,
-                repo=args.repo,
-                pull=args.pull,
-                endpoint=endpoint,
-                token=token,
-                username=username,
-            )
-        elif action == "stop":
-            rc = cmd_stop()
         elif action == "list":
-            rc = cmd_list(
+            rc = _cmd_list(
                 owner=args.owner,
                 page_number=args.page_number,
                 page_size=args.page_size,
                 endpoint=endpoint,
                 token=token,
-            )
-        elif action == "status":
-            rc = cmd_status(
-                framework=args.framework,
-                local_dir=args.local_dir,
-            )
-        elif action == "backups":
-            rc = cmd_backups(
-                framework=getattr(args, "framework", None),
-                name=getattr(args, "name", None),
-                local_dir=args.local_dir,
-            )
-        elif action == "restore":
-            rc = cmd_restore(
-                target=args.from_backup,
-                framework=getattr(args, "framework", None),
-                name=getattr(args, "name", None),
-                local_dir=args.local_dir,
             )
         else:
             print(f"Unknown agent action: {action}")
