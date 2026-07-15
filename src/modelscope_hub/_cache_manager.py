@@ -278,7 +278,8 @@ def _resolve_verification_root(
         return root, revision or "master"
 
     cache_root = Path(cache_dir or get_default_config().cache_dir).expanduser().resolve()
-    repo_root = cache_root / f"{repo_type}s" / repo_id.replace("/", "--")
+    segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+    repo_root = cache_root / segment / repo_id.replace("/", "--")
     snapshots = repo_root / "snapshots"
     if not snapshots.is_dir():
         raise CacheError(f"Repository is not present in cache: {repo_root}")

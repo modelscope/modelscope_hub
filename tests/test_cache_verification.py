@@ -54,6 +54,21 @@ def test_verify_cached_snapshot(tmp_path):
     assert result.revision == "master"
 
 
+def test_verify_accepts_plural_repo_type(tmp_path):
+    snapshot = tmp_path / "models" / "owner--repo" / "snapshots" / "master"
+    snapshot.mkdir(parents=True)
+    (snapshot / "config.json").write_bytes(b"{}")
+
+    result = verify_cache(
+        "owner/repo",
+        "models",
+        {"config.json": _sha256(b"{}")},
+        cache_dir=tmp_path,
+    )
+
+    assert result.checked_count == 1
+
+
 def test_verify_accepts_string_paths(tmp_path):
     local_dir = tmp_path / "local"
     local_dir.mkdir()
@@ -95,7 +110,7 @@ def test_api_passes_remote_sha256_metadata_to_verifier(tmp_path):
     expected_result = CacheVerification(revision="master", verified_path=str(tmp_path))
 
     with (
-        patch.object(api, "list_repo_files", return_value=files),
+        patch.object(api, "list_repo_files", return_value=files) as mocked_list,
         patch("modelscope_hub.api._verify_cache", return_value=expected_result) as mocked_verify,
     ):
         result = api.verify_cache("owner/repo", local_dir=tmp_path)
@@ -106,3 +121,37 @@ def test_api_passes_remote_sha256_metadata_to_verifier(tmp_path):
         "model",
         {"config.json": "abc"},
     )
+    mocked_list.assert_called_once_with(
+        "owner/repo",
+        "model",
+        revision="master",
+        recursive=True,
+    )
+
+
+def test_api_uses_resolved_cached_revision_for_remote_metadata(tmp_path):
+    snapshot = tmp_path / "models" / "owner--repo" / "snapshots" / "dev"
+    snapshot.mkdir(parents=True)
+    api = HubApi()
+
+    with (
+        patch.object(api, "list_repo_files", return_value=[]) as mocked_list,
+        patch("modelscope_hub.api._verify_cache") as mocked_verify,
+    ):
+        api.verify_cache("owner/repo", cache_dir=tmp_path)
+
+    mocked_list.assert_called_once_with(
+        "owner/repo",
+        "model",
+        revision="dev",
+        recursive=True,
+    )
+    assert mocked_verify.call_args.kwargs["revision"] == "dev"
+
+
+def test_file_info_positional_fields_remain_compatible():
+    info = FileInfo("file.txt", 10, "blob", "tree", None, {"sha256": "abc"})
+
+    assert info.type == "tree"
+    assert info.lfs == {"sha256": "abc"}
+    assert info.sha256 is None

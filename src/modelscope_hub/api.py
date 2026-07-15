@@ -30,6 +30,7 @@ from urllib.parse import urlparse
 from requests.cookies import RequestsCookieJar
 
 from ._cache_manager import clear_cache as _clear_cache
+from ._cache_manager import _resolve_verification_root
 from ._cache_manager import scan_cache as _scan_cache
 from ._cache_manager import verify_cache as _verify_cache
 from ._download import DownloadManager
@@ -1887,13 +1888,20 @@ class HubApi:
         if cache_dir is not None and local_dir is not None:
             raise InvalidParameter("cache_dir and local_dir are mutually exclusive")
         rt = self._normalize_repo_type(repo_type)
-        files = self.list_repo_files(repo_id, rt, revision=revision, recursive=True)
+        _, resolved_revision = _resolve_verification_root(
+            repo_id,
+            str(rt),
+            revision=revision,
+            cache_dir=cache_dir,
+            local_dir=local_dir,
+        )
+        files = self.list_repo_files(repo_id, rt, revision=resolved_revision, recursive=True)
         expected = {file.path: file.sha256 for file in files if not file.is_dir and file.path}
         return _verify_cache(
             repo_id,
             str(rt),
             expected,
-            revision=revision,
+            revision=resolved_revision,
             cache_dir=Path(cache_dir) if cache_dir else None,
             local_dir=Path(local_dir) if local_dir else None,
         )

@@ -139,10 +139,10 @@ class FileInfo(_FromDictMixin):
     path: str = ""
     size: int = 0
     blob_id: str | None = None
-    sha256: str | None = None
     type: str = "blob"  # "blob" | "tree"
     last_modified: datetime | str | int | None = None
     lfs: dict[str, Any] | None = None
+    sha256: str | None = None
 
     def __post_init__(self) -> None:
         self.last_modified = _coerce_datetime(self.last_modified) or self.last_modified
