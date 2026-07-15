@@ -54,6 +54,21 @@ def test_verify_cached_snapshot(tmp_path):
     assert result.revision == "master"
 
 
+def test_verify_accepts_string_paths(tmp_path):
+    local_dir = tmp_path / "local"
+    local_dir.mkdir()
+    (local_dir / "config.json").write_bytes(b"{}")
+
+    result = verify_cache(
+        "owner/repo",
+        "model",
+        {"config.json": _sha256(b"{}")},
+        local_dir=str(local_dir),
+    )
+
+    assert result.checked_count == 1
+
+
 def test_verify_rejects_ambiguous_cached_revision(tmp_path):
     snapshots = tmp_path / "models" / "owner--repo" / "snapshots"
     (snapshots / "one").mkdir(parents=True)
@@ -61,6 +76,14 @@ def test_verify_rejects_ambiguous_cached_revision(tmp_path):
 
     with pytest.raises(CacheError, match="ambiguous"):
         verify_cache("owner/repo", "model", {}, cache_dir=tmp_path)
+
+
+def test_verify_reports_empty_snapshot_directory(tmp_path):
+    snapshots = tmp_path / "models" / "owner--repo" / "snapshots"
+    snapshots.mkdir(parents=True)
+
+    with pytest.raises(CacheError, match="No cached revisions"):
+        verify_cache("owner/repo", "model", {}, cache_dir=str(tmp_path))
 
 
 def test_api_passes_remote_sha256_metadata_to_verifier(tmp_path):

@@ -221,8 +221,8 @@ def verify_cache(
     expected_by_path: dict[str, str | None],
     *,
     revision: str | None = None,
-    cache_dir: Path | None = None,
-    local_dir: Path | None = None,
+    cache_dir: str | Path | None = None,
+    local_dir: str | Path | None = None,
 ) -> CacheVerification:
     """Compare a cached snapshot or local directory with remote SHA-256 values."""
     root, resolved_revision = _resolve_verification_root(
@@ -268,16 +268,16 @@ def _resolve_verification_root(
     repo_type: str,
     *,
     revision: str | None,
-    cache_dir: Path | None,
-    local_dir: Path | None,
+    cache_dir: str | Path | None,
+    local_dir: str | Path | None,
 ) -> tuple[Path, str]:
     if local_dir is not None:
-        root = local_dir.expanduser().resolve()
+        root = Path(local_dir).expanduser().resolve()
         if not root.is_dir():
             raise CacheError(f"Local directory does not exist: {root}")
         return root, revision or "master"
 
-    cache_root = (cache_dir or get_default_config().cache_dir).expanduser().resolve()
+    cache_root = Path(cache_dir or get_default_config().cache_dir).expanduser().resolve()
     repo_root = cache_root / f"{repo_type}s" / repo_id.replace("/", "--")
     snapshots = repo_root / "snapshots"
     if not snapshots.is_dir():
@@ -293,6 +293,8 @@ def _resolve_verification_root(
     if default_snapshot.is_dir():
         return default_snapshot, "master"
     candidates = sorted(path for path in snapshots.iterdir() if path.is_dir())
+    if not candidates:
+        raise CacheError(f"No cached revisions found in: {snapshots}")
     if len(candidates) == 1:
         return candidates[0], candidates[0].name
     raise CacheError("Cached revision is ambiguous; pass --revision explicitly")

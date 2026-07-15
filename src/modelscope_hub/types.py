@@ -256,10 +256,6 @@ class CacheVerification:
     extra_paths: list[str] = field(default_factory=list)
     unverified_paths: list[str] = field(default_factory=list)
 
-    @property
-    def total_repos(self) -> int:
-        return len(self.repos)
-
 
 # ---------------------------------------------------------------------------
 # TypedDict payloads (for OpenAPI method signatures)
