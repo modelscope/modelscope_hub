@@ -437,6 +437,8 @@ Inspect and clean the local download cache.
 ```bash
 ms cache scan
 ms cache scan --cache-dir /data/cache
+ms cache verify Qwen/Qwen3-0.6B
+ms cache verify Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
 ms cache clear --repo-type model --yes
 ms cache clear --repo-id my-org/old-model --repo-type model --yes
 ```
@@ -447,6 +449,7 @@ ms cache clear --repo-id my-org/old-model --repo-type model --yes
 | Subcommand | Key Options |
 |------------|-------------|
 | `scan` | `--cache-dir DIR` |
+| `verify REPO_ID` | `--repo-type`, `--revision`, `--cache-dir`, `--local-dir`, `--fail-on-missing-files`, `--fail-on-extra-files` |
 | `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--yes` |
 
 </details>

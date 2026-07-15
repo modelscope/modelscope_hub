@@ -6,6 +6,7 @@ Includes:
 - Legacy alias tests: scan-cache, clear-cache
 - Remote tests: real API cache lifecycle (existing)
 """
+
 from __future__ import annotations
 
 import base64
@@ -14,8 +15,8 @@ from unittest.mock import patch
 
 import pytest
 
-from modelscope_hub.cli.cache import CacheCommand, _CacheClear, _CacheScan
-from modelscope_hub.types import CacheInfo
+from modelscope_hub.cli.cache import _CacheClear, _CacheScan, _CacheVerify
+from modelscope_hub.types import CacheInfo, CacheVerification, VerificationMismatch
 
 from .conftest import run_cli
 
@@ -47,30 +48,54 @@ class TestCacheClearParser:
         assert args.yes is True
 
     def test_repo_type(self, parser):
-        args = parser.parse_args([
-            "cache", "clear", "--repo-type", "model", "--yes",
-        ])
+        args = parser.parse_args(
+            [
+                "cache",
+                "clear",
+                "--repo-type",
+                "model",
+                "--yes",
+            ]
+        )
         assert args.repo_type == "model"
 
     @pytest.mark.parametrize("repo_type", ["model", "dataset", "studio", "skill", "mcp"])
     def test_all_repo_types(self, parser, repo_type):
-        args = parser.parse_args([
-            "cache", "clear", "--repo-type", repo_type, "--yes",
-        ])
+        args = parser.parse_args(
+            [
+                "cache",
+                "clear",
+                "--repo-type",
+                repo_type,
+                "--yes",
+            ]
+        )
         assert args.repo_type == repo_type
 
     def test_repo_id(self, parser):
-        args = parser.parse_args([
-            "cache", "clear",
-            "--repo-type", "model", "--repo-id", "owner/model1",
-            "--yes",
-        ])
+        args = parser.parse_args(
+            [
+                "cache",
+                "clear",
+                "--repo-type",
+                "model",
+                "--repo-id",
+                "owner/model1",
+                "--yes",
+            ]
+        )
         assert args.repo_id == "owner/model1"
 
     def test_cache_dir(self, parser):
-        args = parser.parse_args([
-            "cache", "clear", "--cache-dir", "/data/cache", "--yes",
-        ])
+        args = parser.parse_args(
+            [
+                "cache",
+                "clear",
+                "--cache-dir",
+                "/data/cache",
+                "--yes",
+            ]
+        )
         assert args.cache_dir == "/data/cache"
 
     def test_yes_short_flag(self, parser):
@@ -80,6 +105,27 @@ class TestCacheClearParser:
     def test_yes_default_false(self, parser):
         args = parser.parse_args(["cache", "clear"])
         assert args.yes is False
+
+
+class TestCacheVerifyParser:
+    def test_defaults(self, parser):
+        args = parser.parse_args(["cache", "verify", "owner/repo"])
+        assert args.repo_id == "owner/repo"
+        assert args.repo_type == "model"
+
+    def test_locations_are_mutually_exclusive(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(
+                [
+                    "cache",
+                    "verify",
+                    "owner/repo",
+                    "--cache-dir",
+                    "/cache",
+                    "--local-dir",
+                    "/repo",
+                ]
+            )
 
 
 class TestCacheLegacyAliases:
@@ -106,9 +152,15 @@ class TestCacheLegacyAliases:
         assert args.dataset == "owner/data"
 
     def test_clear_cache_with_cache_dir(self, parser):
-        args = parser.parse_args([
-            "clear-cache", "--model", "owner/repo", "--cache-dir", "/tmp",
-        ])
+        args = parser.parse_args(
+            [
+                "clear-cache",
+                "--model",
+                "owner/repo",
+                "--cache-dir",
+                "/tmp",
+            ]
+        )
         assert args.cache_dir == "/tmp"
 
     def test_clear_cache_yes_flag(self, parser):
@@ -144,7 +196,9 @@ class TestCacheScanExecute:
 
     def test_scan_empty(self, parser, mock_api, capsys):
         mock_api.scan_cache.return_value = CacheInfo(
-            cache_dir="/tmp/cache", total_size=0, repos=[],
+            cache_dir="/tmp/cache",
+            total_size=0,
+            repos=[],
         )
         args = parser.parse_args(["cache", "scan"])
         with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
@@ -158,9 +212,15 @@ class TestCacheClearExecute:
     """_CacheClear.execute() logic."""
 
     def test_clear_with_yes(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "cache", "clear", "--repo-type", "model", "--yes",
-        ])
+        args = parser.parse_args(
+            [
+                "cache",
+                "clear",
+                "--repo-type",
+                "model",
+                "--yes",
+            ]
+        )
         with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
             _CacheClear(args).execute()
         mock_api.clear_cache.assert_called_once()
@@ -195,11 +255,17 @@ class TestCacheClearExecute:
             assert exc_info.value.code == 2
 
     def test_clear_specific_repo(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "cache", "clear",
-            "--repo-type", "model", "--repo-id", "owner/repo",
-            "--yes",
-        ])
+        args = parser.parse_args(
+            [
+                "cache",
+                "clear",
+                "--repo-type",
+                "model",
+                "--repo-id",
+                "owner/repo",
+                "--yes",
+            ]
+        )
         with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
             _CacheClear(args).execute()
         kw = mock_api.clear_cache.call_args.kwargs
@@ -207,12 +273,45 @@ class TestCacheClearExecute:
         assert kw["repo_id"] == "owner/repo"
 
     def test_clear_cache_dir_forwarded(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "cache", "clear", "--cache-dir", "/data", "--yes",
-        ])
+        args = parser.parse_args(
+            [
+                "cache",
+                "clear",
+                "--cache-dir",
+                "/data",
+                "--yes",
+            ]
+        )
         with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
             _CacheClear(args).execute()
         assert mock_api.clear_cache.call_args.kwargs["cache_dir"] == "/data"
+
+
+@pytest.mark.mock_only
+class TestCacheVerifyExecute:
+    def test_success(self, parser, mock_api, capsys):
+        mock_api.verify_cache.return_value = CacheVerification(
+            revision="master",
+            verified_path="/cache/snapshot",
+            checked_count=2,
+        )
+        args = parser.parse_args(["cache", "verify", "owner/repo"])
+        with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
+            _CacheVerify(args).execute()
+        assert "Verified 2 file(s)" in capsys.readouterr().out
+
+    def test_mismatch_exits_nonzero(self, parser, mock_api, capsys):
+        mock_api.verify_cache.return_value = CacheVerification(
+            revision="master",
+            verified_path="/cache/snapshot",
+            mismatches=[VerificationMismatch("weights.bin", "expected", "actual")],
+        )
+        args = parser.parse_args(["cache", "verify", "owner/repo"])
+        with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
+            with pytest.raises(SystemExit) as exc_info:
+                _CacheVerify(args).execute()
+        assert exc_info.value.code == 1
+        assert "weights.bin" in capsys.readouterr().err
 
 
 # ===================================================================
@@ -238,15 +337,17 @@ class TestCacheLifecycle:
         api.legacy.create_commit(
             repo_id=cls.repo_id,
             repo_type="model",
-            operations=[{
-                "action": "create",
-                "path": "cache_data.txt",
-                "type": "normal",
-                "size": len(file_bytes),
-                "sha256": "",
-                "content": content_b64,
-                "encoding": "base64",
-            }],
+            operations=[
+                {
+                    "action": "create",
+                    "path": "cache_data.txt",
+                    "type": "normal",
+                    "size": len(file_bytes),
+                    "sha256": "",
+                    "content": content_b64,
+                    "encoding": "base64",
+                }
+            ],
             commit_message="Add test file for cache tests",
             revision="master",
         )
@@ -321,11 +422,7 @@ class TestCacheLifecycle:
         assert exit_code == 0
 
         exit_code, out, err = run_cli(
-            ["cache", "clear",
-             "--repo-type", "model",
-             "--repo-id", self.repo_id,
-             "--cache-dir", cache2,
-             "--yes"],
+            ["cache", "clear", "--repo-type", "model", "--repo-id", self.repo_id, "--cache-dir", cache2, "--yes"],
             token=test_token,
             endpoint=test_endpoint,
         )

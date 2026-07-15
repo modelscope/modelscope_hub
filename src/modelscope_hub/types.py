@@ -139,6 +139,7 @@ class FileInfo(_FromDictMixin):
     path: str = ""
     size: int = 0
     blob_id: str | None = None
+    sha256: str | None = None
     type: str = "blob"  # "blob" | "tree"
     last_modified: datetime | str | int | None = None
     lfs: dict[str, Any] | None = None
@@ -189,10 +190,7 @@ class PagedResult(Generic[T]):
         Uses collection_key for the items array name (e.g. 'datasets', 'models').
         """
         return {
-            self.collection_key: [
-                item.to_dict() if hasattr(item, "to_dict") else item
-                for item in self.items
-            ],
+            self.collection_key: [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items],
             "total_count": self.total_count,
             "page_number": self.page_number,
             "page_size": self.page_size,
@@ -232,6 +230,31 @@ class CacheInfo:
     repos: list[CachedRepoInfo] = field(default_factory=list)
     total_size: int = 0
     cache_dir: str | None = None
+
+    @property
+    def total_repos(self) -> int:
+        return len(self.repos)
+
+
+@dataclass(slots=True)
+class VerificationMismatch:
+    path: str
+    expected: str
+    actual: str
+    algorithm: str = "sha256"
+
+
+@dataclass(slots=True)
+class CacheVerification:
+    """Result of comparing local repository files with Hub checksums."""
+
+    revision: str
+    verified_path: str
+    checked_count: int = 0
+    mismatches: list[VerificationMismatch] = field(default_factory=list)
+    missing_paths: list[str] = field(default_factory=list)
+    extra_paths: list[str] = field(default_factory=list)
+    unverified_paths: list[str] = field(default_factory=list)
 
     @property
     def total_repos(self) -> int:
@@ -311,6 +334,7 @@ class DeployMcpServerPayload(TypedDict, total=False):
 
 
 __all__ = [
+    "CacheVerification",
     "CacheInfo",
     "CachedRepoInfo",
     "CommitInfo",
@@ -323,4 +347,5 @@ __all__ = [
     "UpdateSkillSettingsPayload",
     "UpdateStudioSettingsPayload",
     "UserInfo",
+    "VerificationMismatch",
 ]
