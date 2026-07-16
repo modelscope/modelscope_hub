@@ -232,7 +232,12 @@ def verify_cache(
         cache_dir=cache_dir,
         local_dir=local_dir,
     )
-    local_by_path = {path.relative_to(root).as_posix(): path for path in root.rglob("*") if path.is_file()}
+    local_by_path = {
+        relative.as_posix(): path
+        for path in root.rglob("*")
+        for relative in (path.relative_to(root),)
+        if path.is_file() and not any(part.startswith(".") for part in relative.parts)
+    }
     remote_paths = set(expected_by_path)
     local_paths = set(local_by_path)
     mismatches: list[VerificationMismatch] = []
@@ -290,9 +295,10 @@ def _resolve_verification_root(
             raise CacheError(f"Revision '{revision}' is not present in cache: {snapshot}")
         return snapshot, revision
 
-    default_snapshot = snapshots / "master"
-    if default_snapshot.is_dir():
-        return default_snapshot, "master"
+    for default_name in ("master", "main"):
+        default_snapshot = snapshots / default_name
+        if default_snapshot.is_dir():
+            return default_snapshot, default_name
     candidates = sorted(path for path in snapshots.iterdir() if path.is_dir())
     if not candidates:
         raise CacheError(f"No cached revisions found in: {snapshots}")

@@ -38,6 +38,24 @@ def test_verify_local_directory_reports_all_categories(tmp_path):
     assert result.extra_paths == ["extra.txt"]
 
 
+def test_verify_local_directory_ignores_hidden_paths(tmp_path):
+    (tmp_path / "visible.txt").write_bytes(b"visible")
+    (tmp_path / ".DS_Store").write_bytes(b"metadata")
+    hidden_dir = tmp_path / ".git"
+    hidden_dir.mkdir()
+    (hidden_dir / "config").write_bytes(b"git config")
+
+    result = verify_cache(
+        "owner/repo",
+        "model",
+        {"visible.txt": _sha256(b"visible")},
+        local_dir=tmp_path,
+    )
+
+    assert result.checked_count == 1
+    assert result.extra_paths == []
+
+
 def test_verify_cached_snapshot(tmp_path):
     snapshot = tmp_path / "models" / "owner--repo" / "snapshots" / "master"
     snapshot.mkdir(parents=True)
@@ -52,6 +70,24 @@ def test_verify_cached_snapshot(tmp_path):
 
     assert result.checked_count == 1
     assert result.revision == "master"
+
+
+def test_verify_uses_main_as_default_cached_revision(tmp_path):
+    snapshots = tmp_path / "models" / "owner--repo" / "snapshots"
+    main_snapshot = snapshots / "main"
+    main_snapshot.mkdir(parents=True)
+    (snapshots / "dev").mkdir()
+    (main_snapshot / "config.json").write_bytes(b"{}")
+
+    result = verify_cache(
+        "owner/repo",
+        "model",
+        {"config.json": _sha256(b"{}")},
+        cache_dir=tmp_path,
+    )
+
+    assert result.checked_count == 1
+    assert result.revision == "main"
 
 
 def test_verify_accepts_plural_repo_type(tmp_path):
