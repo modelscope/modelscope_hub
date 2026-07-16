@@ -133,6 +133,11 @@ def _is_lfs(path: str | Path, size: int, repo_type: str) -> bool:
     return size > UPLOAD_LFS_ENFORCE_THRESHOLD
 
 
+def _upload_mode(path: str | Path, size: int, repo_type: str) -> str:
+    """Return the commit/upload mode for a file."""
+    return "lfs" if _is_lfs(path, size, repo_type) else "normal"
+
+
 def _calculate_adaptive_batch_size(total_files: int) -> int:
     """Calculate optimal commit batch size based on total file count."""
     if total_files <= 0:
@@ -622,18 +627,26 @@ class UploadManager:
         if self._create_repo_fn is not None:
             self._create_repo_fn(repo_id, repo_type)
 
-        upload_res = self._upload_blob(
-            repo_id=repo_id,
-            repo_type=repo_type,
-            sha256=file_hash,
-            size=file_size,
-            data=path_or_fileobj,
-            disable_tqdm=disable_tqdm,
-            tqdm_desc=f"[Uploading] {path_in_repo}",
-            buffer_size_mb=buffer_size_mb,
-        )
+        upload_mode = _upload_mode(path_in_repo, file_size, repo_type)
+        if upload_mode == "lfs":
+            upload_res = self._upload_blob(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                sha256=file_hash,
+                size=file_size,
+                data=path_or_fileobj,
+                disable_tqdm=disable_tqdm,
+                tqdm_desc=f"[Uploading] {path_in_repo}",
+                buffer_size_mb=buffer_size_mb,
+            )
+        else:
+            upload_res = {
+                "url": None,
+                "is_uploaded": True,
+                "is_reused": False,
+                "is_blob_uploaded": False,
+            }
 
-        upload_mode = "lfs" if _is_lfs(path_in_repo, file_size, repo_type) else "normal"
         operation = self._build_operation(
             path_in_repo=path_in_repo,
             path_or_fileobj=path_or_fileobj,
@@ -790,9 +803,9 @@ class UploadManager:
                 (file_idx, (file_path_in_repo, file_path))
             )
 
-        # Batch pre-validation for files with cached hashes
+        # Batch pre-validation for LFS files with cached hashes
         pre_validated_map: dict[str, str | None] = {}
-        hash_info_map: dict[int, tuple[dict, os.stat_result]] = {}
+        lfs_hash_info_map: dict[int, tuple[dict, os.stat_result]] = {}
 
         for file_idx, (file_path_in_repo, file_path) in files_to_upload:
             try:
@@ -801,15 +814,20 @@ class UploadManager:
                     file_path_in_repo, st.st_mtime, st.st_size
                 )
                 if cached is not None:
-                    hash_info_map[file_idx] = (cached, st)
+                    if (
+                        _upload_mode(
+                            file_path_in_repo, cached["file_size"], repo_type,
+                        ) == "lfs"
+                    ):
+                        lfs_hash_info_map[file_idx] = (cached, st)
                     continue
             except OSError:
                 pass
 
-        if hash_info_map:
+        if lfs_hash_info_map:
             objects = [
                 {"oid": info["file_hash"], "size": info["file_size"]}
-                for info, _ in hash_info_map.values()
+                for info, _ in lfs_hash_info_map.values()
             ]
             validated = self._validate_blobs_batch(
                 repo_id=repo_id, repo_type=repo_type, objects=objects
@@ -817,7 +835,7 @@ class UploadManager:
             pre_validated_map = validated
             reused = sum(1 for v in validated.values() if v is None)
             logger.info(
-                "Pre-validated %d cached hash(es): %d globally existing, "
+                "Pre-validated %d cached LFS hash(es): %d globally existing, "
                 "%d need upload.",
                 len(objects), reused, len(objects) - reused,
             )
@@ -868,8 +886,8 @@ class UploadManager:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for file_idx, file_info in files_to_upload:
                     pv = None
-                    if file_idx in hash_info_map:
-                        cached_hash = hash_info_map[file_idx][0]["file_hash"]
+                    if file_idx in lfs_hash_info_map:
+                        cached_hash = lfs_hash_info_map[file_idx][0]["file_hash"]
                         pv = pre_validated_map.get(cached_hash)
                         if pv is None:
                             pv = True
@@ -1049,21 +1067,30 @@ class UploadManager:
         elapsed = time.time() - start_time
         total_files = len(sorted_files)
         failed_count = len(total_failed_files)
-        reused_count = sum(1 for r in all_results if r.get("is_reused"))
-        uploaded_count = sum(1 for r in all_results if not r.get("is_reused"))
+        lfs_reused_count = sum(
+            1 for r in all_results
+            if r.get("upload_mode") == "lfs" and r.get("is_reused")
+        )
+        lfs_uploaded_count = sum(
+            1 for r in all_results if r.get("is_blob_uploaded")
+        )
+        normal_count = sum(
+            1 for r in all_results if r.get("upload_mode") == "normal"
+        )
+        committed_count = len(all_results)
 
         print("=" * 60)
         print("Upload Report")
         print("-" * 60)
-        print(f"  Total files      : {total_files}")
-        print(f"  Skipped (cached) : {skipped_count}")
-        print(f"  Existed (server) : {reused_count}")
-        print(f"  Uploaded (PUT)   : {uploaded_count}")
-        print(f"  Failed           : {failed_count}")
-        committed_count = reused_count + uploaded_count
-        print(f"  Committed        : {committed_count}")
-        print(f"  Deleted (sync)   : {deleted_count}")
-        print(f"  Elapsed          : {elapsed:.1f}s")
+        print(f"  Total files       : {total_files}")
+        print(f"  Skipped (cached)  : {skipped_count}")
+        print(f"  Normal committed  : {normal_count}")
+        print(f"  LFS existed       : {lfs_reused_count}")
+        print(f"  LFS uploaded PUT  : {lfs_uploaded_count}")
+        print(f"  Failed            : {failed_count}")
+        print(f"  Committed         : {committed_count}")
+        print(f"  Deleted (sync)    : {deleted_count}")
+        print(f"  Elapsed           : {elapsed:.1f}s")
         print("=" * 60)
 
         if total_failed_files:
@@ -1205,50 +1232,71 @@ class UploadManager:
         file_size: int = hash_info_d["file_size"]
         file_hash: str = hash_info_d["file_hash"]
 
-        # Retry loop for transient blob upload failures
-        last_error = None
-        for attempt in range(UPLOAD_BLOB_MAX_RETRIES):
-            try:
-                if isinstance(file_path, (str, os.PathLike)):
-                    current_size = os.path.getsize(str(file_path))
-                    if current_size != file_size:
-                        raise InvalidParameter(
-                            f"File size changed since hash computation: "
-                            f"was {file_size}, now {current_size}. "
-                            f"File may have been modified: {file_path_in_repo}"
+        upload_mode = _upload_mode(file_path_in_repo, file_size, repo_type)
+
+        if upload_mode == "lfs":
+            # Retry loop for transient blob upload failures
+            last_error = None
+            for attempt in range(UPLOAD_BLOB_MAX_RETRIES):
+                try:
+                    if isinstance(file_path, (str, os.PathLike)):
+                        current_size = os.path.getsize(str(file_path))
+                        if current_size != file_size:
+                            raise InvalidParameter(
+                                f"File size changed since hash computation: "
+                                f"was {file_size}, now {current_size}. "
+                                f"File may have been modified: {file_path_in_repo}"
+                            )
+                    upload_res = self._upload_blob(
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        sha256=file_hash,
+                        size=file_size,
+                        data=file_path,
+                        disable_tqdm=(
+                            disable_tqdm
+                            or file_size <= UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD
+                        ),
+                        tqdm_desc=f"[Uploading {file_path_in_repo}]",
+                        pre_validated=pre_validated,
+                    )
+                    break
+                except (HubError, ConnectionError, TimeoutError) as e:
+                    if isinstance(e, HubError) and not e.retryable:
+                        raise
+                    last_error = e
+                    if attempt < UPLOAD_BLOB_MAX_RETRIES - 1:
+                        wait = min(
+                            UPLOAD_BLOB_RETRY_BACKOFF ** attempt,
+                            UPLOAD_BLOB_RETRY_MAX_WAIT,
                         )
-                upload_res = self._upload_blob(
-                    repo_id=repo_id,
-                    repo_type=repo_type,
-                    sha256=file_hash,
-                    size=file_size,
-                    data=file_path,
-                    disable_tqdm=disable_tqdm or file_size <= UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD,
-                    tqdm_desc=f"[Uploading {file_path_in_repo}]",
-                    pre_validated=pre_validated,
-                )
-                break
-            except (HubError, ConnectionError, TimeoutError) as e:
-                if isinstance(e, HubError) and not e.retryable:
-                    raise
-                last_error = e
-                if attempt < UPLOAD_BLOB_MAX_RETRIES - 1:
-                    wait = min(
-                        UPLOAD_BLOB_RETRY_BACKOFF ** attempt,
-                        UPLOAD_BLOB_RETRY_MAX_WAIT,
-                    )
-                    logger.warning(
-                        "Blob upload attempt %d/%d failed for %s: %s, "
-                        "retrying in %ds ...",
-                        attempt + 1, UPLOAD_BLOB_MAX_RETRIES,
-                        file_path_in_repo, e, wait,
-                    )
-                    time.sleep(wait)
+                        logger.warning(
+                            "Blob upload attempt %d/%d failed for %s: %s, "
+                            "retrying in %ds ...",
+                            attempt + 1, UPLOAD_BLOB_MAX_RETRIES,
+                            file_path_in_repo, e, wait,
+                        )
+                        time.sleep(wait)
+            else:
+                raise StorageError(
+                    f"Blob upload failed after {UPLOAD_BLOB_MAX_RETRIES} attempts "
+                    f"for {file_path_in_repo}: {last_error}"
+                ) from last_error
         else:
-            raise StorageError(
-                f"Blob upload failed after {UPLOAD_BLOB_MAX_RETRIES} attempts "
-                f"for {file_path_in_repo}: {last_error}"
-            ) from last_error
+            if isinstance(file_path, (str, os.PathLike)):
+                current_size = os.path.getsize(str(file_path))
+                if current_size != file_size:
+                    raise InvalidParameter(
+                        f"File size changed since hash computation: "
+                        f"was {file_size}, now {current_size}. "
+                        f"File may have been modified: {file_path_in_repo}"
+                    )
+            upload_res = {
+                "url": None,
+                "is_uploaded": True,
+                "is_reused": False,
+                "is_blob_uploaded": False,
+            }
 
         return {
             "file_path_in_repo": file_path_in_repo,
@@ -1260,6 +1308,8 @@ class UploadManager:
             ),
             "is_uploaded": upload_res["is_uploaded"],
             "is_reused": upload_res.get("is_reused", False),
+            "is_blob_uploaded": upload_res.get("is_blob_uploaded", False),
+            "upload_mode": upload_mode,
             "file_hash_info": hash_info_d,
         }
 
@@ -1283,6 +1333,7 @@ class UploadManager:
             "url": None,
             "is_uploaded": False,
             "is_reused": False,
+            "is_blob_uploaded": False,
         }
 
         if pre_validated is True:
@@ -1341,6 +1392,7 @@ class UploadManager:
 
         res_d["url"] = upload_url
         res_d["is_uploaded"] = True
+        res_d["is_blob_uploaded"] = True
         return res_d
 
     # ------------------------------------------------------------------
@@ -1470,10 +1522,10 @@ class UploadManager:
         for item_d in results:
             file_path = item_d["file_path"]
             hash_info = item_d["file_hash_info"]
-            upload_mode = (
-                "lfs"
-                if _is_lfs(file_path, hash_info["file_size"], repo_type)
-                else "normal"
+            upload_mode = item_d.get("upload_mode") or _upload_mode(
+                item_d["file_path_in_repo"],
+                hash_info["file_size"],
+                repo_type,
             )
             op = self._build_operation(
                 path_in_repo=item_d["file_path_in_repo"],

@@ -7,7 +7,6 @@ These functions replicate the signature of the old
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
 
 import requests as _requests
 
@@ -23,20 +22,16 @@ def _resolve_legacy_paths(
     local_dir: str | None,
     api: "HubApi",
 ) -> tuple[str | None, str | None]:
-    """Resolve cache_dir/local_dir for legacy path layout compatibility.
+    """Resolve cache_dir/local_dir for legacy API compatibility.
 
-    When ``local_dir`` is not explicitly set by the caller, computes
-    it from ``cache_dir`` (or the default) + ``repo_id`` to reproduce
-    the old flat ``{cache_dir}/{owner}/{name}/`` structure.  The returned
-    ``cache_dir`` is set to ``None`` so the new API uses ``local_dir`` mode.
+    Passes parameters through so the new API uses its standard cache
+    layout (``{cache}/{type}s/{owner}--{name}/snapshots/{rev}/...``),
+    consistent with CLI ``ms download`` behavior.
 
-    Returns (effective_cache_dir, effective_local_dir).
+    When ``local_dir`` is explicitly set, files go directly there.
+    Otherwise the standard cache hierarchy is used.
     """
-    if local_dir is not None:
-        # User explicitly controls the output directory — pass through.
-        return cache_dir, local_dir
-    base = Path(cache_dir) if cache_dir else Path(api._config.cache_dir)
-    return None, str(base / repo_id)
+    return cache_dir, local_dir
 
 
 def model_file_download(

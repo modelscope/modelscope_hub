@@ -630,6 +630,7 @@ Token is persisted locally after `ms login` and auto-loaded in subsequent sessio
 | `MODELSCOPE_DOWNLOAD_FILE_LOCK` | `true` | File lock for multiprocess download safety |
 | `MODELSCOPE_DOWNLOAD_INTRA_CLOUD` | `true` | Alibaba cloud intra-cloud acceleration |
 | `MODELSCOPE_DOWNLOAD_INTRA_CLOUD_REGION` | (auto) | Override intra-cloud region ID |
+| `MODELSCOPE_DOWNLOAD_INTER_CLOUD_REGIONS` | | Comma-separated peer regions for cross-region internal acceleration (e.g. `cn-hangzhou,cn-zhangjiakou`) |
 
 **Upload:**
 

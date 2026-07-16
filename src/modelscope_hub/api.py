@@ -1042,7 +1042,8 @@ class HubApi:
     ) -> dict:
         """Upload a single file to a repository.
 
-        Always uploads the blob first (even for small files), then commits.
+        LFS files upload/reuse their blob first, then commit an LFS pointer.
+        Normal files are committed directly with inline base64 content.
         LFS mode is determined by file suffix and size threshold.
 
         Parameters
