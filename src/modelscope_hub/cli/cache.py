@@ -111,6 +111,12 @@ class _CacheClear(CLICommand):
         success(f"Freed {_human_size(freed)} from cache.")
 
 
+def _format_paths(paths: list[str], limit: int = 10) -> str:
+    """Format a bounded path list for verification diagnostics."""
+    details = ", ".join(paths[:limit])
+    return details + ("..." if len(paths) > limit else "")
+
+
 class _CacheVerify(CLICommand):
     @staticmethod
     def register(subparsers: Action) -> None:
@@ -143,18 +149,20 @@ class _CacheVerify(CLICommand):
             error(f"{mismatch.path}: expected {mismatch.expected} ({mismatch.algorithm}), got {mismatch.actual}")
         if result.missing_paths:
             message = f"{len(result.missing_paths)} remote file(s) are missing locally"
+            details = _format_paths(result.missing_paths)
             if self.args.fail_on_missing_files:
-                error(message + ": " + ", ".join(result.missing_paths))
+                error(f"{message}: {details}")
                 failed = True
             else:
-                warn(message)
+                warn(f"{message}: {details}")
         if result.extra_paths:
             message = f"{len(result.extra_paths)} local file(s) are absent from the remote revision"
+            details = _format_paths(result.extra_paths)
             if self.args.fail_on_extra_files:
-                error(message + ": " + ", ".join(result.extra_paths))
+                error(f"{message}: {details}")
                 failed = True
             else:
-                warn(message)
+                warn(f"{message}: {details}")
         if result.unverified_paths:
             warn(f"{len(result.unverified_paths)} file(s) have no SHA-256 metadata and were skipped")
         if failed:
