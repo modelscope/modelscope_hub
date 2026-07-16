@@ -29,6 +29,7 @@ class _StubClient:
     commits: list[list[dict]] = []
     lfs_uploads: list[tuple[str, bytes]] = []
     created: list[tuple[str, str]] = []
+    created_visibility: list[str] = []
 
     def __init__(self, *args, **kwargs):
         pass
@@ -52,8 +53,9 @@ class _StubClient:
     def check_repo(self, path, name):
         return self.exists
 
-    def create_repo(self, path, name, framework=None):
+    def create_repo(self, path, name, framework=None, visibility="public"):
         type(self).created.append((path, name))
+        type(self).created_visibility.append(visibility)
         return {"path": path, "name": name}
 
     def commit_files(self, path, name, actions, revision="master", commit_message="sync"):
@@ -73,6 +75,7 @@ def _reset_stub():
     _StubClient.commits = []
     _StubClient.lfs_uploads = []
     _StubClient.created = []
+    _StubClient.created_visibility = []
 
 
 class TestSlimParser(unittest.TestCase):
@@ -212,6 +215,18 @@ class TestCmdUpload(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(_StubClient.commits, [])
             self.assertEqual(_StubClient.lfs_uploads, [])
+
+    @mock.patch.object(cli_agent, "AgentApi", _StubClient)
+    def test_upload_passes_visibility_to_create_repo(self):
+        _StubClient.exists = False
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "AGENTS.md").write_bytes(b"hello")
+            rc = cli_agent._cmd_upload(
+                repo="user/a", local_dir=d, revision="master", dry_run=False,
+                endpoint="https://x", token="t", username="user",
+                visibility="private")
+            self.assertEqual(rc, 0)
+            self.assertEqual(_StubClient.created_visibility, ["private"])
 
 
 class TestAgentApiHelpers(unittest.TestCase):

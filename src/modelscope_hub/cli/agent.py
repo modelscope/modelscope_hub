@@ -15,6 +15,7 @@ from argparse import Action, RawDescriptionHelpFormatter
 from pathlib import Path
 
 from ..agent import AgentApi, is_lfs_file
+from ..constants import Visibility
 from ..errors import APIError
 from .base import CLICommand
 
@@ -149,7 +150,8 @@ def _cmd_download(repo, local_dir, revision, *, endpoint, token, username) -> in
     return 0
 
 
-def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username) -> int:
+def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username,
+                visibility="public") -> int:
     """Upload raw files from a local path to a remote repository."""
     if not repo:
         return _fail("--repo is required (the remote repository name).")
@@ -158,20 +160,22 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
     if not src.exists():
         return _fail(f"local path not found: {src}")
 
-    files: dict[str, bytes] = {}
+    # Discover files as (rel_path, abs_path) pairs; contents are read on demand
+    # below so we never hold every file in memory at once.
+    entries: list[tuple[str, Path]] = []
     if src.is_file():
-        files[src.name] = src.read_bytes()
+        entries.append((src.name, src))
     else:
         for fp in sorted(src.rglob("*")):
             if fp.is_file():
-                files[fp.relative_to(src).as_posix()] = fp.read_bytes()
-    if not files:
+                entries.append((fp.relative_to(src).as_posix(), fp))
+    if not entries:
         return _fail(f"no files found under {src}.")
 
     if dry_run:
-        print(f"[dry-run] would upload {len(files)} file(s) to '{repo}':")
-        for rel in sorted(files):
-            print(f"  {rel} ({len(files[rel])} B)")
+        print(f"[dry-run] would upload {len(entries)} file(s) to '{repo}':")
+        for rel, fp in sorted(entries):
+            print(f"  {rel} ({fp.stat().st_size} B)")
         return 0
 
     if not endpoint or not token:
@@ -185,17 +189,20 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
     client = AgentApi(endpoint=endpoint, token=token)
     try:
         if not client.check_repo(group, name):
-            client.create_repo(group, name)
+            client.create_repo(group, name, visibility=visibility)
     except Exception as exc:
         print(f"warning: create_repo check failed ({exc}), proceeding anyway.",
               file=sys.stderr)
 
+    # Normal files (< LFS threshold, non-LFS extension) are small by definition
+    # and go in a single commit; LFS files are read one at a time to bound
+    # memory when uploading large binaries.
     normal_actions: list[dict] = []
-    lfs_files: list[tuple[str, bytes]] = []
-    for rel, content in sorted(files.items()):
-        size = len(content)
+    lfs_entries: list[tuple[str, Path]] = []
+    for rel, fp in sorted(entries):
+        size = fp.stat().st_size
         if is_lfs_file(rel, size):
-            lfs_files.append((rel, content))
+            lfs_entries.append((rel, fp))
         else:
             normal_actions.append({
                 "action": "create",
@@ -203,7 +210,7 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
                 "type": "normal",
                 "size": size,
                 "sha256": "",
-                "content": base64.b64encode(content).decode("ascii"),
+                "content": base64.b64encode(fp.read_bytes()).decode("ascii"),
                 "encoding": "base64",
             })
     try:
@@ -211,16 +218,16 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
             client.commit_files(
                 group, name, normal_actions, revision=revision,
                 commit_message="upload normal files")
-        for rel, content in lfs_files:
+        for rel, fp in lfs_entries:
             client.upload_lfs_file(
-                group, name, rel, content, action="create",
+                group, name, rel, fp.read_bytes(), action="create",
                 revision=revision, commit_message=f"upload LFS {rel}")
     except APIError as e:
         return _fail(_api_error_message(e, "upload"))
     except Exception as e:
         return _fail(f"upload failed: {e}")
 
-    print(f"Uploaded {len(files)} file(s) to {group}/{name}")
+    print(f"Uploaded {len(entries)} file(s) to {group}/{name}")
     return 0
 
 
@@ -292,6 +299,11 @@ class AgentCommand(CLICommand):
         p_upload.add_argument(
             "--revision", default="master", help="Repository revision (default: master)")
         p_upload.add_argument(
+            "--visibility",
+            choices=[Visibility.PUBLIC.label, Visibility.PRIVATE.label],
+            default=Visibility.PUBLIC.label,
+            help="Visibility of the remote repo when created (default: public)")
+        p_upload.add_argument(
             "--dry-run", action="store_true",
             help="List files that would be uploaded, without actually uploading")
 
@@ -353,6 +365,7 @@ class AgentCommand(CLICommand):
                 local_dir=args.local_dir,
                 revision=args.revision,
                 dry_run=args.dry_run,
+                visibility=args.visibility,
                 endpoint=endpoint,
                 token=token,
                 username=username,

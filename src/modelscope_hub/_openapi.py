@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -184,6 +184,21 @@ class OpenAPIClient:
             return {}
         return {"m_session_id": token, "modelscope_session": token}
 
+    def _same_host_as_endpoint(self, target_url: str) -> bool:
+        """True when *target_url* points at the configured endpoint host.
+
+        Credentials (the ``Authorization`` header and session cookies) must only
+        be attached to our own host. Absolute URLs pointing elsewhere -- e.g. the
+        signed OSS blob-upload URLs returned by the LFS batch API -- must never
+        receive our token, otherwise it leaks to a third-party domain.
+        """
+        try:
+            target_host = urlsplit(target_url).hostname or ""
+        except ValueError:
+            return False
+        endpoint_host = urlsplit(self._config.endpoint or "").hostname or ""
+        return bool(target_host) and target_host.lower() == endpoint_host.lower()
+
     @staticmethod
     def _flatten_filters(filters: Filters) -> QueryParams:
         """Serialise a flat mapping into ``filter.key=value`` tuples."""
@@ -238,7 +253,15 @@ class OpenAPIClient:
         final URL is derived from *path* via :meth:`_url`.
         """
         final_url = url or self._url(path)
-        merged_headers = dict(self._auth_headers(require_token=require_token))
+        # Only attach our credentials when the target is our own host. Absolute
+        # URLs to a foreign host (e.g. signed OSS upload URLs) must not receive
+        # the Authorization header or session cookies, which carry the token.
+        if self._same_host_as_endpoint(final_url):
+            merged_headers = dict(self._auth_headers(require_token=require_token))
+            request_cookies = self._auth_cookies()
+        else:
+            merged_headers = {}
+            request_cookies = {}
         if headers:
             merged_headers.update(headers)
 
@@ -257,7 +280,7 @@ class OpenAPIClient:
                     data=data,
                     files=files,
                     headers=merged_headers,
-                    cookies=self._auth_cookies(),
+                    cookies=request_cookies,
                     timeout=timeout if timeout is not None else self._timeout,
                 )
             except requests.Timeout as exc:

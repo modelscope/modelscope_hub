@@ -22,6 +22,7 @@ from dataclasses import dataclass
 import requests
 
 from ..config import HubConfig
+from ..constants import Visibility
 from ..errors import APIError, HubError, NotExistError
 from .._openapi import OpenAPIClient
 
@@ -140,13 +141,22 @@ class AgentApi:
         if isinstance(data, list):
             return {"items": data, "total_count": len(data)}
         if isinstance(data, dict):
-            items = (data.get("AgentList") or data.get("Agents")
-                     or data.get("agents") or data.get("Data")
-                     or data.get("data") or [])
+            items = next(
+                (data[k] for k in ("AgentList", "Agents", "agents", "Data", "data")
+                 if k in data),
+                [],
+            )
             if not isinstance(items, list):
                 items = []
-            total = (data.get("TotalCount") or data.get("Total")
-                     or data.get("total_count") or len(items))
+            total_val = next(
+                (data[k] for k in ("TotalCount", "Total", "total_count")
+                 if k in data and data[k] is not None),
+                len(items),
+            )
+            try:
+                total = int(total_val)
+            except (ValueError, TypeError):
+                total = len(items)
             return {"items": items, "total_count": total}
         return {"items": [], "total_count": 0}
 
@@ -164,9 +174,10 @@ class AgentApi:
             visibility: Repository visibility, ``"public"`` (default) or
                         ``"private"``.
         """
-        if visibility not in ("public", "private"):
+        allowed = (Visibility.PUBLIC.label, Visibility.PRIVATE.label)
+        if visibility not in allowed:
             raise ValueError(
-                f"visibility must be 'public' or 'private', got {visibility!r}")
+                f"visibility must be one of {allowed}, got {visibility!r}")
         body: dict = {"path": path, "name": name, "visibility": visibility}
         if framework:
             body["framework"] = framework
