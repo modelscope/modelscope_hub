@@ -114,25 +114,44 @@ class AgentApi:
         return self.repo_info(path, name) is not None
 
     def list_agents(self, owner: str | None = None, page_number: int = 1, page_size: int = 10) -> dict:
-        """List agent repositories (GET /agents).
+        """List agent repositories (PUT /api/v1/dolphin/agents).
 
-        Returns a dict with 'items' (list of agent metadata dicts) and
-        'total_count' (int).
+        Queries the dolphin search endpoint. When *owner* is given it is sent as
+        a ``Path contains`` criterion (the group filter). Returns a dict with
+        'items' (list of agent metadata dicts) and 'total_count' (int).
         """
-        params = {"page_number": page_number, "page_size": page_size}
+        criterion: list[dict] = []
         if owner:
-            params["owner"] = owner
+            criterion.append({
+                "Category": "Path",
+                "Predicate": "contains",
+                "StringValues": [owner],
+            })
+        body = {
+            "PageSize": page_size,
+            "PageNumber": page_number,
+            "Query": "",
+            "Sort": "Default",
+            "Criterion": criterion,
+        }
+        list_url = f"{self.server}/api/v1/dolphin/agents"
         data = self._openapi.request(
-            "GET", "/agents", params=params, require_token=False)
+            "PUT", url=list_url, json_body=body, require_token=False)
         if isinstance(data, list):
             return {"items": data, "total_count": len(data)}
         if isinstance(data, dict):
-            items = data.get("Data") or []
-            total = data.get("Total") or data.get("TotalCount") or len(items)
+            items = (data.get("AgentList") or data.get("Agents")
+                     or data.get("agents") or data.get("Data")
+                     or data.get("data") or [])
+            if not isinstance(items, list):
+                items = []
+            total = (data.get("TotalCount") or data.get("Total")
+                     or data.get("total_count") or len(items))
             return {"items": items, "total_count": total}
         return {"items": [], "total_count": 0}
 
-    def create_repo(self, path: str, name: str, framework: str | None = None) -> dict:
+    def create_repo(self, path: str, name: str, framework: str | None = None,
+                    visibility: str = "public") -> dict:
         """Create an empty agent (POST /agents).
 
         The server creates a bare repository.  Files are added separately via
@@ -142,8 +161,13 @@ class AgentApi:
             framework: Optional product/framework identifier stored with the
                        repo (e.g. "qoder", "nanobot").  Defaults to server-side
                        default when omitted.
+            visibility: Repository visibility, ``"public"`` (default) or
+                        ``"private"``.
         """
-        body: dict = {"path": path, "name": name}
+        if visibility not in ("public", "private"):
+            raise ValueError(
+                f"visibility must be 'public' or 'private', got {visibility!r}")
+        body: dict = {"path": path, "name": name, "visibility": visibility}
         if framework:
             body["framework"] = framework
         return self._openapi.request("POST", "/agents", json_body=body)
