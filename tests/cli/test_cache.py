@@ -314,6 +314,24 @@ class TestCacheVerifyExecute:
         assert "weights.bin" in capsys.readouterr().err
 
 
+    def test_missing_and_extra_warnings_include_bounded_paths(self, parser, mock_api, capsys):
+        mock_api.verify_cache.return_value = CacheVerification(
+            revision="master",
+            verified_path="/cache/snapshot",
+            missing_paths=[f"missing-{index}.txt" for index in range(11)],
+            extra_paths=["extra.txt"],
+        )
+        args = parser.parse_args(["cache", "verify", "owner/repo"])
+        with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
+            _CacheVerify(args).execute()
+
+        err = capsys.readouterr().err
+        assert "missing-0.txt" in err
+        assert "missing-9.txt..." in err
+        assert "missing-10.txt" not in err
+        assert "extra.txt" in err
+
+
 # ===================================================================
 # Remote integration tests (existing)
 # ===================================================================
