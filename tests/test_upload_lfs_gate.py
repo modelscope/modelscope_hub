@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
-
 from modelscope_hub._upload import UploadManager
 
 
@@ -27,7 +25,6 @@ def _make_manager() -> tuple[UploadManager, MagicMock]:
     return UploadManager(client, MagicMock()), client
 
 
-@pytest.mark.mock_only
 def test_upload_file_normal_commits_inline_without_blob_api() -> None:
     manager, client = _make_manager()
 
@@ -47,7 +44,6 @@ def test_upload_file_normal_commits_inline_without_blob_api() -> None:
     assert base64.b64decode(operation["content"]) == b"hello"
 
 
-@pytest.mark.mock_only
 def test_upload_file_lfs_uses_blob_api_then_commits_pointer() -> None:
     manager, client = _make_manager()
 
@@ -67,7 +63,6 @@ def test_upload_file_lfs_uses_blob_api_then_commits_pointer() -> None:
     assert operation["content"] == ""
 
 
-@pytest.mark.mock_only
 def test_upload_folder_mixed_files_only_uploads_lfs_blob(tmp_path: Path) -> None:
     manager, client = _make_manager()
     (tmp_path / "README.md").write_bytes(b"hello")
@@ -91,7 +86,6 @@ def test_upload_folder_mixed_files_only_uploads_lfs_blob(tmp_path: Path) -> None
     }
 
 
-@pytest.mark.mock_only
 def test_upload_folder_cached_normal_hash_skips_batch_blob_validation(tmp_path: Path) -> None:
     manager, client = _make_manager()
     file_path = tmp_path / "README.md"
