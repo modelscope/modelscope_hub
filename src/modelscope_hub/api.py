@@ -30,8 +30,11 @@ from urllib.parse import urlparse
 from requests.cookies import RequestsCookieJar
 
 from ._cache_manager import clear_cache as _clear_cache
+from ._cache_manager import _resolve_verification_root
 from ._cache_manager import scan_cache as _scan_cache
 from ._download import DownloadManager, ProgressCallback
+from ._cache_manager import verify_cache as _verify_cache
+from ._download import DownloadManager
 from ._legacy_api import LegacyClient
 from ._openapi import OpenAPIClient
 from ._upload import UploadManager
@@ -45,7 +48,7 @@ from .errors import (
     NotExistError,
     NotSupportedError,
 )
-from .types import CacheInfo, FileInfo, PagedResult, RepoInfo, UserInfo
+from .types import CacheInfo, CacheVerification, FileInfo, PagedResult, RepoInfo, UserInfo
 from .utils.logger import get_logger
 
 __all__ = ["HubApi"]
@@ -57,9 +60,7 @@ RepoTypeLike = "str | RepoType"
 
 # Routing tables — declarative dispatch keeps :class:`HubApi` free of long
 # if/elif chains and makes adding new repo types a one-line change.
-_CREATABLE_TYPES: frozenset[RepoType] = frozenset(
-    {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
-)
+_CREATABLE_TYPES: frozenset[RepoType] = frozenset({RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL})
 _OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset({RepoType.STUDIO, RepoType.SKILL})
 _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
     {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
@@ -92,9 +93,7 @@ _STUDIO_FIELD_RENAMES: dict[str, str] = {
 
 # Reserved fields that are controlled by create_repo method parameters.
 # These MUST NOT be overridden via extra kwargs to avoid silent conflicts.
-_RESERVED_EXTRA_FIELDS: frozenset[str] = frozenset(
-    {"Path", "Owner", "Name"}
-)
+_RESERVED_EXTRA_FIELDS: frozenset[str] = frozenset({"Path", "Owner", "Name"})
 
 
 class HubApi:
@@ -148,6 +147,7 @@ class HubApi:
         base = config or get_default_config()
         if config is None and (endpoint is not None or token is not None):
             from dataclasses import replace
+
             was_overridden = base._endpoint_overridden
             base = replace(base)
             # replace() re-runs __post_init__ which sees the inherited
@@ -221,9 +221,7 @@ class HubApi:
     def _parse_repo_id(repo_id: str) -> tuple[str, str]:
         """Split a canonical ``owner/name`` identifier into its two halves."""
         if not repo_id or "/" not in repo_id:
-            raise InvalidParameter(
-                f"repo_id {repo_id!r} should be in format of 'owner/name'."
-            )
+            raise InvalidParameter(f"repo_id {repo_id!r} should be in format of 'owner/name'.")
         owner, _, name = repo_id.partition("/")
         if not owner or not name:
             raise InvalidParameter(
@@ -247,9 +245,7 @@ class HubApi:
             return RepoType(str(repo_type).lower())
         except ValueError as exc:
             allowed = ", ".join(t.value for t in RepoType)
-            raise InvalidParameter(
-                f"Unknown repo_type {repo_type!r}. Expected one of: {allowed}."
-            ) from exc
+            raise InvalidParameter(f"Unknown repo_type {repo_type!r}. Expected one of: {allowed}.") from exc
 
     @staticmethod
     def _normalize_visibility(visibility: int | str | Visibility | None) -> int | None:
@@ -263,14 +259,34 @@ class HubApi:
         return int(Visibility.from_label(str(visibility)))
 
     _PAGED_ITEM_KEYS = (
-        "items", "list", "data", "results",
-        "models", "datasets", "skills", "servers", "mcp_server_list",
-        "Models", "Datasets", "Skills", "Servers",
+        "items",
+        "list",
+        "data",
+        "results",
+        "models",
+        "datasets",
+        "skills",
+        "servers",
+        "mcp_server_list",
+        "Models",
+        "Datasets",
+        "Skills",
+        "Servers",
     )
-    _PAGED_META_KEYS = frozenset({
-        "total_count", "total", "page_number", "page", "page_size", "size",
-        "TotalCount", "Total", "PageNumber", "PageSize",
-    })
+    _PAGED_META_KEYS = frozenset(
+        {
+            "total_count",
+            "total",
+            "page_number",
+            "page",
+            "page_size",
+            "size",
+            "TotalCount",
+            "Total",
+            "PageNumber",
+            "PageSize",
+        }
+    )
 
     @staticmethod
     def _extract_paged(payload: Any) -> tuple[list[Any], int, int, int]:
@@ -626,8 +642,7 @@ class HubApi:
         if rt not in _CREATABLE_TYPES:
             supported = ", ".join(sorted(t.value for t in _CREATABLE_TYPES))
             raise NotSupportedError(
-                f"create_repo does not support repo_type={rt.value!r}. "
-                f"Supported types: {supported}."
+                f"create_repo does not support repo_type={rt.value!r}. Supported types: {supported}."
             )
         owner, name = self._parse_repo_id(repo_id)
         vis = self._normalize_visibility(visibility)
@@ -662,14 +677,8 @@ class HubApi:
                 if old_key in extra:
                     extra[new_key] = extra.pop(old_key)
             payload.update(extra)
-            data = (
-                self.openapi.create_studio(payload)
-                if rt is RepoType.STUDIO
-                else self.openapi.create_skill(payload)
-            )
-            return self._repo_info_from_payload(
-                data, rt, owner_hint=owner, name_hint=name
-            )
+            data = self.openapi.create_studio(payload) if rt is RepoType.STUDIO else self.openapi.create_skill(payload)
+            return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
 
         if rt is RepoType.DATASET:
             body: dict[str, Any] = {
@@ -707,24 +716,17 @@ class HubApi:
         filtered: dict[str, Any] = {}
         for k, v in extra.items():
             if k in _RESERVED_EXTRA_FIELDS:
-                logger.warning(
-                    "Reserved field %r in extra ignored (controlled by method params)", k
-                )
+                logger.warning("Reserved field %r in extra ignored (controlled by method params)", k)
                 continue
             filtered[k] = v
         if "ProtectedMode" in filtered:
             pm = filtered["ProtectedMode"]
             if not isinstance(pm, int) or isinstance(pm, bool) or pm not in (1, 2):
-                raise ValueError(
-                    "ProtectedMode must be int 1 (gated) or 2 (off); "
-                    "use gated_mode=True/False instead"
-                )
+                raise ValueError("ProtectedMode must be int 1 (gated) or 2 (off); use gated_mode=True/False instead")
         body.update(filtered)
 
         data = self.legacy.create_repo(repo_type=str(rt), body=body)
-        return self._repo_info_from_payload(
-            data, rt, owner_hint=owner, name_hint=name
-        )
+        return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
 
     def get_repo(
         self,
@@ -791,9 +793,7 @@ class HubApi:
         else:  # pragma: no cover - defensive
             raise NotSupportedError(f"get_repo not supported for {rt}")
 
-        return self._repo_info_from_payload(
-            data, rt, owner_hint=owner, name_hint=name
-        )
+        return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
 
     def list_repos(
         self,
@@ -855,14 +855,20 @@ class HubApi:
 
         if rt is RepoType.MODEL:
             payload = self.openapi.list_models(
-                search=search, owner=owner, sort=sort,
-                page_number=page_number, page_size=page_size,
+                search=search,
+                owner=owner,
+                sort=sort,
+                page_number=page_number,
+                page_size=page_size,
                 filters=clean_filters or None,
             )
         elif rt is RepoType.DATASET:
             payload = self.openapi.list_datasets(
-                search=search, owner=owner, sort=sort,
-                page_number=page_number, page_size=page_size,
+                search=search,
+                owner=owner,
+                sort=sort,
+                page_number=page_number,
+                page_size=page_size,
                 filters=clean_filters or None,
             )
         elif rt is RepoType.SKILL:
@@ -870,19 +876,19 @@ class HubApi:
                 clean_filters.setdefault("owner", owner)
             payload = self.openapi.list_skills(
                 search=search,
-                page_number=page_number, page_size=page_size,
+                page_number=page_number,
+                page_size=page_size,
                 filters=clean_filters or None,
             )
         elif rt is RepoType.MCP:
             payload = self.openapi.list_mcp_servers(
                 search=search,
-                page_number=page_number, page_size=page_size,
+                page_number=page_number,
+                page_size=page_size,
                 filter=clean_filters or None,
             )
         elif rt is RepoType.STUDIO:
-            raise NotSupportedError(
-                "Listing studios is not supported by the OpenAPI surface yet."
-            )
+            raise NotSupportedError("Listing studios is not supported by the OpenAPI surface yet.")
         else:  # pragma: no cover - defensive
             raise NotSupportedError(f"list_repos not supported for {rt}")
 
@@ -920,6 +926,7 @@ class HubApi:
             Repository type (``"model"``, ``"dataset"``, etc.).
         """
         import warnings
+
         warnings.warn(
             "This function is deprecated due to security reasons, "
             "and will be recovered in future versions with proper token authentication. "
@@ -1010,9 +1017,7 @@ class HubApi:
             )
             return fallback
 
-        raise NotExistError(
-            f"Repo {repo_id} not found on either {primary} or {fallback}"
-        )
+        raise NotExistError(f"Repo {repo_id} not found on either {primary} or {fallback}")
 
     # ==================================================================
     # Files
@@ -1406,6 +1411,7 @@ class HubApi:
                 "path": item.get("Path") or item.get("path") or item.get("Name") or "",
                 "size": int(item.get("Size") or item.get("size") or 0),
                 "blob_id": item.get("BlobId") or item.get("blob_id") or item.get("Sha256"),
+                "sha256": item.get("Sha256") or item.get("sha256"),
                 "type": item.get("Type") or item.get("type") or "blob",
                 "last_modified": item.get("CommittedDate") or item.get("last_modified"),
                 "lfs": item.get("Lfs") or item.get("lfs"),
@@ -1486,9 +1492,7 @@ class HubApi:
     # ==================================================================
     # Versioning
     # ==================================================================
-    def list_repo_revisions(
-        self, repo_id: str, repo_type: RepoTypeLike
-    ) -> list[dict]:
+    def list_repo_revisions(self, repo_id: str, repo_type: RepoTypeLike) -> list[dict]:
         """Return branches and tags of a repository (legacy).
 
         Examples
@@ -1571,9 +1575,7 @@ class HubApi:
             return self.openapi.deploy_studio(owner, name, payload)
         if rt is RepoType.MCP:
             return self.openapi.deploy_mcp_server(repo_id, payload)
-        raise NotSupportedError(
-            f"deploy_repo is not supported for repo_type={rt.value!r}."
-        )
+        raise NotSupportedError(f"deploy_repo is not supported for repo_type={rt.value!r}.")
 
     def stop_repo(
         self,
@@ -1592,9 +1594,7 @@ class HubApi:
             return self.openapi.stop_studio(owner, name)
         if rt is RepoType.MCP:
             return self.openapi.undeploy_mcp_server(repo_id)
-        raise NotSupportedError(
-            f"stop_repo is not supported for repo_type={rt.value!r}."
-        )
+        raise NotSupportedError(f"stop_repo is not supported for repo_type={rt.value!r}.")
 
     def get_repo_logs(
         self,
@@ -1648,14 +1648,17 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotSupportedError(
-                f"get_repo_logs is currently only supported for studio (got {rt.value!r})."
-            )
+            raise NotSupportedError(f"get_repo_logs is currently only supported for studio (got {rt.value!r}).")
         owner, name = self._parse_repo_id(repo_id)
         return self.openapi.get_studio_logs(
-            owner, name, log_type,
-            page_num=page_num, page_size=page_size, keyword=keyword,
-            start_timestamp=start_timestamp, end_timestamp=end_timestamp,
+            owner,
+            name,
+            log_type,
+            page_num=page_num,
+            page_size=page_size,
+            keyword=keyword,
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
         )
 
     def update_repo_settings(
@@ -1703,16 +1706,12 @@ class HubApi:
             return self.openapi.update_studio_settings(owner, name, settings)
         if rt is RepoType.SKILL:
             return self.openapi.update_skill_settings(owner, name, settings)
-        raise NotSupportedError(
-            f"update_repo_settings is not supported for repo_type={rt.value!r}."
-        )
+        raise NotSupportedError(f"update_repo_settings is not supported for repo_type={rt.value!r}.")
 
     # ==================================================================
     # Secrets
     # ==================================================================
-    def list_secrets(
-        self, repo_id: str, repo_type: RepoTypeLike = RepoType.STUDIO
-    ) -> list[dict]:
+    def list_secrets(self, repo_id: str, repo_type: RepoTypeLike = RepoType.STUDIO) -> list[dict]:
         """List secrets attached to a Studio.
 
         Examples
@@ -1722,9 +1721,7 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotSupportedError(
-                f"Secret management is only supported for studio (got {rt.value!r})."
-            )
+            raise NotSupportedError(f"Secret management is only supported for studio (got {rt.value!r}).")
         owner, name = self._parse_repo_id(repo_id)
         data = self.openapi.list_studio_secrets(owner, name)
         if isinstance(data, list):
@@ -1861,13 +1858,9 @@ class HubApi:
         >>> info["operational_url"]
         'https://...'
         """
-        return self.openapi.get_mcp_server(
-            server_id, get_operational_url=get_operational_url
-        )
+        return self.openapi.get_mcp_server(server_id, get_operational_url=get_operational_url)
 
-    def deploy_mcp_server(
-        self, server_id: str, *, payload: Mapping[str, Any] | None = None
-    ) -> dict:
+    def deploy_mcp_server(self, server_id: str, *, payload: Mapping[str, Any] | None = None) -> dict:
         """Deploy or redeploy an MCP server.
 
         Examples
@@ -1888,6 +1881,37 @@ class HubApi:
     # ==================================================================
     # Cache
     # ==================================================================
+    def verify_cache(
+        self,
+        repo_id: str,
+        repo_type: RepoTypeLike = "model",
+        *,
+        revision: str | None = None,
+        cache_dir: str | Path | None = None,
+        local_dir: str | Path | None = None,
+    ) -> CacheVerification:
+        """Verify local repository files against SHA-256 checksums from the Hub."""
+        if cache_dir is not None and local_dir is not None:
+            raise InvalidParameter("cache_dir and local_dir are mutually exclusive")
+        rt = self._normalize_repo_type(repo_type)
+        _, resolved_revision = _resolve_verification_root(
+            repo_id,
+            str(rt),
+            revision=revision,
+            cache_dir=cache_dir,
+            local_dir=local_dir,
+        )
+        files = self.list_repo_files(repo_id, rt, revision=resolved_revision, recursive=True)
+        expected = {file.path: file.sha256 for file in files if not file.is_dir and file.path}
+        return _verify_cache(
+            repo_id,
+            str(rt),
+            expected,
+            revision=resolved_revision,
+            cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
+        )
+
     def scan_cache(self, cache_dir: str | Path | None = None) -> CacheInfo:
         """Inspect the local cache directory.
 
