@@ -19,6 +19,7 @@ from .. import __version__
 from ..constants import MODELSCOPE_ASCII
 from ..errors import HubError, InvalidParameter, NetworkError, NotSupportedError
 from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
+from .agent import AgentCommand
 from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
 from .download import DownloadCommand
@@ -46,6 +47,7 @@ _COMMANDS = [
     SecretCommand,
     McpCommand,
     CacheCommand,
+    AgentCommand,
 ]
 
 # Plugin entry-point group name

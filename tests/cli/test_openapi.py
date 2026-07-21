@@ -267,3 +267,33 @@ class TestRetryIdempotentPost:
         with patch.object(client._session, "request", side_effect=[error_resp, success_resp]) as mock_req:
             result = client.deploy_mcp_server("123")
         assert mock_req.call_count == 2
+
+
+# ==================================================================
+# Credential isolation: never leak token to a foreign host via an
+# absolute URL (e.g. signed OSS blob-upload URLs from the LFS batch API).
+# ==================================================================
+class TestForeignHostCredentialIsolation:
+    def test_same_host_absolute_url_gets_auth(self, client):
+        resp = _mock_response()
+        url = "https://modelscope.cn/api/v1/repos/agents/o/r/commit/master"
+        with patch.object(client._session, "request", return_value=resp) as mock_req:
+            client.request("POST", url=url, json_body={})
+        call_kwargs = mock_req.call_args.kwargs
+        assert call_kwargs["headers"].get("Authorization") == "Bearer test-token"
+        assert call_kwargs["cookies"] == {
+            "m_session_id": "test-token", "modelscope_session": "test-token"}
+
+    def test_foreign_host_absolute_url_strips_auth_and_cookies(self, client):
+        resp = _mock_response()
+        url = "https://oss-cn-hangzhou.aliyuncs.com/bucket/obj?sig=abc"
+        with patch.object(client._session, "request", return_value=resp) as mock_req:
+            client.request(
+                "PUT", url=url, data=b"blob",
+                headers={"Content-Type": "application/octet-stream"},
+                require_token=False, unwrap=False)
+        call_kwargs = mock_req.call_args.kwargs
+        assert "Authorization" not in call_kwargs["headers"]
+        assert call_kwargs["cookies"] == {}
+        # Caller-supplied headers (not credentials) must still be sent.
+        assert call_kwargs["headers"]["Content-Type"] == "application/octet-stream"

@@ -20,7 +20,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -112,7 +112,41 @@ class OpenAPIClient:
         self.close()
 
     # ------------------------------------------------------------------
-    # Request plumbing
+    # Public request interface
+    # ------------------------------------------------------------------
+    def request(
+        self,
+        method: str,
+        path: str = "",
+        *,
+        url: str | None = None,
+        params: Mapping[str, Any] | QueryParams | None = None,
+        json_body: Any | None = None,
+        data: Any | None = None,
+        files: Any | None = None,
+        headers: Mapping[str, str] | None = None,
+        require_token: bool = True,
+        unwrap: bool = True,
+        timeout: float | None = None,
+    ) -> Any:
+        """Execute an HTTP request.
+
+        When *url* is provided the request targets that absolute URL directly
+        (useful for endpoints outside ``/openapi/v1``, signed OSS URLs, etc.).
+        Otherwise the request is routed through ``self._url(path)``.
+
+        When *unwrap* is ``False`` the raw :class:`requests.Response` is returned.
+        """
+        return self._request(
+            method, path,
+            url=url,
+            params=params, json_body=json_body, data=data, files=files,
+            headers=headers, require_token=require_token, unwrap=unwrap,
+            timeout=timeout,
+        )
+
+    # ------------------------------------------------------------------
+    # Request plumbing (internal)
     # ------------------------------------------------------------------
     @property
     def base_url(self) -> str:
@@ -124,12 +158,17 @@ class OpenAPIClient:
         # discard the ``/openapi/v1`` prefix. Normalise to a relative form.
         return urljoin(self.base_url, path.lstrip("/"))
 
-    def _auth_headers(self, *, require_token: bool = False) -> dict[str, str]:
+    def _resolve_token(self) -> str | None:
+        """Resolve the current API token (from config or persisted credential)."""
         token = self._config.token
         if not token:
             token = self._config.load_token()
             if token:
                 self._config.token = token
+        return token
+
+    def _auth_headers(self, *, require_token: bool = False) -> dict[str, str]:
+        token = self._resolve_token()
         if not token:
             if require_token:
                 raise AuthenticationError(
@@ -137,6 +176,28 @@ class OpenAPIClient:
                 )
             return {}
         return {"Authorization": f"Bearer {token}"}
+
+    def _auth_cookies(self) -> dict[str, str]:
+        """Build session cookies for /api/v1/ endpoints that use cookie auth."""
+        token = self._resolve_token()
+        if not token:
+            return {}
+        return {"m_session_id": token, "modelscope_session": token}
+
+    def _same_host_as_endpoint(self, target_url: str) -> bool:
+        """True when *target_url* points at the configured endpoint host.
+
+        Credentials (the ``Authorization`` header and session cookies) must only
+        be attached to our own host. Absolute URLs pointing elsewhere -- e.g. the
+        signed OSS blob-upload URLs returned by the LFS batch API -- must never
+        receive our token, otherwise it leaks to a third-party domain.
+        """
+        try:
+            target_host = urlsplit(target_url).hostname or ""
+        except ValueError:
+            return False
+        endpoint_host = urlsplit(self._config.endpoint or "").hostname or ""
+        return bool(target_host) and target_host.lower() == endpoint_host.lower()
 
     @staticmethod
     def _flatten_filters(filters: Filters) -> QueryParams:
@@ -171,8 +232,9 @@ class OpenAPIClient:
     def _request(
         self,
         method: str,
-        path: str,
+        path: str = "",
         *,
+        url: str | None = None,
         params: Mapping[str, Any] | QueryParams | None = None,
         json_body: Any | None = None,
         data: Any | None = None,
@@ -186,9 +248,20 @@ class OpenAPIClient:
 
         The method centralises authentication, retries on transient errors,
         and decoding of the standard ``{"success": ..., "data": ...}`` envelope.
+
+        When *url* is given, it is used as-is (absolute URL). Otherwise the
+        final URL is derived from *path* via :meth:`_url`.
         """
-        url = self._url(path)
-        merged_headers = dict(self._auth_headers(require_token=require_token))
+        final_url = url or self._url(path)
+        # Only attach our credentials when the target is our own host. Absolute
+        # URLs to a foreign host (e.g. signed OSS upload URLs) must not receive
+        # the Authorization header or session cookies, which carry the token.
+        if self._same_host_as_endpoint(final_url):
+            merged_headers = dict(self._auth_headers(require_token=require_token))
+            request_cookies = self._auth_cookies()
+        else:
+            merged_headers = {}
+            request_cookies = {}
         if headers:
             merged_headers.update(headers)
 
@@ -197,16 +270,17 @@ class OpenAPIClient:
         last_exc: BaseException | None = None
 
         for attempt in range(1, attempts + 1):
-            _logger.debug("%s %s", method_upper, url)
+            _logger.debug("%s %s", method_upper, final_url)
             try:
                 response = self._session.request(
                     method=method_upper,
-                    url=url,
+                    url=final_url,
                     params=params,
                     json=json_body,
                     data=data,
                     files=files,
                     headers=merged_headers,
+                    cookies=request_cookies,
                     timeout=timeout if timeout is not None else self._timeout,
                 )
             except requests.Timeout as exc:
@@ -216,12 +290,12 @@ class OpenAPIClient:
             except requests.RequestException as exc:  # pragma: no cover - defensive
                 last_exc = NetworkError(f"Request failed: {exc}")
             else:
-                _logger.debug("%s %s -> %s", method_upper, url, response.status_code)
+                _logger.debug("%s %s -> %s", method_upper, final_url, response.status_code)
                 if response.status_code >= 400:
                     _logger.debug(
                         "Request failed: %s %s params=%s status=%s body=%s",
                         method_upper,
-                        url,
+                        final_url,
                         params,
                         response.status_code,
                         response.text[:500] if response.text else "",
@@ -231,19 +305,21 @@ class OpenAPIClient:
                 except _RETRYABLE_EXC as exc:  # type: ignore[misc]
                     last_exc = exc
                 else:
-                    return self._decode(response, unwrap=unwrap)
+                    if not unwrap:
+                        return response
+                    return self._decode(response, unwrap=True)
 
             # Retry policy: idempotent methods + known-idempotent POST paths.
             is_retryable = (
                 method_upper in _IDEMPOTENT_METHODS
-                or (method_upper == "POST" and any(path.endswith(p) for p in _RETRYABLE_POST_PATHS))
+                or (method_upper == "POST" and path and any(path.endswith(p) for p in _RETRYABLE_POST_PATHS))
             )
             if attempt >= attempts or not is_retryable:
                 break
             backoff = min(2 ** (attempt - 1), 16)
             _logger.debug(
                 "Retrying %s %s after %s (attempt %d/%d)",
-                method_upper, path, last_exc, attempt, attempts,
+                method_upper, final_url, last_exc, attempt, attempts,
             )
             time.sleep(backoff)
 
@@ -261,9 +337,11 @@ class OpenAPIClient:
             return response.content if not unwrap else response.text
         if not unwrap or not isinstance(payload, dict):
             return payload
-        # The OpenAPI envelope always carries a ``data`` field on success.
+        # The OpenAPI envelope carries a ``data`` (or ``Data``) field on success.
         if "data" in payload:
             return payload["data"]
+        if "Data" in payload:
+            return payload["Data"]
         return payload
 
     # ==================================================================

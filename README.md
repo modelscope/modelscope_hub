@@ -437,6 +437,8 @@ Inspect and clean the local download cache.
 ```bash
 ms cache scan
 ms cache scan --cache-dir /data/cache
+ms cache verify Qwen/Qwen3-0.6B
+ms cache verify Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
 ms cache clear --repo-type model --yes
 ms cache clear --repo-id my-org/old-model --repo-type model --yes
 ```
@@ -447,7 +449,55 @@ ms cache clear --repo-id my-org/old-model --repo-type model --yes
 | Subcommand | Key Options |
 |------------|-------------|
 | `scan` | `--cache-dir DIR` |
+| `verify REPO_ID` | `--repo-type`, `--revision`, `--cache-dir`, `--local-dir`, `--fail-on-missing-files`, `--fail-on-extra-files` |
 | `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--yes` |
+
+</details>
+
+### `ms agent`
+
+Low-level raw file transfer for remote agent repositories: `download`, `upload`, `list`. This command transfers files as-is, with **no framework awareness**.
+
+```bash
+ms agent download -r user/my-agent --local-dir ./my-agent   # download raw files
+ms agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw
+```
+
+> **Framework-aware operations** (cross-framework `convert`, `watch`/bidirectional sync, `status`, `backups`, `restore`, `stop`) live in **[modelscope-agent](https://github.com/modelscope/ms-agent)** — use `ms-agent agent ...` instead. For example, to download and convert in one step: `ms-agent agent download -f qoder -r user/my-agent --target-framework qwenpaw`.
+
+<details>
+<summary>Subcommands</summary>
+
+#### `ms agent download`
+
+Download all files of a remote agent repository to a local directory (raw, no conversion).
+
+```bash
+ms agent download -r user/my-agent
+ms agent download -r user/my-agent --local-dir ./my-agent --revision master
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `-r, --repo REPO` | yes | Remote repo identifier (`owner/name`) |
+| `--local-dir DIR` | no | Destination directory (default: `./<repo-name>` under CWD) |
+| `--revision REV` | no | Repository revision (default: `master`) |
+
+#### `ms agent upload`
+
+Upload files from a local path (file or directory) to a remote agent repository (raw, no conversion). Creates the repo if it does not exist.
+
+```bash
+ms agent upload -r user/my-agent --local-dir ./my-agent
+ms agent upload -r user/my-agent --local-dir ./my-agent --dry-run
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `-r, --repo REPO` | yes | Remote repo identifier (`owner/name`) |
+| `--local-dir DIR` | no | Source path (file or directory) to upload (default: CWD) |
+| `--revision REV` | no | Repository revision (default: `master`) |
+| `--dry-run` | no | List files that would be uploaded without uploading |
 
 </details>
 
