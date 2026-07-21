@@ -1,4 +1,10 @@
-"""Entry point for the ``modelscope`` / ``ms`` console scripts.
+"""Entry point for the ``modelscope-hub`` / ``ms-hub`` console scripts.
+
+This module is also reused by the umbrella ``modelscope`` package for its
+``modelscope`` / ``ms`` commands. Because a single parser serves all four
+aliases, the program name is derived from ``sys.argv[0]`` (rather than
+hard-coded) so help/usage output shows whichever command was actually
+invoked.
 
 Subcommands live in dedicated modules and are wired in via their
 :meth:`CLICommand.register` static method. :func:`run_cmd` is intentionally
@@ -55,8 +61,12 @@ _PLUGIN_GROUP = "modelscope_hub.cli_plugins"
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # ``prog`` is intentionally left unset so argparse derives it from
+    # ``sys.argv[0]``. The same parser backs the standalone
+    # ``modelscope-hub`` / ``ms-hub`` scripts and the umbrella
+    # ``modelscope`` / ``ms`` scripts, so help output reflects whichever
+    # command the user actually ran.
     parser = argparse.ArgumentParser(
-        prog="ms",
         description="ModelScope Hub command-line interface.",
     )
     parser.add_argument(
@@ -107,14 +117,14 @@ def _register_aliases(subparsers) -> None:
 
 
 def _register_scan_cache_alias(subparsers) -> None:
-    """``ms scan-cache`` → alias for ``ms cache scan``."""
+    """``ms-hub scan-cache`` → alias for ``ms-hub cache scan``."""
     p = subparsers.add_parser("scan-cache", help="[Alias] Show cached repos and disk usage.")
     p.add_argument("--dir", "--cache-dir", dest="cache_dir", default=None)
     p.set_defaults(_command=_ScanCacheAlias)
 
 
 def _register_clear_cache_alias(subparsers) -> None:
-    """``ms clear-cache`` → alias for ``ms cache clear``."""
+    """``ms-hub clear-cache`` → alias for ``ms-hub cache clear``."""
     from ..constants import RepoType
 
     p = subparsers.add_parser("clear-cache", help="[Alias] Remove cached files.")
