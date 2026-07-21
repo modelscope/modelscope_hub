@@ -21,7 +21,7 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## Why modelscope-hub?
 
-`modelscope-hub` connects your code to the [ModelScope](https://modelscope.cn) ecosystem — models, datasets, Studio spaces, skills, and MCP servers — through a single `HubApi` class or the `ms` CLI.
+`modelscope-hub` connects your code to the [ModelScope](https://modelscope.cn) ecosystem — models, datasets, Studio spaces, skills, and MCP servers — through a single `HubApi` class or the `ms-hub` CLI.
 
 - **Unified repo interface** — one set of methods for models, datasets, studios, skills, and MCP servers
 - **OpenAPI-first** — built on the ModelScope OpenAPI surface with transparent legacy fallback
@@ -46,7 +46,7 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 - **Fix**: `parse_timestamp` robust timezone conversion for ISO 8601, floats, milliseconds
 
 **v0.0.8** (2026-06-10)
-- **Feature**: `ms list --all` auto-pagination; `ms create --skill-file` zip upload; `ms list --envs`
+- **Feature**: `ms-hub list --all` auto-pagination; `ms-hub create --skill-file` zip upload; `ms-hub list --envs`
 - **Fix**: Download per-file lock & stale detection & atomic merge; `--disable-tqdm` for folder upload
 - **Security**: Redact tokens from git/API error output
 - **Refactor**: Centralize env var registry; unify `MODELSCOPE_DOMAIN` → `MODELSCOPE_ENDPOINT`
@@ -59,7 +59,7 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 - OpenAPI spec alignment: pagination limits, retry, auth, request body
 
 **v0.0.4** (2026-06-05)
-- Flatten CLI to top-level commands (`ms create/info/list/delete`)
+- Flatten CLI to top-level commands (`ms-hub create/info/list/delete`)
 - Migrate credentials to `~/.modelscope/credentials/`
 - Fix dataset/skill download, blob upload auth, error code refactor
 
@@ -82,9 +82,9 @@ Requires Python 3.10+. Lightweight — only `requests`, `tqdm`, `filelock`, `url
 ### Authenticate
 
 ```bash
-ms login
+ms-hub login
 # or pass a token directly
-ms login --token $MODELSCOPE_API_TOKEN
+ms-hub login --token $MODELSCOPE_API_TOKEN
 ```
 
 Get your token at [modelscope.cn/my/access/token](https://modelscope.cn/my/access/token) or [modelscope.ai/my/access/token](https://modelscope.ai/my/access/token).
@@ -101,16 +101,16 @@ print(user.username)
 
 ```bash
 # Full snapshot
-ms download Qwen/Qwen3-0.6B
+ms-hub download Qwen/Qwen3-0.6B
 
 # Single file
-ms download Qwen/Qwen3-0.6B config.json
+ms-hub download Qwen/Qwen3-0.6B config.json
 
 # With filters
-ms download Qwen/Qwen3-0.6B --include "*.safetensors" --exclude "*.bin"
+ms-hub download Qwen/Qwen3-0.6B --include "*.safetensors" --exclude "*.bin"
 
 # Directly into a local directory (bypasses cache)
-ms download Qwen/Qwen3-0.6B --local-dir ./my-model
+ms-hub download Qwen/Qwen3-0.6B --local-dir ./my-model
 ```
 
 ```python
@@ -129,8 +129,8 @@ path = api.download_file("Qwen/Qwen3-0.6B", "model", "config.json", local_files_
 ### Upload
 
 ```bash
-ms upload my-org/my-model ./weights.safetensors
-ms upload my-org/my-model ./output --repo-type model --commit-message "add weights"
+ms-hub upload my-org/my-model ./weights.safetensors
+ms-hub upload my-org/my-model ./output --repo-type model --commit-message "add weights"
 ```
 
 ```python
@@ -141,7 +141,7 @@ api.upload_folder("my-org/my-model", "model", "./output", path_in_repo="")
 ### Create a Repository
 
 ```bash
-ms create my-org/my-model --repo-type model --visibility private
+ms-hub create my-org/my-model --repo-type model --visibility private
 ```
 
 ```python
@@ -151,9 +151,9 @@ api.create_repo("my-org/my-model", "model", visibility="private", license="apach
 ### Deploy a Studio
 
 ```bash
-ms deploy my-org/chat-demo --repo-type studio
-ms logs my-org/chat-demo --log-type run
-ms stop my-org/chat-demo --repo-type studio
+ms-hub deploy my-org/chat-demo --repo-type studio
+ms-hub logs my-org/chat-demo --log-type run
+ms-hub stop my-org/chat-demo --repo-type studio
 ```
 
 ```python
@@ -166,7 +166,7 @@ api.stop_repo("my-org/chat-demo", "studio")
 
 ## CLI Reference
 
-The CLI is available as both `ms` and `modelscope`.
+The CLI is available as both `ms-hub` and `modelscope-hub`.
 
 **Global options** (placed before or after the subcommand):
 
@@ -178,40 +178,40 @@ The CLI is available as both `ms` and `modelscope`.
 | `-V, --version` | Print version and exit (global only) |
 
 > `--token` and `--endpoint` can be placed either before or after the subcommand:
-> `ms --token xxx download ...` and `ms download ... --token xxx` are equivalent.
+> `ms-hub --token xxx download ...` and `ms-hub download ... --token xxx` are equivalent.
 
-### `ms login`
+### `ms-hub login`
 
 Authenticate and persist your token locally.
 
 ```bash
-ms login                          # interactive prompt
-ms login --token $MY_TOKEN        # non-interactive
+ms-hub login                          # interactive prompt
+ms-hub login --token $MY_TOKEN        # non-interactive
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--token TOKEN` | API token; prompted interactively if omitted |
 
-### `ms whoami`
+### `ms-hub whoami`
 
 Show the user associated with the current token.
 
 ```bash
-ms whoami
-ms whoami --token $MY_TOKEN   # check a specific token without logging in
+ms-hub whoami
+ms-hub whoami --token $MY_TOKEN   # check a specific token without logging in
 ```
 
-### `ms download`
+### `ms-hub download`
 
 Download a single file or a full repository snapshot.
 
 ```bash
-ms download Qwen/Qwen3-0.6B                                  # full snapshot
-ms download Qwen/Qwen3-0.6B config.json                      # single file
-ms download Qwen/Qwen3-0.6B --include "*.safetensors"         # filter by glob
-ms download Qwen/Qwen3-0.6B --local-dir ./out --max-workers 8 # direct download
-ms download my-org/my-data --repo-type dataset --revision v2   # dataset at tag
+ms-hub download Qwen/Qwen3-0.6B                                  # full snapshot
+ms-hub download Qwen/Qwen3-0.6B config.json                      # single file
+ms-hub download Qwen/Qwen3-0.6B --include "*.safetensors"         # filter by glob
+ms-hub download Qwen/Qwen3-0.6B --local-dir ./out --max-workers 8 # direct download
+ms-hub download my-org/my-data --repo-type dataset --revision v2   # dataset at tag
 ```
 
 | Argument / Option | Required | Description |
@@ -232,40 +232,40 @@ ms download my-org/my-data --repo-type dataset --revision v2   # dataset at tag
 
 ```bash
 # Download multiple specific files at once
-ms download Qwen/Qwen3-0.6B config.json tokenizer.json generation_config.json
+ms-hub download Qwen/Qwen3-0.6B config.json tokenizer.json generation_config.json
 
 # Download only safetensors, skip GGUF and bin weights
-ms download Qwen/Qwen3-0.6B --include "*.safetensors" --exclude "*.bin" "*.gguf"
+ms-hub download Qwen/Qwen3-0.6B --include "*.safetensors" --exclude "*.bin" "*.gguf"
 
 # Download a dataset at a specific tag into a local directory
-ms download my-org/my-data --repo-type dataset --revision v2 --local-dir ./data
+ms-hub download my-org/my-data --repo-type dataset --revision v2 --local-dir ./data
 
 # Use a custom cache directory and 8 parallel threads
-ms download Qwen/Qwen3-0.6B --cache-dir /data/hub-cache --max-workers 8
+ms-hub download Qwen/Qwen3-0.6B --cache-dir /data/hub-cache --max-workers 8
 
 # Force re-download even if already cached
-ms download Qwen/Qwen3-0.6B config.json --force
+ms-hub download Qwen/Qwen3-0.6B config.json --force
 
 # Download all skills from a collection (legacy flag)
-ms download --collection my-org/skill-collection
+ms-hub download --collection my-org/skill-collection
 
 # Enable parallel range download for large files (env var)
-MODELSCOPE_DOWNLOAD_PARALLELS=4 ms download Qwen/Qwen3-0.6B
+MODELSCOPE_DOWNLOAD_PARALLELS=4 ms-hub download Qwen/Qwen3-0.6B
 
 # Use the modelscope.ai endpoint (global option, before subcommand)
-ms --endpoint https://modelscope.ai download Qwen/Qwen3-0.6B
+ms-hub --endpoint https://modelscope.ai download Qwen/Qwen3-0.6B
 ```
 
 </details>
 
-### `ms upload`
+### `ms-hub upload`
 
 Upload a file or folder to a repository.
 
 ```bash
-ms upload my-org/my-model ./weights.safetensors                       # single file
-ms upload my-org/my-model ./output models/ --repo-type model          # folder → subdir
-ms upload my-org/my-model . --include "*.py" --commit-message "code"  # filtered folder
+ms-hub upload my-org/my-model ./weights.safetensors                       # single file
+ms-hub upload my-org/my-model ./output models/ --repo-type model          # folder → subdir
+ms-hub upload my-org/my-model . --include "*.py" --commit-message "code"  # filtered folder
 ```
 
 | Argument / Option | Required | Description |
@@ -288,56 +288,56 @@ ms upload my-org/my-model . --include "*.py" --commit-message "code"  # filtered
 
 ```bash
 # Upload a single file with a custom commit message
-ms upload my-org/my-model ./weights.safetensors --commit-message "add fp16 weights"
+ms-hub upload my-org/my-model ./weights.safetensors --commit-message "add fp16 weights"
 
 # Upload a folder into a subdirectory of the repo
-ms upload my-org/my-model ./output models/ --repo-type model
+ms-hub upload my-org/my-model ./output models/ --repo-type model
 
 # Upload only Python files from the current directory
-ms upload my-org/my-model . --include "*.py" --commit-message "update code"
+ms-hub upload my-org/my-model . --include "*.py" --commit-message "update code"
 
 # Upload only safetensors, skip checkpoints
-ms upload my-org/my-model ./output --include "*.safetensors" --exclude "*.ckpt" "*.bin"
+ms-hub upload my-org/my-model ./output --include "*.safetensors" --exclude "*.ckpt" "*.bin"
 
 # Upload to a dataset repo on a specific branch
-ms upload my-org/my-data ./data --repo-type dataset --revision dev
+ms-hub upload my-org/my-data ./data --repo-type dataset --revision dev
 
 # Upload with extended commit description
-ms upload my-org/my-model ./weights.safetensors \
+ms-hub upload my-org/my-model ./weights.safetensors \
   --commit-message "v2 weights" \
   --commit-description "Retrained with extended dataset, 3 epochs, lr=2e-5"
 
 # Resumable upload: interrupted uploads resume automatically via cache
-ms upload my-org/my-model ./large-folder
+ms-hub upload my-org/my-model ./large-folder
 # If interrupted, just re-run the same command — already uploaded files are skipped
 
 # Disable upload cache (no resume, fresh upload every time)
-ms upload my-org/my-model ./output --no-cache
+ms-hub upload my-org/my-model ./output --no-cache
 
 # Disable progress bars (useful for CI/CD pipelines)
-ms upload my-org/my-model ./output --disable-tqdm
+ms-hub upload my-org/my-model ./output --disable-tqdm
 ```
 
 </details>
 
-### `ms create` / `ms info` / `ms list` / `ms delete`
+### `ms-hub create` / `ms-hub info` / `ms-hub list` / `ms-hub delete`
 
 Repository management.
 
 ```bash
-ms create my-org/my-model --repo-type model --visibility private
-ms create my-org/demo --repo-type studio --sdk-type gradio
-ms info my-org/my-model --repo-type model
-ms list --repo-type model --owner my-org --page-size 20
-ms delete my-org/my-model --repo-type model --yes
+ms-hub create my-org/my-model --repo-type model --visibility private
+ms-hub create my-org/demo --repo-type studio --sdk-type gradio
+ms-hub info my-org/my-model --repo-type model
+ms-hub list --repo-type model --owner my-org --page-size 20
+ms-hub delete my-org/my-model --repo-type model --yes
 ```
 
-> **Deprecation notice:** `delete_repo` / `ms delete` emits a `DeprecationWarning` — programmatic repo deletion is restricted for security reasons and will be restored once token-scoped auth is available. Use the [web console](https://modelscope.cn) to delete repos.
+> **Deprecation notice:** `delete_repo` / `ms-hub delete` emits a `DeprecationWarning` — programmatic repo deletion is restricted for security reasons and will be restored once token-scoped auth is available. Use the [web console](https://modelscope.cn) to delete repos.
 >
 > `delete_files` requires cookie-based session auth; API tokens may receive a 401 error.
 
 <details>
-<summary><code>ms create</code> options</summary>
+<summary><code>ms-hub create</code> options</summary>
 
 | Argument / Option | Required | Description |
 |-------------------|----------|-------------|
@@ -356,15 +356,15 @@ ms delete my-org/my-model --repo-type model --yes
 
 </details>
 
-### `ms deploy` / `ms stop` / `ms logs` / `ms settings`
+### `ms-hub deploy` / `ms-hub stop` / `ms-hub logs` / `ms-hub settings`
 
 Manage Studio and MCP deployments.
 
 ```bash
-ms deploy my-org/chat-demo --repo-type studio
-ms logs my-org/chat-demo --log-type run --keyword ERROR --page-size 50
-ms settings my-org/chat-demo cpu=4 memory=8192
-ms stop my-org/chat-demo --repo-type studio
+ms-hub deploy my-org/chat-demo --repo-type studio
+ms-hub logs my-org/chat-demo --log-type run --keyword ERROR --page-size 50
+ms-hub settings my-org/chat-demo cpu=4 memory=8192
+ms-hub stop my-org/chat-demo --repo-type studio
 ```
 
 <details>
@@ -372,25 +372,25 @@ ms stop my-org/chat-demo --repo-type studio
 
 | Command | `--repo-type` | Key Options |
 |---------|---------------|-------------|
-| `ms deploy <repo_id>` | `{studio,mcp}` (default: `studio`) | — |
-| `ms stop <repo_id>` | `{studio,mcp}` (default: `studio`) | — |
-| `ms logs <repo_id>` | `{studio}` only | `--log-type {run,build}`, `--keyword`, `--page`, `--page-size` |
-| `ms settings <repo_id> key=val...` | `{studio,skill}` (default: `studio`) | Key-value pairs passed to backend |
+| `ms-hub deploy <repo_id>` | `{studio,mcp}` (default: `studio`) | — |
+| `ms-hub stop <repo_id>` | `{studio,mcp}` (default: `studio`) | — |
+| `ms-hub logs <repo_id>` | `{studio}` only | `--log-type {run,build}`, `--keyword`, `--page`, `--page-size` |
+| `ms-hub settings <repo_id> key=val...` | `{studio,skill}` (default: `studio`) | Key-value pairs passed to backend |
 
-> **Note:** `ms logs` only supports Studio spaces. MCP server logs are not available via this command.
-> `ms settings` supports Studio and Skill repos; for MCP servers use `ms mcp deploy` with configuration payload.
+> **Note:** `ms-hub logs` only supports Studio spaces. MCP server logs are not available via this command.
+> `ms-hub settings` supports Studio and Skill repos; for MCP servers use `ms-hub mcp deploy` with configuration payload.
 
 </details>
 
-### `ms secret`
+### `ms-hub secret`
 
 Manage secrets for Studio spaces (studio only, `--repo-type` defaults to `studio`).
 
 ```bash
-ms secret add my-org/demo API_KEY sk-xxx
-ms secret list my-org/demo
-ms secret update my-org/demo API_KEY sk-new
-ms secret delete my-org/demo API_KEY --yes
+ms-hub secret add my-org/demo API_KEY sk-xxx
+ms-hub secret list my-org/demo
+ms-hub secret update my-org/demo API_KEY sk-new
+ms-hub secret delete my-org/demo API_KEY --yes
 ```
 
 <details>
@@ -407,15 +407,15 @@ All subcommands accept `--repo-type` (default: `studio`, currently the only supp
 
 </details>
 
-### `ms mcp`
+### `ms-hub mcp`
 
 Manage MCP (Model Context Protocol) servers.
 
 ```bash
-ms mcp list --search weather --page-size 10
-ms mcp info my-org/weather-mcp
-ms mcp deploy my-org/weather-mcp
-ms mcp undeploy my-org/weather-mcp
+ms-hub mcp list --search weather --page-size 10
+ms-hub mcp info my-org/weather-mcp
+ms-hub mcp deploy my-org/weather-mcp
+ms-hub mcp undeploy my-org/weather-mcp
 ```
 
 <details>
@@ -430,17 +430,17 @@ ms mcp undeploy my-org/weather-mcp
 
 </details>
 
-### `ms cache`
+### `ms-hub cache`
 
 Inspect and clean the local download cache.
 
 ```bash
-ms cache scan
-ms cache scan --cache-dir /data/cache
-ms cache verify Qwen/Qwen3-0.6B
-ms cache verify Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
-ms cache clear --repo-type model --yes
-ms cache clear --repo-id my-org/old-model --repo-type model --yes
+ms-hub cache scan
+ms-hub cache scan --cache-dir /data/cache
+ms-hub cache verify Qwen/Qwen3-0.6B
+ms-hub cache verify Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
+ms-hub cache clear --repo-type model --yes
+ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
 ```
 
 <details>
@@ -454,13 +454,13 @@ ms cache clear --repo-id my-org/old-model --repo-type model --yes
 
 </details>
 
-### `ms agent`
+### `ms-hub agent`
 
 Low-level raw file transfer for remote agent repositories: `download`, `upload`, `list`. This command transfers files as-is, with **no framework awareness**.
 
 ```bash
-ms agent download -r user/my-agent --local-dir ./my-agent   # download raw files
-ms agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw
+ms-hub agent download -r user/my-agent --local-dir ./my-agent   # download raw files
+ms-hub agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw
 ```
 
 > **Framework-aware operations** (cross-framework `convert`, `watch`/bidirectional sync, `status`, `backups`, `restore`, `stop`) live in **[modelscope-agent](https://github.com/modelscope/ms-agent)** — use `ms-agent agent ...` instead. For example, to download and convert in one step: `ms-agent agent download -f qoder -r user/my-agent --target-framework qwenpaw`.
@@ -468,13 +468,13 @@ ms agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw
 <details>
 <summary>Subcommands</summary>
 
-#### `ms agent download`
+#### `ms-hub agent download`
 
 Download all files of a remote agent repository to a local directory (raw, no conversion).
 
 ```bash
-ms agent download -r user/my-agent
-ms agent download -r user/my-agent --local-dir ./my-agent --revision master
+ms-hub agent download -r user/my-agent
+ms-hub agent download -r user/my-agent --local-dir ./my-agent --revision master
 ```
 
 | Option | Required | Description |
@@ -483,13 +483,13 @@ ms agent download -r user/my-agent --local-dir ./my-agent --revision master
 | `--local-dir DIR` | no | Destination directory (default: `./<repo-name>` under CWD) |
 | `--revision REV` | no | Repository revision (default: `master`) |
 
-#### `ms agent upload`
+#### `ms-hub agent upload`
 
 Upload files from a local path (file or directory) to a remote agent repository (raw, no conversion). Creates the repo if it does not exist.
 
 ```bash
-ms agent upload -r user/my-agent --local-dir ./my-agent
-ms agent upload -r user/my-agent --local-dir ./my-agent --dry-run
+ms-hub agent upload -r user/my-agent --local-dir ./my-agent
+ms-hub agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 ```
 
 | Option | Required | Description |
@@ -585,7 +585,7 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
   (training · eval)       (inference · deploy)
 ```
 
-- **Browse & discover** — search 100K+ models and datasets via `list_repos` / `ms repo list`
+- **Browse & discover** — search 100K+ models and datasets via `list_repos` / `ms-hub repo list`
 - **Download & cache** — pull model weights, tokenizer configs, or entire datasets into a managed cache or a local directory; supports offline mode via `local_files_only`
 - **Train & fine-tune** — use with the [modelscope](https://github.com/modelscope/modelscope) framework: train locally, then push results back
 - **Deploy** — launch a Studio space or MCP server directly from the CLI or SDK
@@ -595,9 +595,9 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 
 ## Configuration
 
-Run `ms list --envs` to see all configurable environment variables with their current values.
+Run `ms-hub list --envs` to see all configurable environment variables with their current values.
 
-Token is persisted locally after `ms login` and auto-loaded in subsequent sessions.
+Token is persisted locally after `ms-hub login` and auto-loaded in subsequent sessions.
 
 <details>
 <summary>Environment variables</summary>
@@ -654,7 +654,7 @@ Token is persisted locally after `ms login` and auto-loaded in subsequent sessio
 | `MODELSCOPE_NO_DEPRECATION_WARNINGS` | — | Suppress deprecation warnings |
 
 > Old variable names (e.g. `API_TIMEOUT`, `DOWNLOAD_RETRY_TIMES`, `UPLOAD_USE_CACHE`) are
-> still accepted but emit a `FutureWarning`. Run `ms list --envs` to see which deprecated
+> still accepted but emit a `FutureWarning`. Run `ms-hub list --envs` to see which deprecated
 > names are active in your environment.
 
 </details>
