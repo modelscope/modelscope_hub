@@ -33,6 +33,40 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.1.8** (2026-07-21)
+- **Feature**: `ms-hub agent` raw file transfer (download/upload/list) for remote agent repos; visibility support for agent hub; cache checksum verification (`ms-hub cache verify`)
+- **Fix**: forward `progress_callbacks` through `HubApi.download_repo` so custom download-progress callbacks work end-to-end; harden legacy (pre-1.38) cache auto-detection (reuse existing `{cache}/models/...` and default `{cache}/hub/models/...` layouts); normal (non-LFS) file upload
+- **Packaging**: rename console scripts to `modelscope-hub` / `ms-hub` to avoid a file conflict with the `modelscope` package (e.g. FreeBSD pkg)
+
+**v0.1.7** (2026-07-07)
+- **Feature**: intra-/inter-region cloud download acceleration, with a source marker in the progress bar
+- **Fix**: align `snapshot_download` cache path with the CLI; add legacy cache fallback
+- **Refactor**: inter-region config via env var only (removed the `--inter-regions` CLI arg); cache the region probe
+
+**v0.1.6** (2026-07-03)
+- **Refactor**: replace the extra-field whitelist with a reserved-field blocklist for more permissive param passthrough
+
+**v0.1.5** (2026-06-30)
+- **Fix**: adaptive commit batch size for uploads
+
+<details>
+<summary>Older releases</summary>
+
+**v0.1.4** (2026-06-26)
+- **Feature**: `gated_mode` parameter for `create_repo`; `ms-hub create --gated/--no-gated` flags
+- **Refactor**: unify visibility / gated_mode semantics in the SDK layer
+- **Fix**: `create_repo` extra-kwargs whitelist + type validation; correct visibility mapping (`private` bool is authoritative)
+
+**v0.1.3** (2026-06-23)
+- **Feature**: add `AlreadyExistsError` (E3026) and fix the `exist_ok` mechanism; align `list_repos`/`RepoInfo` with the OpenAPI response format
+- **Fix**: `clear-cache` supports all cache layouts (standard/flat/legacy); add `last_modified` mapping and `to_dict()` for `RepoInfo`/`PagedResult`
+
+**v0.1.2** (2026-06-23)
+- **Fix**: unify `list_datasets`/`get_dataset` return format and align parameters
+
+**v0.1.1** (2026-06-22)
+- **Fix**: legacy API for msdatasets loading
+
 **v0.1.0** (2026-06-18)
 - **Feature**: Configurable upload failure thresholds (consecutive failures & total wait time)
 - **Fix**: compatibility && error handling
@@ -42,17 +76,13 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 **v0.0.9** (2026-06-12)
 - **Feature**: `get_model` support `revision`; expanded param passthrough for repo/model ops
-- **Fix**: Pattern normalization accepts iterable inputs (tuple, etc.)
-- **Fix**: `parse_timestamp` robust timezone conversion for ISO 8601, floats, milliseconds
+- **Fix**: Pattern normalization accepts iterable inputs (tuple, etc.); `parse_timestamp` robust timezone conversion for ISO 8601, floats, milliseconds
 
 **v0.0.8** (2026-06-10)
 - **Feature**: `ms-hub list --all` auto-pagination; `ms-hub create --skill-file` zip upload; `ms-hub list --envs`
 - **Fix**: Download per-file lock & stale detection & atomic merge; `--disable-tqdm` for folder upload
 - **Security**: Redact tokens from git/API error output
 - **Refactor**: Centralize env var registry; unify `MODELSCOPE_DOMAIN` → `MODELSCOPE_ENDPOINT`
-
-<details>
-<summary>Older releases</summary>
 
 **v0.0.5** (2026-06-05)
 - Fix `list_repos` pagination and dataset visibility issues
