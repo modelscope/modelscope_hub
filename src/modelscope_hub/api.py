@@ -32,6 +32,7 @@ from requests.cookies import RequestsCookieJar
 from ._cache_manager import clear_cache as _clear_cache
 from ._cache_manager import _resolve_verification_root
 from ._cache_manager import scan_cache as _scan_cache
+from ._download import DownloadManager, ProgressCallback
 from ._cache_manager import verify_cache as _verify_cache
 from ._download import DownloadManager
 from ._legacy_api import LegacyClient
@@ -1293,6 +1294,7 @@ class HubApi:
         max_workers: int = 4,
         local_files_only: bool = False,
         user_agent: dict | str | None = None,
+        progress_callbacks: list[type[ProgressCallback]] | None = None,
     ) -> Path:
         """Download an entire repository snapshot.
 
@@ -1321,6 +1323,9 @@ class HubApi:
             When ``True``, return the cached snapshot path without network.
         user_agent : dict, str or None, optional
             Custom user-agent info for download headers.
+        progress_callbacks : list of ProgressCallback subclasses, optional
+            Callback *classes* (not instances); each is instantiated per file
+            to report byte-level download progress.
 
         Returns
         -------
@@ -1358,6 +1363,7 @@ class HubApi:
             max_workers=max_workers,
             local_files_only=local_files_only,
             user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
         )
 
     def list_repo_files(

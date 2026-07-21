@@ -8,7 +8,7 @@ and the old SDK can delegate to ``modelscope_hub`` without changes.
 from __future__ import annotations
 
 import warnings
-from typing import Sequence
+from typing import TYPE_CHECKING, Sequence
 
 import requests as _requests
 
@@ -18,6 +18,9 @@ from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
 from ..utils.patterns import normalize_patterns
 from .constants import DEFAULT_DATASET_REVISION
 from .file_download import _resolve_legacy_paths
+
+if TYPE_CHECKING:
+    from .._download import ProgressCallback
 
 
 def snapshot_download(
@@ -38,12 +41,16 @@ def snapshot_download(
     endpoint: str | None = None,
     local_files_only: bool = False,
     user_agent: dict | str | None = None,
+    progress_callbacks: list[type[ProgressCallback]] | None = None,
 ) -> str:
     """Download a repo snapshot (legacy signature).
 
     Parameters mirror the old ``modelscope.hub.snapshot_download.snapshot_download``.
     ``allow_patterns``/``ignore_patterns`` take priority over the
     ``allow_file_pattern``/``ignore_file_pattern`` aliases when both are set.
+    ``progress_callbacks`` takes a list of :class:`ProgressCallback`
+    subclasses (not instances); each is instantiated per file to report
+    download progress.
     """
     effective_id = repo_id or model_id
     if not effective_id:
@@ -85,6 +92,7 @@ def snapshot_download(
             max_workers=max_workers,
             local_files_only=local_files_only,
             user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
         raise _requests.exceptions.HTTPError(
