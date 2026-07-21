@@ -851,8 +851,18 @@ class DownloadManager:
     ) -> Path | None:
         """Check for old SDK (<=1.37) cache layout and return it if non-empty.
 
-        Old format: {base}/{type}s/{owner}/{name_with_dots_as___}/
-        e.g.  ~/.cache/modelscope/models/Qwen/Qwen3___5-0___8B/
+        Old SDKs encoded dots in the repo name as ``___`` and, when no
+        ``MODELSCOPE_CACHE`` was set, stored everything under a ``hub/``
+        sub-directory of the cache root. Both historical layouts are probed,
+        in priority order::
+
+            {base}/{type}s/{owner}/{name___}        # MODELSCOPE_CACHE explicitly set
+            {base}/hub/{type}s/{owner}/{name___}    # default cache (~/.cache/modelscope/hub)
+
+        e.g.  ~/.cache/modelscope/hub/models/Qwen/Qwen3___5-0___8B/
+
+        Returns the first existing, non-empty candidate, or ``None`` when the
+        cache is clean (so the caller falls back to the new layout).
         """
         base = cache_dir or self._config.cache_dir
         segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
@@ -861,13 +871,18 @@ class DownloadManager:
             return None
         owner, name = parts
         safe_name = name.replace(".", "___")
-        legacy_path = base / segment / owner / safe_name
-        if legacy_path.is_dir():
+        candidates = (
+            base / segment / owner / safe_name,
+            base / "hub" / segment / owner / safe_name,
+        )
+        for legacy_path in candidates:
+            if not legacy_path.is_dir():
+                continue
             try:
                 if any(legacy_path.iterdir()):
                     return legacy_path
             except OSError:
-                pass
+                continue
         return None
 
     def _lock_path(
