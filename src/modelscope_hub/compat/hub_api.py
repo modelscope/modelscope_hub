@@ -96,10 +96,33 @@ class LegacyHubApi:
         info = self._api.get_repo(model_id, RepoType.MODEL, revision=revision)
         return _repo_info_to_dict(info)
 
-    def get_model_files(self, model_id: str, recursive: bool = True) -> list[dict]:
-        """List files in a model repo."""
-        files = self._api.list_repo_files(model_id, RepoType.MODEL, recursive=recursive)
-        return [{"Path": f.path, "Size": f.size} for f in files]
+    def get_model_files(
+        self,
+        model_id: str,
+        revision: str | None = None,
+        root: str | None = None,
+        recursive: bool = True,
+        **kwargs: Any,
+    ) -> list[dict]:
+        """List files in a model repo.
+
+        Legacy-compatible signature: ``revision`` selects a branch/tag/commit,
+        ``root`` restricts results to files under a sub-path, and ``recursive``
+        walks subdirectories. Other legacy transport kwargs (e.g.
+        ``use_cookies``, ``headers``) are accepted and ignored — auth is
+        handled by the configured token/session.
+        """
+        files = self._api.list_repo_files(
+            model_id, RepoType.MODEL, revision=revision, recursive=recursive,
+        )
+        result = [{"Path": f.path, "Size": f.size} for f in files]
+        if root:
+            prefix = root.strip("/")
+            result = [
+                f for f in result
+                if f["Path"] == prefix or f["Path"].startswith(prefix + "/")
+            ]
+        return result
 
     def create_repo(
         self,
