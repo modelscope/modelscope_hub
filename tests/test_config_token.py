@@ -18,7 +18,7 @@ from modelscope_hub._openapi import OpenAPIClient
 from modelscope_hub.config import ENV_TOKEN, HubConfig
 
 _STORED = "ms-STORED-CRED"
-_ENDPOINT = "https://pre.modelscope.cn"
+_ENDPOINT = "https://www.modelscope.cn"
 
 
 @pytest.fixture(autouse=True)
