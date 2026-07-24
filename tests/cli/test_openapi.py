@@ -12,7 +12,7 @@ import requests
 from modelscope_hub._openapi import OpenAPIClient, _RETRYABLE_POST_PATHS
 from modelscope_hub.api import HubApi
 from modelscope_hub.config import HubConfig
-from modelscope_hub.errors import InvalidParameter, ServerError
+from modelscope_hub.errors import InvalidParameter, RateLimitError, ServerError
 
 
 @pytest.fixture
@@ -267,6 +267,50 @@ class TestRetryIdempotentPost:
         with patch.object(client._session, "request", side_effect=[error_resp, success_resp]) as mock_req:
             result = client.deploy_mcp_server("123")
         assert mock_req.call_count == 2
+
+
+# ==================================================================
+# Rate-limit / commit-lock-busy retry on a non-idempotent POST.
+# A 429 means the server rejected the request WITHOUT processing it,
+# so it is safe to retry even for a bare ``url=`` POST such as
+# ``AgentApi.commit_files`` (path is empty -> not in _RETRYABLE_POST_PATHS).
+# ==================================================================
+class TestRateLimitRetry:
+    _COMMIT_URL = "https://modelscope.cn/api/v1/repos/agents/o/r/commit/master"
+
+    def test_commit_style_post_retried_on_rate_limit(self, client):
+        busy = _mock_response(
+            status_code=429,
+            json_data={"message": "commit lock busy, please try again"},
+        )
+        ok = _mock_response(status_code=200, json_data={"success": True, "data": {}})
+        with patch("modelscope_hub._openapi.time.sleep"), \
+                patch.object(client._session, "request",
+                             side_effect=[busy, busy, ok]) as mock_req:
+            client.request("POST", url=self._COMMIT_URL, json_body={"actions": []})
+        # two 429s then success -> three calls total (i.e. it retried).
+        assert mock_req.call_count == 3
+
+    def test_commit_style_post_gives_up_after_max_retries(self, client):
+        busy = _mock_response(
+            status_code=429,
+            json_data={"message": "commit lock busy, please try again"},
+        )
+        with patch("modelscope_hub._openapi.time.sleep"), \
+                patch.object(client._session, "request", return_value=busy) as mock_req:
+            with pytest.raises(RateLimitError):
+                client.request("POST", url=self._COMMIT_URL, json_body={"actions": []})
+        # Exhausts all attempts rather than failing on the first 429.
+        assert mock_req.call_count == client._max_retries
+
+    def test_bare_post_not_retried_on_plain_400(self, client):
+        """A non-rate-limit 400 on a bare url= POST is still NOT retried."""
+        bad = _mock_response(status_code=400, json_data={"message": "invalid parameter"})
+        with patch("modelscope_hub._openapi.time.sleep"), \
+                patch.object(client._session, "request", return_value=bad) as mock_req:
+            with pytest.raises(InvalidParameter):
+                client.request("POST", url=self._COMMIT_URL, json_body={"actions": []})
+        assert mock_req.call_count == 1
 
 
 # ==================================================================
