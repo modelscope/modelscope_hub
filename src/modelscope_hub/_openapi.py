@@ -185,19 +185,33 @@ class OpenAPIClient:
         return {"m_session_id": token, "modelscope_session": token}
 
     def _same_host_as_endpoint(self, target_url: str) -> bool:
-        """True when *target_url* points at the configured endpoint host.
+        """True when *target_url* points at the endpoint host or its LFS sibling.
 
         Credentials (the ``Authorization`` header and session cookies) must only
-        be attached to our own host. Absolute URLs pointing elsewhere -- e.g. the
-        signed OSS blob-upload URLs returned by the LFS batch API -- must never
-        receive our token, otherwise it leaks to a third-party domain.
+        be attached to our own hosts. Absolute URLs pointing elsewhere -- e.g. the
+        signed OSS blob-upload URLs on ``*.aliyuncs.com`` -- must never receive
+        our token, otherwise it leaks to a third-party domain.
+
+        The LFS blob endpoints live on a sibling host derived from the endpoint
+        by swapping the leading label for ``lfs`` / ``pre-lfs`` (e.g. endpoint
+        ``pre.modelscope.cn`` -> ``pre-lfs.modelscope.cn``, ``modelscope.cn`` ->
+        ``lfs.modelscope.cn``). Those hosts DO require our credentials, so they
+        are trusted here too.
         """
         try:
-            target_host = urlsplit(target_url).hostname or ""
+            target_host = (urlsplit(target_url).hostname or "").lower()
         except ValueError:
             return False
-        endpoint_host = urlsplit(self._config.endpoint or "").hostname or ""
-        return bool(target_host) and target_host.lower() == endpoint_host.lower()
+        endpoint_host = (urlsplit(self._config.endpoint or "").hostname or "").lower()
+        if not target_host or not endpoint_host:
+            return False
+        if target_host == endpoint_host:
+            return True
+        # Base domain = endpoint host minus its leading sub-label (if any), so
+        # ``pre.modelscope.cn`` -> ``modelscope.cn`` while ``modelscope.cn`` stays.
+        labels = endpoint_host.split(".")
+        base = ".".join(labels[1:]) if len(labels) >= 3 else endpoint_host
+        return target_host in {f"lfs.{base}", f"pre-lfs.{base}"}
 
     @staticmethod
     def _flatten_filters(filters: Filters) -> QueryParams:
