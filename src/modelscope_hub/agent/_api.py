@@ -23,7 +23,7 @@ import requests
 
 from ..config import HubConfig
 from ..constants import Visibility
-from ..errors import APIError, HubError, NotExistError
+from ..errors import APIError, AuthenticationError, HubError, NotExistError
 from .._openapi import OpenAPIClient
 
 logger = logging.getLogger("modelscope_hub.agent")
@@ -104,11 +104,31 @@ class AgentApi:
     # ---- repository ----
 
     def repo_info(self, path: str, name: str) -> dict | None:
-        """Repo metadata or None if the repo does not exist (404)."""
+        """Repo metadata or None if the repo does not exist (404).
+
+        The ``/openapi/v1/agents`` metadata endpoint rejects anonymous
+        callers (401) even for public repos. In that case fall back to the
+        public ``/api/v1`` file-tree endpoint as an existence probe so that
+        anonymous downloads of public repos keep working; the fallback
+        carries no ``Framework`` metadata, which only authenticated flows
+        (e.g. the upload framework guard) consume.
+        """
         try:
-            return self._openapi.request("GET", f"/agents/{path}/{name}")
+            return self._openapi.request(
+                "GET", f"/agents/{path}/{name}", require_token=False)
         except NotExistError:
             return None
+        except AuthenticationError:
+            probe_url = f"{self.server}/api/v1/agents/{path}/{name}/repo/files"
+            try:
+                self._openapi.request(
+                    "GET", url=probe_url,
+                    params={"page_size": "1", "page": "1"},
+                    require_token=False,
+                )
+            except NotExistError:
+                return None
+            return {}
 
     def check_repo(self, path: str, name: str) -> bool:
         """True if the repo exists, False on 404."""
@@ -219,6 +239,7 @@ class AgentApi:
                     "page": str(page),
                     "revision": revision,
                 },
+                require_token=False,
             )
 
             raw = []
@@ -256,7 +277,8 @@ class AgentApi:
         Returns bytes when *binary=True*, otherwise str.
         """
         dl_url = f"{self.server}/agents/{path}/{name}/resolve/{revision}/{file_path}"
-        resp = self._openapi.request("GET", url=dl_url, unwrap=False)
+        resp = self._openapi.request(
+            "GET", url=dl_url, unwrap=False, require_token=False)
         return resp.content if binary else resp.text
 
     # ---- commit (normal + LFS) ----
