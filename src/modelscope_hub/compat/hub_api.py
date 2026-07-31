@@ -7,12 +7,11 @@ wrapping the new ``modelscope_hub.HubApi``.
 from __future__ import annotations
 
 import os
+import time
 import warnings
 from collections import defaultdict
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
-
-import time
 
 from ..api import HubApi
 from ..constants import RepoType
@@ -33,7 +32,7 @@ logger = get_logger("compat")
 
 DEFAULT_DATASET_REVISION = "master"
 
-META_FILES_FORMAT = {'.json', '.csv', '.jsonl', '.tsv', '.py'}
+META_FILES_FORMAT = {".json", ".csv", ".jsonl", ".tsv", ".py"}
 
 
 class LegacyHubApi:
@@ -113,15 +112,15 @@ class LegacyHubApi:
         handled by the configured token/session.
         """
         files = self._api.list_repo_files(
-            model_id, RepoType.MODEL, revision=revision, recursive=recursive,
+            model_id,
+            RepoType.MODEL,
+            revision=revision,
+            recursive=recursive,
         )
         result = [{"Path": f.path, "Size": f.size} for f in files]
         if root:
             prefix = root.strip("/")
-            result = [
-                f for f in result
-                if f["Path"] == prefix or f["Path"].startswith(prefix + "/")
-            ]
+            result = [f for f in result if f["Path"] == prefix or str(f["Path"]).startswith(prefix + "/")]
         return result
 
     def create_repo(
@@ -137,7 +136,7 @@ class LegacyHubApi:
         create_default_config: bool = False,
         endpoint: str | None = None,
         **kwargs: Any,
-    ) -> "RepoInfo | None":
+    ) -> RepoInfo | None:
         """Create a repository (legacy signature)."""
         api = self._api
         if token or endpoint:
@@ -176,9 +175,7 @@ class LegacyHubApi:
             self.create_repo(model_id, repo_type="model", **kwargs)
         except (AuthenticationError, InvalidParameter) as e:
             if _is_auth_related(e):
-                raise ValueError(
-                    "Token does not exist, please login first."
-                ) from e
+                raise ValueError("Token does not exist, please login first.") from e
             raise
         ep = self._endpoint or self._api._config.endpoint
         return f"{ep}/models/{model_id}"
@@ -187,9 +184,7 @@ class LegacyHubApi:
         """Upload a model directory (legacy signature)."""
         # Pre-validate model_dir
         if not os.path.isdir(model_dir):
-            raise ValueError(
-                f"model_dir '{model_dir}' does not exist or is not a directory."
-            )
+            raise ValueError(f"model_dir '{model_dir}' does not exist or is not a directory.")
         config_files = ("configuration.json", "configuration.yaml", "configuration.yml")
         if not any(os.path.isfile(os.path.join(model_dir, f)) for f in config_files):
             logger.warning(
@@ -234,9 +229,7 @@ class LegacyHubApi:
             )
         except (AuthenticationError, InvalidParameter) as e:
             if _is_auth_related(e):
-                raise ValueError(
-                    "Token does not exist, please login first."
-                ) from e
+                raise ValueError("Token does not exist, please login first.") from e
             raise
 
     # ------------------------------------------------------------------
@@ -256,7 +249,9 @@ class LegacyHubApi:
         and ``MODELSCOPE_PREFER_AI_SITE`` env vars.
         """
         return self._api.resolve_endpoint_for_read(
-            repo_id, repo_type=repo_type or "model", token=token,
+            repo_id,
+            repo_type=repo_type or "model",
+            token=token,
         )
 
     def repo_exists(
@@ -292,7 +287,7 @@ class LegacyHubApi:
         page_number: int = 1,
         page_size: int = 10,
         **filters: Any,
-    ) -> "PagedResult[RepoInfo]":
+    ) -> PagedResult[RepoInfo]:
         """List repositories of the given type.
 
         Delegates to :meth:`HubApi.list_repos`.
@@ -313,7 +308,7 @@ class LegacyHubApi:
         repo_type: str | RepoType,
         *,
         revision: str | None = None,
-    ) -> "RepoInfo":
+    ) -> RepoInfo:
         """Get repository information.
 
         Delegates to :meth:`HubApi.get_repo`.
@@ -342,9 +337,7 @@ class LegacyHubApi:
                 local_dir=local_dir,
             )
         except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
-            raise _requests.exceptions.HTTPError(
-                str(e), response=getattr(e, 'response', None)
-            ) from e
+            raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
         return str(result)
 
     # ------------------------------------------------------------------
@@ -352,7 +345,9 @@ class LegacyHubApi:
     # ------------------------------------------------------------------
     def deploy_studio(self, studio_id: str, **kwargs: Any) -> dict:
         return self._api.deploy_repo(
-            studio_id, RepoType.STUDIO, payload=kwargs.get("payload"),
+            studio_id,
+            RepoType.STUDIO,
+            payload=kwargs.get("payload"),
         )
 
     def stop_studio(self, studio_id: str, **kwargs: Any) -> dict:
@@ -380,7 +375,9 @@ class LegacyHubApi:
     # Revision resolution
     # ------------------------------------------------------------------
     def get_model_branches_and_tags_details(
-        self, model_id: str, **kwargs: Any,
+        self,
+        model_id: str,
+        **kwargs: Any,
     ) -> tuple[list[dict], list[dict]]:
         """Get model branches and tags as two separate detail lists.
 
@@ -390,7 +387,9 @@ class LegacyHubApi:
         return self._api.legacy.list_revisions_detail(model_id, "model")
 
     def get_model_branches_and_tags(
-        self, model_id: str, **kwargs: Any,
+        self,
+        model_id: str,
+        **kwargs: Any,
     ) -> tuple[list[str], list[str]]:
         """Get model branch and tag names."""
         branches_detail, tags_detail = self.get_model_branches_and_tags_details(model_id)
@@ -453,9 +452,7 @@ class LegacyHubApi:
             if revision is None:
                 revision = "master"
             if revision not in all_branches and revision not in all_tags:
-                raise NotExistError(
-                    f"The model: {model_id} has no revision: {revision}"
-                )
+                raise NotExistError(f"The model: {model_id} has no revision: {revision}")
             detail = _find(tags_detail, revision) or _find(branches_detail, revision)
             return detail or {"Revision": revision}
 
@@ -468,16 +465,11 @@ class LegacyHubApi:
         if not tags_detail:
             if revision is None or revision == "master":
                 return _find(branches_detail, "master") or {"Revision": "master"}
-            raise NotExistError(
-                f"The model: {model_id} has no revision: {revision}"
-            )
+            raise NotExistError(f"The model: {model_id} has no revision: {revision}")
 
         # Has tags
         if revision is None:
-            candidates = [
-                t for t in tags_detail
-                if _created_at(t) <= release_timestamp
-            ]
+            candidates = [t for t in tags_detail if _created_at(t) <= release_timestamp]
             if candidates:
                 return max(candidates, key=_created_at)
             return _find(branches_detail, "master") or {"Revision": "master"}
@@ -488,10 +480,7 @@ class LegacyHubApi:
         if revision == "master":
             return _find(branches_detail, "master") or {"Revision": "master"}
         valid = ", ".join(all_tags)
-        raise NotExistError(
-            f"The model: {model_id} has no revision: {revision} "
-            f"(valid tags: {valid})"
-        )
+        raise NotExistError(f"The model: {model_id} has no revision: {revision} (valid tags: {valid})")
 
     def get_valid_revision(
         self,
@@ -502,7 +491,10 @@ class LegacyHubApi:
     ) -> str:
         """Resolve a model revision to a concrete revision string."""
         return self.get_valid_revision_detail(
-            model_id, revision=revision, cookies=cookies, endpoint=endpoint,
+            model_id,
+            revision=revision,
+            cookies=cookies,
+            endpoint=endpoint,
         )["Revision"]
 
     # ------------------------------------------------------------------
@@ -560,7 +552,7 @@ class LegacyHubApi:
         search: str | None = None,
         endpoint: str | None = None,
         token: str | None = None,
-    ) -> "PagedResult":
+    ) -> PagedResult:
         """List datasets owned by a user/org.
 
         .. deprecated::
@@ -637,7 +629,7 @@ class LegacyHubApi:
         *,
         endpoint: str | None = None,
         token: str | None = None,
-    ) -> "RepoInfo":
+    ) -> RepoInfo:
         """Get dataset information via OpenAPI.
 
         .. deprecated::
@@ -718,7 +710,8 @@ class LegacyHubApi:
             else:
                 raise ValueError(f"Invalid repo_id: {repo_id}")
             dataset_hub_id, _ = self.get_dataset_id_and_type(
-                dataset_name=_name, namespace=_owner, endpoint=endpoint, token=token)
+                dataset_name=_name, namespace=_owner, endpoint=endpoint, token=token
+            )
 
         params: dict[str, Any] = {
             "Revision": revision,
@@ -727,8 +720,7 @@ class LegacyHubApi:
             "PageNumber": page_number,
             "PageSize": page_size,
         }
-        resp = api.legacy._request(
-            "GET", f"datasets/{dataset_hub_id}/repo/tree", params=params)
+        resp = api.legacy._request("GET", f"datasets/{dataset_hub_id}/repo/tree", params=params)
         data = api.legacy._json_data(resp)
         if isinstance(data, dict):
             return data.get("Files") or []
@@ -777,27 +769,28 @@ class LegacyHubApi:
             api = HubApi(endpoint=endpoint or self._endpoint, token=token)
 
         params = {"Revision": revision}
-        resp = api.legacy._request(
-            "GET", f"datasets/{dataset_id}/repo/tree", params=params)
+        resp = api.legacy._request("GET", f"datasets/{dataset_id}/repo/tree", params=params)
         data = api.legacy._json_data(resp)
         if data is None:
             raise NotExistError(
                 f"The modelscope dataset [dataset_name = {dataset_name}, "
-                f"namespace = {namespace}, version = {revision}] does not exist")
+                f"namespace = {namespace}, version = {revision}] does not exist"
+            )
         file_list = data.get("Files") if isinstance(data, dict) else data
         if file_list is None:
             raise NotExistError(
                 f"The modelscope dataset [dataset_name = {dataset_name}, "
-                f"namespace = {namespace}, version = {revision}] does not exist")
+                f"namespace = {namespace}, version = {revision}] does not exist"
+            )
         return file_list
 
     @staticmethod
     def dump_datatype_file(dataset_type: int, meta_cache_dir: str) -> None:
         """Dump dataset type marker file for offline formation detection."""
         from modelscope.utils.constant import DatasetFormations
+
         ext = DatasetFormations.formation_mark_ext.value
-        dataset_type_file_path = os.path.join(
-            meta_cache_dir, f"{str(dataset_type)}{ext}")
+        dataset_type_file_path = os.path.join(meta_cache_dir, f"{str(dataset_type)}{ext}")
         with open(dataset_type_file_path, "w") as fp:
             fp.write("*** Automatically-generated file, do not modify ***")
 
@@ -872,12 +865,14 @@ class LegacyHubApi:
         if not file_name or not dataset_name or not namespace:
             raise ValueError("Args (file_name, dataset_name, namespace) cannot be empty!")
         ep = endpoint or self._endpoint or self._api._config.endpoint
-        params = urlencode({
-            "Source": "SDK",
-            "Revision": revision,
-            "FilePath": file_name,
-            "View": view,
-        })
+        params = urlencode(
+            {
+                "Source": "SDK",
+                "Revision": revision,
+                "FilePath": file_name,
+                "View": view,
+            }
+        )
         return f"{ep}/api/v1/datasets/{namespace}/{dataset_name}/repo?{params}"
 
     def get_dataset_file_url_origin(
@@ -891,10 +886,7 @@ class LegacyHubApi:
         """Get dataset file URL, resolving meta files to API URLs."""
         ep = endpoint or self._endpoint or self._api._config.endpoint
         if file_name and os.path.splitext(file_name)[-1] in META_FILES_FORMAT:
-            file_name = (
-                f"{ep}/api/v1/datasets/{namespace}/{dataset_name}/repo?"
-                f"Revision={revision}&FilePath={file_name}"
-            )
+            file_name = f"{ep}/api/v1/datasets/{namespace}/{dataset_name}/repo?Revision={revision}&FilePath={file_name}"
         return file_name
 
     def get_dataset_access_config(
@@ -1011,6 +1003,7 @@ def _repo_info_to_dict(info: Any) -> dict:
     """Convert a RepoInfo to a plain dict with legacy PascalCase keys."""
     if hasattr(info, "__dataclass_fields__"):
         from dataclasses import asdict
+
         raw = asdict(info)
     elif hasattr(info, "__dict__"):
         raw = {k: v for k, v in info.__dict__.items() if not k.startswith("_")}

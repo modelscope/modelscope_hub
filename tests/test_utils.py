@@ -191,10 +191,19 @@ class TestParseTimestamp:
         sh_tz = zoneinfo.ZoneInfo("Asia/Shanghai")
         assert dt.tzinfo == sh_tz
 
-    def test_datetime_passthrough(self):
+    def test_aware_datetime_normalized(self):
+        # parse_timestamp normalizes aware datetimes to the target timezone
+        # (astimezone always returns a new object): same instant, new tzinfo.
         original = datetime(2024, 6, 1, 12, 0, tzinfo=timezone.utc)
         result = parse_timestamp(original)
-        assert result is original
+        assert result == original
+        assert result.tzinfo == zoneinfo.ZoneInfo("Asia/Shanghai")
+
+    def test_naive_datetime_gets_target_tz(self):
+        naive = datetime(2024, 6, 1, 12, 0)
+        result = parse_timestamp(naive)
+        assert result.tzinfo == zoneinfo.ZoneInfo("Asia/Shanghai")
+        assert (result.year, result.hour) == (2024, 12)
 
     def test_invalid_string(self):
         with pytest.raises(ValueError):

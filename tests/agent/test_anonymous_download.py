@@ -13,6 +13,7 @@ All tests are offline: the HTTP session is mocked and the persisted
 credential loaders are patched with sentinels that must never leak into
 outgoing requests.
 """
+
 from __future__ import annotations
 
 import json
@@ -47,8 +48,10 @@ def _mock_response(json_data=None, content=b""):
 def anon_api(monkeypatch):
     """AgentApi with an explicitly empty token and persisted creds present."""
     monkeypatch.delenv("MODELSCOPE_API_TOKEN", raising=False)
-    with patch.object(HubConfig, "load_token", return_value=STORED), \
-            patch.object(HubConfig, "load_cookies", return_value=None):
+    with (
+        patch.object(HubConfig, "load_token", return_value=STORED),
+        patch.object(HubConfig, "load_cookies", return_value=None),
+    ):
         yield AgentApi(endpoint=ENDPOINT, token="", timeout=5)
 
 
@@ -70,12 +73,17 @@ class TestAnonymousReadOnly:
         assert cookies == {}
 
     def test_list_repo_files_sends_request_without_credentials(self, anon_api):
-        resp = _mock_response({
-            "Code": 200, "Success": True,
-            "Data": {"Trees": [
-                {"Path": "AGENTS.md", "Type": "blob", "Sha256": "abc", "IsLfs": False},
-            ]},
-        })
+        resp = _mock_response(
+            {
+                "Code": 200,
+                "Success": True,
+                "Data": {
+                    "Trees": [
+                        {"Path": "AGENTS.md", "Type": "blob", "Sha256": "abc", "IsLfs": False},
+                    ]
+                },
+            }
+        )
         with patch.object(anon_api._openapi._session, "request", return_value=resp) as m:
             files = anon_api.list_repo_files("someone", "public-repo")
         assert files == ["AGENTS.md"]
@@ -86,8 +94,7 @@ class TestAnonymousReadOnly:
     def test_download_repo_file_sends_request_without_credentials(self, anon_api):
         resp = _mock_response(content=b"# hello")
         with patch.object(anon_api._openapi._session, "request", return_value=resp) as m:
-            data = anon_api.download_repo_file(
-                "someone", "public-repo", "AGENTS.md", binary=True)
+            data = anon_api.download_repo_file("someone", "public-repo", "AGENTS.md", binary=True)
         assert data == b"# hello"
         auth, cookies = _sent_credentials(m)
         assert auth is None
@@ -97,13 +104,13 @@ class TestAnonymousReadOnly:
         """Server rejects anonymous /openapi metadata -> probe /api/v1 tree."""
         rejected = MagicMock(status_code=401, headers={})
         rejected.json.return_value = {
-            "success": False, "code": "InvalidAuthentication",
+            "success": False,
+            "code": "InvalidAuthentication",
             "message": "Invalid authentication: user not authenticated",
         }
         rejected.content = b'{"success": false}'
         tree_ok = _mock_response({"Code": 200, "Success": True, "Data": {"Trees": []}})
-        with patch.object(anon_api._openapi._session, "request",
-                          side_effect=[rejected, tree_ok]) as m:
+        with patch.object(anon_api._openapi._session, "request", side_effect=[rejected, tree_ok]) as m:
             info = anon_api.repo_info("someone", "public-repo")
         assert info == {}
         assert m.call_count == 2
@@ -112,23 +119,26 @@ class TestAnonymousReadOnly:
 
     def test_repo_info_fallback_returns_none_for_missing_repo(self, anon_api):
         rejected = MagicMock(status_code=401, headers={})
-        rejected.json.return_value = {"success": False, "code": "InvalidAuthentication",
-                                      "message": "user not authenticated"}
+        rejected.json.return_value = {
+            "success": False,
+            "code": "InvalidAuthentication",
+            "message": "user not authenticated",
+        }
         rejected.content = b'{"success": false}'
         missing = MagicMock(status_code=404, headers={})
-        missing.json.return_value = {"Code": 10025801007, "Message": "Agent不存在",
-                                     "Success": False}
+        missing.json.return_value = {"Code": 10025801007, "Message": "Agent不存在", "Success": False}
         missing.content = b'{"Success": false}'
-        with patch.object(anon_api._openapi._session, "request",
-                          side_effect=[rejected, missing]):
+        with patch.object(anon_api._openapi._session, "request", side_effect=[rejected, missing]):
             assert anon_api.repo_info("someone", "no-such-repo") is None
 
     def test_read_ops_attach_token_when_available(self, monkeypatch):
         """require_token=False must NOT strip credentials: with a token
         configured (private-repo scenario) read-only calls still send it."""
         monkeypatch.delenv("MODELSCOPE_API_TOKEN", raising=False)
-        with patch.object(HubConfig, "load_token", return_value=None), \
-                patch.object(HubConfig, "load_cookies", return_value=None):
+        with (
+            patch.object(HubConfig, "load_token", return_value=None),
+            patch.object(HubConfig, "load_cookies", return_value=None),
+        ):
             api = AgentApi(endpoint=ENDPOINT, token="ms-PRIVATE-TOKEN", timeout=5)
         resp = _mock_response(content=b"secret file")
         with patch.object(api._openapi._session, "request", return_value=resp) as m:

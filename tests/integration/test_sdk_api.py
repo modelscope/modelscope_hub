@@ -6,15 +6,15 @@ user-facing interfaces: download, upload, repo management, and OpenAPI queries.
 
 Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 """
+
 from __future__ import annotations
 
-import tempfile
 import warnings
 from pathlib import Path
 
 import pytest
 
-from modelscope_hub import HubApi, RepoType
+from modelscope_hub import HubApi
 from modelscope_hub.errors import NotExistError
 
 
@@ -49,7 +49,8 @@ class TestRepoManagement:
         repo_id = f"{test_owner}/{unique_repo_name}_ds"
         try:
             info = api.create_repo(
-                repo_id, "dataset",
+                repo_id,
+                "dataset",
                 visibility="private",
                 license="cc-by-4.0",
             )
@@ -96,28 +97,36 @@ class TestFileOperations:
 
     def test_upload_and_download_file(self, tmp_path):
         self.api.upload_file(
-            self.repo_id, "model",
+            self.repo_id,
+            "model",
             b"test content for sdk",
             "sdk_test.txt",
             commit_message="sdk test upload",
         )
         local = self.api.download_file(
-            self.repo_id, "model", "sdk_test.txt",
-            cache_dir=str(tmp_path), force=True,
+            self.repo_id,
+            "model",
+            "sdk_test.txt",
+            cache_dir=str(tmp_path),
+            force=True,
         )
         assert local.exists()
         assert local.read_text() == "test content for sdk"
 
     def test_download_file_to_local_dir(self, tmp_path):
         self.api.upload_file(
-            self.repo_id, "model",
+            self.repo_id,
+            "model",
             b"local dir content",
             "subdir/data.txt",
             commit_message="upload for local_dir test",
         )
         local = self.api.download_file(
-            self.repo_id, "model", "subdir/data.txt",
-            local_dir=str(tmp_path), force=True,
+            self.repo_id,
+            "model",
+            "subdir/data.txt",
+            local_dir=str(tmp_path),
+            force=True,
         )
         expected = tmp_path / "subdir" / "data.txt"
         assert local == expected
@@ -126,13 +135,23 @@ class TestFileOperations:
 
     def test_download_repo_snapshot(self, tmp_path):
         self.api.upload_file(
-            self.repo_id, "model", b"file1", "a.txt", commit_message="a",
+            self.repo_id,
+            "model",
+            b"file1",
+            "a.txt",
+            commit_message="a",
         )
         self.api.upload_file(
-            self.repo_id, "model", b"file2", "b.txt", commit_message="b",
+            self.repo_id,
+            "model",
+            b"file2",
+            "b.txt",
+            commit_message="b",
         )
         output = self.api.download_repo(
-            self.repo_id, "model", cache_dir=str(tmp_path),
+            self.repo_id,
+            "model",
+            cache_dir=str(tmp_path),
         )
         assert output.is_dir()
         files = [p.name for p in output.rglob("*") if p.is_file()]
@@ -141,23 +160,38 @@ class TestFileOperations:
 
     def test_download_repo_to_local_dir(self, tmp_path):
         self.api.upload_file(
-            self.repo_id, "model", b"x", "x.txt", commit_message="x",
+            self.repo_id,
+            "model",
+            b"x",
+            "x.txt",
+            commit_message="x",
         )
         output = self.api.download_repo(
-            self.repo_id, "model", local_dir=str(tmp_path / "out"),
+            self.repo_id,
+            "model",
+            local_dir=str(tmp_path / "out"),
         )
         assert output == tmp_path / "out"
         assert (tmp_path / "out" / "x.txt").exists()
 
     def test_download_repo_with_patterns(self, tmp_path):
         self.api.upload_file(
-            self.repo_id, "model", b"bin", "weights.bin", commit_message="bin",
+            self.repo_id,
+            "model",
+            b"bin",
+            "weights.bin",
+            commit_message="bin",
         )
         self.api.upload_file(
-            self.repo_id, "model", b"json", "config.json", commit_message="json",
+            self.repo_id,
+            "model",
+            b"json",
+            "config.json",
+            commit_message="json",
         )
         output = self.api.download_repo(
-            self.repo_id, "model",
+            self.repo_id,
+            "model",
             cache_dir=str(tmp_path),
             allow_patterns=["*.json"],
         )
@@ -167,7 +201,11 @@ class TestFileOperations:
 
     def test_list_repo_files(self):
         self.api.upload_file(
-            self.repo_id, "model", b"data", "list_test.txt", commit_message="list",
+            self.repo_id,
+            "model",
+            b"data",
+            "list_test.txt",
+            commit_message="list",
         )
         files = self.api.list_repo_files(self.repo_id, "model")
         paths = [f.path for f in files]
@@ -176,10 +214,17 @@ class TestFileOperations:
     @pytest.mark.xfail(reason="Server restricts file deletion to cookie-based session auth")
     def test_delete_files(self):
         self.api.upload_file(
-            self.repo_id, "model", b"del", "to_delete.txt", commit_message="del",
+            self.repo_id,
+            "model",
+            b"del",
+            "to_delete.txt",
+            commit_message="del",
         )
         self.api.delete_files(
-            self.repo_id, "model", ["to_delete.txt"], commit_message="cleanup",
+            self.repo_id,
+            "model",
+            ["to_delete.txt"],
+            commit_message="cleanup",
         )
         files = self.api.list_repo_files(self.repo_id, "model")
         paths = [f.path for f in files]
@@ -192,7 +237,8 @@ class TestFileOperations:
         (folder / "f2.txt").write_text("two")
 
         self.api.upload_folder(
-            self.repo_id, "model",
+            self.repo_id,
+            "model",
             str(folder),
             path_in_repo="",
             commit_message="folder upload",
@@ -213,7 +259,11 @@ class TestVersioning:
         self.api = api
         api.create_repo(self.repo_id, "model", visibility="private")
         api.upload_file(
-            self.repo_id, "model", b"init", "init.txt", commit_message="initial",
+            self.repo_id,
+            "model",
+            b"init",
+            "init.txt",
+            commit_message="initial",
         )
         yield
         with warnings.catch_warnings():
@@ -288,9 +338,11 @@ class TestCache:
 
     def test_download_then_scan_cache(self, api, tmp_path):
         api.download_file(
-            "Qwen/Qwen2.5-0.5B", "model",
+            "Qwen/Qwen2.5-0.5B",
+            "model",
             "config.json",
-            cache_dir=str(tmp_path), force=True,
+            cache_dir=str(tmp_path),
+            force=True,
         )
         report = api.scan_cache(cache_dir=str(tmp_path))
         assert report.total_repos >= 1
@@ -298,9 +350,11 @@ class TestCache:
 
     def test_clear_cache_by_type(self, api, tmp_path):
         api.download_file(
-            "Qwen/Qwen2.5-0.5B", "model",
+            "Qwen/Qwen2.5-0.5B",
+            "model",
             "config.json",
-            cache_dir=str(tmp_path), force=True,
+            cache_dir=str(tmp_path),
+            force=True,
         )
         freed = api.clear_cache(cache_dir=str(tmp_path), repo_type="model")
         assert freed >= 0
@@ -387,7 +441,6 @@ class TestCompatSDK:
 
     def test_get_valid_revision_nonexistent_raises(self, test_token, test_endpoint):
         from modelscope_hub.compat import LegacyHubApi
-        from modelscope_hub.errors import NotExistError
 
         legacy = LegacyHubApi(token=test_token, endpoint=test_endpoint)
         with pytest.raises(NotExistError):

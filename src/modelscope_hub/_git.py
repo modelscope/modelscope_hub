@@ -73,8 +73,7 @@ class GitCommand:
         result = subprocess.run(
             cmd,
             cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             text=True,
             env=env,
         )
@@ -132,8 +131,7 @@ class GitCommand:
             # Clone may succeed but hook fails — check if .git exists
             if (target_dir / ".git").is_dir():
                 logger.warning(
-                    "Clone exited non-zero but repository exists at %s. "
-                    "Likely caused by a post-clone hook.",
+                    "Clone exited non-zero but repository exists at %s. Likely caused by a post-clone hook.",
                     target_dir,
                 )
             else:

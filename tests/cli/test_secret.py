@@ -5,6 +5,7 @@ Includes:
 - Execution tests: mock HubApi for secret CRUD logic
 - Remote tests: real API lifecycle (existing)
 """
+
 from __future__ import annotations
 
 import warnings
@@ -47,15 +48,31 @@ class TestSecretAddParser:
             parser.parse_args(["secret", "add", "o/r"])
 
     def test_explicit_repo_type(self, parser):
-        args = parser.parse_args([
-            "secret", "add", "o/r", "K", "V", "--repo-type", "studio",
-        ])
+        args = parser.parse_args(
+            [
+                "secret",
+                "add",
+                "o/r",
+                "K",
+                "V",
+                "--repo-type",
+                "studio",
+            ]
+        )
         assert args.repo_type == "studio"
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "secret", "add", "o/r", "K", "V", "--token", "tk",
-        ])
+        args = parser.parse_args(
+            [
+                "secret",
+                "add",
+                "o/r",
+                "K",
+                "V",
+                "--token",
+                "tk",
+            ]
+        )
         assert args.subcmd_token == "tk"
 
 

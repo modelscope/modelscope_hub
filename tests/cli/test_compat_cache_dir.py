@@ -84,7 +84,7 @@ class TestSnapshotDownloadCacheCompat:
         mock_api.download_repo.return_value = "/tmp/cache/models/damo--bert/snapshots/master"
         MockHubApi.return_value = mock_api
 
-        result = snapshot_download(model_id="damo/bert", cache_dir="/tmp/cache")
+        snapshot_download(model_id="damo/bert", cache_dir="/tmp/cache")
 
         mock_api.download_repo.assert_called_once()
         call_kwargs = mock_api.download_repo.call_args[1]
@@ -101,7 +101,7 @@ class TestSnapshotDownloadCacheCompat:
         mock_api.download_repo.return_value = "/custom/dir"
         MockHubApi.return_value = mock_api
 
-        result = snapshot_download(model_id="damo/bert", local_dir="/custom/dir")
+        snapshot_download(model_id="damo/bert", local_dir="/custom/dir")
 
         mock_api.download_repo.assert_called_once()
         call_kwargs = mock_api.download_repo.call_args[1]
@@ -117,8 +117,9 @@ class TestSnapshotDownloadCacheCompat:
         mock_api.download_repo.return_value = "/data/hub/datasets/my_org--dataset1/snapshots/master"
         MockHubApi.return_value = mock_api
 
-        result = dataset_snapshot_download(
-            dataset_id="my_org/dataset1", cache_dir="/data/hub",
+        dataset_snapshot_download(
+            dataset_id="my_org/dataset1",
+            cache_dir="/data/hub",
         )
 
         mock_api.download_repo.assert_called_once()
@@ -144,7 +145,7 @@ class TestFileDownloadCacheCompat:
         mock_api.download_file.return_value = "/data/hub/models/qwen--chat/snapshots/master/model.bin"
         MockHubApi.return_value = mock_api
 
-        result = model_file_download("qwen/chat", "model.bin", cache_dir="/data/hub")
+        model_file_download("qwen/chat", "model.bin", cache_dir="/data/hub")
 
         mock_api.download_file.assert_called_once()
         call_kwargs = mock_api.download_file.call_args[1]
@@ -161,8 +162,10 @@ class TestFileDownloadCacheCompat:
         mock_api.download_file.return_value = "/my/dir/model.bin"
         MockHubApi.return_value = mock_api
 
-        result = model_file_download(
-            "qwen/chat", "model.bin", local_dir="/my/dir",
+        model_file_download(
+            "qwen/chat",
+            "model.bin",
+            local_dir="/my/dir",
         )
 
         mock_api.download_file.assert_called_once()
@@ -179,8 +182,10 @@ class TestFileDownloadCacheCompat:
         mock_api.download_file.return_value = "/data/hub/datasets/org--ds/snapshots/master/train.csv"
         MockHubApi.return_value = mock_api
 
-        result = dataset_file_download(
-            "org/ds", "train.csv", cache_dir="/data/hub",
+        dataset_file_download(
+            "org/ds",
+            "train.csv",
+            cache_dir="/data/hub",
         )
 
         mock_api.download_file.assert_called_once()
@@ -206,7 +211,7 @@ class TestStandardCacheLayout:
         mock_api.download_file.return_value = "/default/cache/models/owner--name/snapshots/master/README.md"
         MockHubApi.return_value = mock_api
 
-        result = model_file_download("owner/name", "README.md")
+        model_file_download("owner/name", "README.md")
 
         mock_api.download_file.assert_called_once()
         call_kwargs = mock_api.download_file.call_args[1]
@@ -223,7 +228,7 @@ class TestStandardCacheLayout:
         mock_api.download_repo.return_value = "/default/cache/models/org--model/snapshots/master"
         MockHubApi.return_value = mock_api
 
-        result = snapshot_download(model_id="org/model")
+        snapshot_download(model_id="org/model")
 
         mock_api.download_repo.assert_called_once()
         call_kwargs = mock_api.download_repo.call_args[1]

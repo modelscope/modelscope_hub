@@ -19,13 +19,13 @@ import importlib.metadata
 import logging
 import sys
 from argparse import SUPPRESS
-from typing import Sequence
+from collections.abc import Sequence
 
 from .. import __version__
 from ..constants import MODELSCOPE_ASCII
-from ..errors import HubError, InvalidParameter, NetworkError, NotSupportedError
-from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
+from ..errors import HubError, InvalidParameter, NotSupportedError
 from .agent import AgentCommand
+from .base import CLICommand, error, info
 from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
 from .download import DownloadCommand
@@ -86,7 +86,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="API endpoint (overrides MODELSCOPE_ENDPOINT).",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="Enable verbose (DEBUG) logging.",
     )
@@ -125,7 +126,6 @@ def _register_scan_cache_alias(subparsers) -> None:
 
 def _register_clear_cache_alias(subparsers) -> None:
     """``ms-hub clear-cache`` → alias for ``ms-hub cache clear``."""
-    from ..constants import RepoType
 
     p = subparsers.add_parser("clear-cache", help="[Alias] Remove cached files.")
     group = p.add_mutually_exclusive_group()
@@ -134,7 +134,6 @@ def _register_clear_cache_alias(subparsers) -> None:
     p.add_argument("--cache-dir", dest="cache_dir", default=None, help="Override cache directory.")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
     p.set_defaults(_command=_ClearCacheAlias)
-
 
 
 class _ScanCacheAlias(CLICommand):
@@ -178,10 +177,8 @@ class _ClearCacheAlias(CLICommand):
 # ---------------------------------------------------------------------------
 def _discover_plugins(subparsers) -> None:
     """Discover CLI plugins registered via entry_points."""
-    try:
-        eps = importlib.metadata.entry_points(group=_PLUGIN_GROUP)
-    except TypeError:
-        eps = importlib.metadata.entry_points().get(_PLUGIN_GROUP, [])
+    # ``entry_points(group=...)`` is available on all supported Pythons (3.10+).
+    eps = importlib.metadata.entry_points(group=_PLUGIN_GROUP)
 
     for ep in eps:
         try:
@@ -191,9 +188,7 @@ def _discover_plugins(subparsers) -> None:
             elif hasattr(cmd_cls, "define_args"):
                 cmd_cls.define_args(subparsers)
         except Exception as exc:
-            logging.getLogger(__name__).debug(
-                "Failed to load CLI plugin %r: %s", ep.name, exc
-            )
+            logging.getLogger(__name__).debug("Failed to load CLI plugin %r: %s", ep.name, exc)
 
 
 # ---------------------------------------------------------------------------

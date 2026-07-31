@@ -5,16 +5,16 @@ Includes:
 - Execution tests: mock HubApi for file/snapshot download logic
 - Remote tests: real API file download (existing)
 """
+
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from modelscope_hub.cli.download import DownloadCommand
-
-from pathlib import Path
 
 from .conftest import run_cli
 
@@ -85,9 +85,16 @@ class TestDownloadParser:
         assert args.allow_patterns == ["*.bin", "*.json"]
 
     def test_include_repeated(self, parser):
-        args = parser.parse_args([
-            "download", "o/r", "--include", "*.bin", "--include", "*.json",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "o/r",
+                "--include",
+                "*.bin",
+                "--include",
+                "*.json",
+            ]
+        )
         assert "*.bin" in args.allow_patterns
         assert "*.json" in args.allow_patterns
 
@@ -100,26 +107,42 @@ class TestDownloadParser:
         assert args.ignore_patterns == ["*.bin", "*.gguf"]
 
     def test_include_and_exclude(self, parser):
-        args = parser.parse_args([
-            "download", "o/r",
-            "--include", "*.safetensors",
-            "--exclude", "*.bin", "*.gguf",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "o/r",
+                "--include",
+                "*.safetensors",
+                "--exclude",
+                "*.bin",
+                "*.gguf",
+            ]
+        )
         assert args.allow_patterns == ["*.safetensors"]
         assert args.ignore_patterns == ["*.bin", "*.gguf"]
 
     def test_all_options_combined(self, parser):
-        args = parser.parse_args([
-            "download", "Qwen/Qwen3-0.6B",
-            "--repo-type", "model",
-            "--revision", "main",
-            "--cache-dir", "/cache",
-            "--local-dir", "./out",
-            "--max-workers", "16",
-            "--include", "*.safetensors",
-            "--exclude", "*.bin",
-            "--force",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "Qwen/Qwen3-0.6B",
+                "--repo-type",
+                "model",
+                "--revision",
+                "main",
+                "--cache-dir",
+                "/cache",
+                "--local-dir",
+                "./out",
+                "--max-workers",
+                "16",
+                "--include",
+                "*.safetensors",
+                "--exclude",
+                "*.bin",
+                "--force",
+            ]
+        )
         assert args.repo_id == "Qwen/Qwen3-0.6B"
         assert args.repo_type == "model"
         assert args.revision == "main"
@@ -161,10 +184,17 @@ class TestDownloadLegacyParser:
         assert args.cache_dir_legacy == "/cache"
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "download", "--model", "o/r",
-            "--token", "ms-xxx", "--endpoint", "https://custom.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "--model",
+                "o/r",
+                "--token",
+                "ms-xxx",
+                "--endpoint",
+                "https://custom.cn",
+            ]
+        )
         assert args.subcmd_token == "ms-xxx"
         assert args.subcmd_endpoint == "https://custom.cn"
 
@@ -185,9 +215,15 @@ class TestDownloadExecute:
         )
 
     def test_single_file(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "download", "owner/repo", "config.json", "--cache-dir", "/tmp/cache",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "owner/repo",
+                "config.json",
+                "--cache-dir",
+                "/tmp/cache",
+            ]
+        )
         p1, p2 = self._patch_download_api(mock_api)
         with p1, p2:
             DownloadCommand(args).execute()
@@ -199,9 +235,14 @@ class TestDownloadExecute:
         assert "config.json" in out
 
     def test_multiple_files(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "download", "owner/repo", "a.bin", "b.json",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "owner/repo",
+                "a.bin",
+                "b.json",
+            ]
+        )
         p1, p2 = self._patch_download_api(mock_api)
         with p1, p2:
             DownloadCommand(args).execute()
@@ -217,11 +258,16 @@ class TestDownloadExecute:
         assert "Snapshot ready" in out
 
     def test_snapshot_with_patterns(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "download", "owner/repo",
-            "--include", "*.safetensors",
-            "--exclude", "*.bin",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "owner/repo",
+                "--include",
+                "*.safetensors",
+                "--exclude",
+                "*.bin",
+            ]
+        )
         p1, p2 = self._patch_download_api(mock_api)
         with p1, p2:
             DownloadCommand(args).execute()
@@ -237,9 +283,14 @@ class TestDownloadExecute:
         assert mock_api.download_file.call_args.kwargs["force"] is True
 
     def test_dataset_repo_type(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "download", "org/data", "--repo-type", "dataset",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "org/data",
+                "--repo-type",
+                "dataset",
+            ]
+        )
         p1, p2 = self._patch_download_api(mock_api)
         with p1, p2:
             DownloadCommand(args).execute()
@@ -325,15 +376,17 @@ class TestDownloadLifecycle:
         api.legacy.create_commit(
             repo_id=cls.repo_id,
             repo_type="model",
-            operations=[{
-                "action": "create",
-                "path": "test_data.txt",
-                "type": "normal",
-                "size": len(file_bytes),
-                "sha256": "",
-                "content": content_b64,
-                "encoding": "base64",
-            }],
+            operations=[
+                {
+                    "action": "create",
+                    "path": "test_data.txt",
+                    "type": "normal",
+                    "size": len(file_bytes),
+                    "sha256": "",
+                    "content": content_b64,
+                    "encoding": "base64",
+                }
+            ],
             commit_message="Add test file",
             revision="master",
         )

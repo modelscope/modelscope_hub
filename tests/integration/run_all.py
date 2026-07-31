@@ -18,6 +18,7 @@ The tests are organized by operation type:
     test_remote_file_ops.py — File upload/download/delete with cleanup
     test_dataset_ops.py     — Dataset-specific file listing and download
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -34,11 +35,14 @@ def main() -> int:
     quick = "--quick" in args
 
     cmd = [
-        sys.executable, "-m", "pytest",
+        sys.executable,
+        "-m",
+        "pytest",
         str(_TESTS_DIR),
         "-v",
         "--tb=short",
-        "-m", "remote",
+        "-m",
+        "remote",
     ]
 
     if dry_run:

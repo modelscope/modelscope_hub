@@ -52,9 +52,7 @@ def encode_media_to_base64(media_file_path: str | os.PathLike) -> str:
     if mime_type is None:
         mime_type = _FALLBACK_MIME_TYPES.get(path.suffix.lower())
     if mime_type is None:
-        raise ValueError(
-            f"Cannot determine MIME type for file: {path}"
-        )
+        raise ValueError(f"Cannot determine MIME type for file: {path}")
 
     encoded = base64.b64encode(path.read_bytes()).decode("ascii")
     return f"data:{mime_type};base64,{encoded}"

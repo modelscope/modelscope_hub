@@ -10,7 +10,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  test-gate:
+    # Release gate: the mock-mode suite must pass before anything is built
+    # or uploaded. Same environment shape as downstream distro sandboxes.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MODELSCOPE_RUN_REMOTE_TESTS: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run unit tests (mock mode)
+        run: pytest tests/ --ignore=tests/integration -q
+
   build-n-publish:
+    needs: test-gate
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4

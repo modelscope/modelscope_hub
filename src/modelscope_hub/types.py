@@ -7,10 +7,11 @@ client forward-compatible while still benefiting from static typing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Generic, Mapping, Type, TypedDict, TypeVar
+from typing import Any, Generic, TypedDict, TypeVar
 
 from .constants import RepoType, Visibility
 
@@ -40,7 +41,7 @@ class _FromDictMixin:
     """Adds tolerant ``from_dict`` construction to a dataclass."""
 
     @classmethod
-    def from_dict(cls: Type[_TDataclass], data: Mapping[str, Any] | None) -> _TDataclass:
+    def from_dict(cls: type[_TDataclass], data: Mapping[str, Any] | None) -> _TDataclass:
         if not data:
             return cls()  # type: ignore[call-arg]
         known = {f.name for f in fields(cls)}  # type: ignore[arg-type]
@@ -213,7 +214,7 @@ class CachedRepoInfo(_FromDictMixin):
     revision: str | None = None
     size_on_disk: int = 0
     nb_files: int = 0
-    last_accessed: datetime | str | int | None = None
+    last_accessed: datetime | str | int | float | None = None
     local_path: str | None = None
 
     def __post_init__(self) -> None:
