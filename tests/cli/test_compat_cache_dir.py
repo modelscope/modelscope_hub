@@ -8,10 +8,18 @@ CLI ``ms download`` behavior.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# ``modelscope_hub.compat.snapshot_download`` (the submodule) is shadowed by
+# the same-named function re-exported in ``compat/__init__``. String targets
+# like ``patch("modelscope_hub.compat.snapshot_download.HubApi")`` resolve to
+# the *function* on Python 3.10 (mock walks attributes before importing
+# submodules), so grab the real module object and use ``patch.object``.
+_snapshot_download_mod = importlib.import_module("modelscope_hub.compat.snapshot_download")
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +82,7 @@ class TestResolveLegacyPaths:
 class TestSnapshotDownloadCacheCompat:
     """Verify path conversion propagates correctly to download_repo."""
 
-    @patch("modelscope_hub.compat.snapshot_download.HubApi")
+    @patch.object(_snapshot_download_mod, "HubApi")
     def test_cache_dir_passed_through(self, MockHubApi):
         """cache_dir without local_dir -> download_repo gets cache_dir directly."""
         from modelscope_hub.compat.snapshot_download import snapshot_download
@@ -91,7 +99,7 @@ class TestSnapshotDownloadCacheCompat:
         assert call_kwargs["cache_dir"] == "/tmp/cache"
         assert call_kwargs["local_dir"] is None
 
-    @patch("modelscope_hub.compat.snapshot_download.HubApi")
+    @patch.object(_snapshot_download_mod, "HubApi")
     def test_local_dir_explicit_not_overridden(self, MockHubApi):
         """Explicit local_dir is passed through without modification."""
         from modelscope_hub.compat.snapshot_download import snapshot_download
@@ -107,7 +115,7 @@ class TestSnapshotDownloadCacheCompat:
         call_kwargs = mock_api.download_repo.call_args[1]
         assert call_kwargs["local_dir"] == "/custom/dir"
 
-    @patch("modelscope_hub.compat.snapshot_download.HubApi")
+    @patch.object(_snapshot_download_mod, "HubApi")
     def test_dataset_snapshot_download_cache_dir_passthrough(self, MockHubApi):
         """dataset_snapshot_download passes cache_dir through."""
         from modelscope_hub.compat.snapshot_download import dataset_snapshot_download
@@ -218,7 +226,7 @@ class TestStandardCacheLayout:
         assert call_kwargs["cache_dir"] is None
         assert call_kwargs["local_dir"] is None
 
-    @patch("modelscope_hub.compat.snapshot_download.HubApi")
+    @patch.object(_snapshot_download_mod, "HubApi")
     def test_snapshot_no_args_uses_standard_cache(self, MockHubApi):
         """snapshot_download with no explicit dirs -> standard cache layout."""
         from modelscope_hub.compat.snapshot_download import snapshot_download
