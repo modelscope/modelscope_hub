@@ -17,6 +17,7 @@ import os
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .constants import (
     CONFIG_DIR_NAME,
@@ -52,18 +53,13 @@ class HubConfig:
 
     endpoint: str | None = None  # type: ignore[assignment]  # sentinel; always str after __post_init__
     cache_dir: Path = field(
-        default_factory=lambda: _expand(
-            os.environ.get(ENV_CACHE) or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME
-        )
+        default_factory=lambda: _expand(os.environ.get(ENV_CACHE) or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME)
     )
-    config_dir: Path = field(
-        default_factory=lambda: _expand(
-            os.environ.get(ENV_HOME) or Path.home() / CONFIG_DIR_NAME
-        )
-    )
+    config_dir: Path = field(default_factory=lambda: _expand(os.environ.get(ENV_HOME) or Path.home() / CONFIG_DIR_NAME))
     token: str | None = None
     _logged_out: bool = field(default=False, init=False, repr=False)
     _endpoint_overridden: bool = field(default=False, init=False, repr=False)
+    _token_overridden: bool = field(default=False, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -79,8 +75,7 @@ class HubConfig:
             domain = os.environ.get(ENV_MODELSCOPE_DOMAIN, "").strip()
             if domain:
                 warnings.warn(
-                    "Environment variable MODELSCOPE_DOMAIN is deprecated, "
-                    "use MODELSCOPE_ENDPOINT instead.",
+                    "Environment variable MODELSCOPE_DOMAIN is deprecated, use MODELSCOPE_ENDPOINT instead.",
                     FutureWarning,
                     stacklevel=2,
                 )
@@ -93,9 +88,18 @@ class HubConfig:
         # Ensure endpoint always has a scheme
         if self.endpoint and not self.endpoint.startswith(("http://", "https://")):
             self.endpoint = f"https://{self.endpoint}"
-        self.endpoint = self.endpoint.rstrip("/")
-        if self.token is None:
-            self.token = os.environ.get(ENV_TOKEN) or self.load_token()
+        self.endpoint = (self.endpoint or DEFAULT_ENDPOINT).rstrip("/")
+        # Token precedence: explicit arg > MODELSCOPE_API_TOKEN env var >
+        # persisted credential. An explicitly provided value wins even when
+        # empty ("" means "use no token"), so an explicit override never
+        # silently falls back to the stored credential.
+        if self.token is not None:
+            self._token_overridden = True
+        elif ENV_TOKEN in os.environ:
+            self.token = os.environ[ENV_TOKEN]
+            self._token_overridden = True
+        else:
+            self.token = self.load_token()
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -128,22 +132,36 @@ class HubConfig:
 
         import time
         from http.cookiejar import Cookie
-        from requests.cookies import RequestsCookieJar
         from urllib.parse import urlparse
 
+        from requests.cookies import RequestsCookieJar
+
         token = token.strip()
-        domain = urlparse(self.endpoint).hostname or "modelscope.cn"
+        domain = urlparse(self.endpoint or DEFAULT_ENDPOINT).hostname or "modelscope.cn"
         expires = int(time.time()) + 30 * 24 * 3600  # 30 days
 
         jar = RequestsCookieJar()
-        jar.set_cookie(Cookie(
-            version=0, name="m_session_id", value=token,
-            port=None, port_specified=False,
-            domain=domain, domain_specified=True, domain_initial_dot=False,
-            path="/", path_specified=True,
-            secure=False, expires=expires, discard=False,
-            comment=None, comment_url=None, rest={}, rfc2109=False,
-        ))
+        jar.set_cookie(
+            Cookie(
+                version=0,
+                name="m_session_id",
+                value=token,
+                port=None,
+                port_specified=False,
+                domain=domain,
+                domain_specified=True,
+                domain_initial_dot=False,
+                path="/",
+                path_specified=True,
+                secure=False,
+                expires=expires,
+                discard=False,
+                comment=None,
+                comment_url=None,
+                rest={},
+                rfc2109=False,
+            )
+        )
         self.save_cookies(jar)
         self.token = token
         self._logged_out = False
@@ -191,7 +209,7 @@ class HubConfig:
             pickle.dump(cookies, f)
         path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
-    def load_cookies(self) -> object | None:
+    def load_cookies(self) -> Any:
         """Load saved cookies, returning None if absent or expired."""
         import pickle
 

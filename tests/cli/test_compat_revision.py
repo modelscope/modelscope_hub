@@ -123,14 +123,17 @@ class TestDevMode:
     def test_dev_mode_defaults_to_master(self):
         api = _make_api([_make_rev("master")], [_make_rev("v1.0")])
         detail = api.get_valid_revision_detail(
-            "o/m", release_timestamp=self.FAR_FUTURE,
+            "o/m",
+            release_timestamp=self.FAR_FUTURE,
         )
         assert detail["Revision"] == "master"
 
     def test_dev_mode_explicit_tag(self):
         api = _make_api([_make_rev("master")], [_make_rev("v2.0")])
         detail = api.get_valid_revision_detail(
-            "o/m", revision="v2.0", release_timestamp=self.FAR_FUTURE,
+            "o/m",
+            revision="v2.0",
+            release_timestamp=self.FAR_FUTURE,
         )
         assert detail["Revision"] == "v2.0"
 
@@ -138,7 +141,9 @@ class TestDevMode:
         api = _make_api([_make_rev("master")], [])
         with pytest.raises(NotExistError):
             api.get_valid_revision_detail(
-                "o/m", revision="nope", release_timestamp=self.FAR_FUTURE,
+                "o/m",
+                revision="nope",
+                release_timestamp=self.FAR_FUTURE,
             )
 
 
@@ -154,21 +159,26 @@ class TestReleaseMode:
             [_make_rev("v1.0", 500)],
         )
         detail = api.get_valid_revision_detail(
-            "o/m", revision="dev", release_timestamp=self.RELEASE_TS,
+            "o/m",
+            revision="dev",
+            release_timestamp=self.RELEASE_TS,
         )
         assert detail["Revision"] == "dev"
 
     def test_no_tags_defaults_to_master(self):
         api = _make_api([_make_rev("master", 100)], [])
         detail = api.get_valid_revision_detail(
-            "o/m", release_timestamp=self.RELEASE_TS,
+            "o/m",
+            release_timestamp=self.RELEASE_TS,
         )
         assert detail["Revision"] == "master"
 
     def test_no_tags_explicit_master(self):
         api = _make_api([_make_rev("master", 100)], [])
         detail = api.get_valid_revision_detail(
-            "o/m", revision="master", release_timestamp=self.RELEASE_TS,
+            "o/m",
+            revision="master",
+            release_timestamp=self.RELEASE_TS,
         )
         assert detail["Revision"] == "master"
 
@@ -176,7 +186,9 @@ class TestReleaseMode:
         api = _make_api([_make_rev("master")], [])
         with pytest.raises(NotExistError):
             api.get_valid_revision_detail(
-                "o/m", revision="v1.0", release_timestamp=self.RELEASE_TS,
+                "o/m",
+                revision="v1.0",
+                release_timestamp=self.RELEASE_TS,
             )
 
     def test_auto_selects_latest_tag_before_release(self):
@@ -189,7 +201,8 @@ class TestReleaseMode:
             ],
         )
         detail = api.get_valid_revision_detail(
-            "o/m", release_timestamp=self.RELEASE_TS,
+            "o/m",
+            release_timestamp=self.RELEASE_TS,
         )
         # v3.0 (1500) is the newest with CreatedAt <= 2000
         assert detail["Revision"] == "v3.0"
@@ -200,7 +213,8 @@ class TestReleaseMode:
             [_make_rev("v1.0", 3000)],
         )
         detail = api.get_valid_revision_detail(
-            "o/m", release_timestamp=self.RELEASE_TS,
+            "o/m",
+            release_timestamp=self.RELEASE_TS,
         )
         assert detail["Revision"] == "master"
 
@@ -210,7 +224,9 @@ class TestReleaseMode:
             [_make_rev("v1.0", 500), _make_rev("v2.0", 1000)],
         )
         detail = api.get_valid_revision_detail(
-            "o/m", revision="v1.0", release_timestamp=self.RELEASE_TS,
+            "o/m",
+            revision="v1.0",
+            release_timestamp=self.RELEASE_TS,
         )
         assert detail["Revision"] == "v1.0"
 
@@ -221,7 +237,9 @@ class TestReleaseMode:
         )
         with pytest.raises(NotExistError, match="valid tags"):
             api.get_valid_revision_detail(
-                "o/m", revision="v999", release_timestamp=self.RELEASE_TS,
+                "o/m",
+                revision="v999",
+                release_timestamp=self.RELEASE_TS,
             )
 
     def test_explicit_master_with_tags_allowed(self):
@@ -231,6 +249,8 @@ class TestReleaseMode:
             [_make_rev("v1.0", 500)],
         )
         detail = api.get_valid_revision_detail(
-            "o/m", revision="master", release_timestamp=self.RELEASE_TS,
+            "o/m",
+            revision="master",
+            release_timestamp=self.RELEASE_TS,
         )
         assert detail["Revision"] == "master"

@@ -7,9 +7,8 @@ dedicated test coverage.
 
 Uses a known small public dataset — no auth required for read operations.
 """
-from __future__ import annotations
 
-from pathlib import Path
+from __future__ import annotations
 
 import pytest
 
@@ -70,10 +69,13 @@ class TestDatasetCLI:
 
         exit_code, out, err = run_cli(
             [
-                "download", PUBLIC_DATASET_ID,
+                "download",
+                PUBLIC_DATASET_ID,
                 PUBLIC_DATASET_SMALL_FILE,
-                "--repo-type", "dataset",
-                "--local-dir", str(tmp_path),
+                "--repo-type",
+                "dataset",
+                "--local-dir",
+                str(tmp_path),
             ],
             endpoint=test_endpoint,
         )
@@ -86,10 +88,14 @@ class TestDatasetCLI:
 
         exit_code, out, err = run_cli(
             [
-                "download", PUBLIC_DATASET_ID,
-                "--repo-type", "dataset",
-                "--local-dir", str(tmp_path),
-                "--include", "*.json",
+                "download",
+                PUBLIC_DATASET_ID,
+                "--repo-type",
+                "dataset",
+                "--local-dir",
+                str(tmp_path),
+                "--include",
+                "*.json",
             ],
             endpoint=test_endpoint,
         )

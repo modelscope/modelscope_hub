@@ -1,4 +1,10 @@
-"""Entry point for the ``modelscope`` / ``ms`` console scripts.
+"""Entry point for the ``modelscope-hub`` / ``ms-hub`` console scripts.
+
+This module is also reused by the umbrella ``modelscope`` package for its
+``modelscope`` / ``ms`` commands. Because a single parser serves all four
+aliases, the program name is derived from ``sys.argv[0]`` (rather than
+hard-coded) so help/usage output shows whichever command was actually
+invoked.
 
 Subcommands live in dedicated modules and are wired in via their
 :meth:`CLICommand.register` static method. :func:`run_cmd` is intentionally
@@ -13,13 +19,13 @@ import importlib.metadata
 import logging
 import sys
 from argparse import SUPPRESS
-from typing import Sequence
+from collections.abc import Sequence
 
 from .. import __version__
 from ..constants import MODELSCOPE_ASCII
-from ..errors import HubError, InvalidParameter, NetworkError, NotSupportedError
-from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
+from ..errors import HubError, InvalidParameter, NotSupportedError
 from .agent import AgentCommand
+from .base import CLICommand, error, info
 from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
 from .download import DownloadCommand
@@ -55,8 +61,12 @@ _PLUGIN_GROUP = "modelscope_hub.cli_plugins"
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    # ``prog`` is intentionally left unset so argparse derives it from
+    # ``sys.argv[0]``. The same parser backs the standalone
+    # ``modelscope-hub`` / ``ms-hub`` scripts and the umbrella
+    # ``modelscope`` / ``ms`` scripts, so help output reflects whichever
+    # command the user actually ran.
     parser = argparse.ArgumentParser(
-        prog="ms",
         description="ModelScope Hub command-line interface.",
     )
     parser.add_argument(
@@ -76,7 +86,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help="API endpoint (overrides MODELSCOPE_ENDPOINT).",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
         help="Enable verbose (DEBUG) logging.",
     )
@@ -107,15 +118,14 @@ def _register_aliases(subparsers) -> None:
 
 
 def _register_scan_cache_alias(subparsers) -> None:
-    """``ms scan-cache`` → alias for ``ms cache scan``."""
+    """``ms-hub scan-cache`` → alias for ``ms-hub cache scan``."""
     p = subparsers.add_parser("scan-cache", help="[Alias] Show cached repos and disk usage.")
     p.add_argument("--dir", "--cache-dir", dest="cache_dir", default=None)
     p.set_defaults(_command=_ScanCacheAlias)
 
 
 def _register_clear_cache_alias(subparsers) -> None:
-    """``ms clear-cache`` → alias for ``ms cache clear``."""
-    from ..constants import RepoType
+    """``ms-hub clear-cache`` → alias for ``ms-hub cache clear``."""
 
     p = subparsers.add_parser("clear-cache", help="[Alias] Remove cached files.")
     group = p.add_mutually_exclusive_group()
@@ -124,7 +134,6 @@ def _register_clear_cache_alias(subparsers) -> None:
     p.add_argument("--cache-dir", dest="cache_dir", default=None, help="Override cache directory.")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
     p.set_defaults(_command=_ClearCacheAlias)
-
 
 
 class _ScanCacheAlias(CLICommand):
@@ -168,10 +177,8 @@ class _ClearCacheAlias(CLICommand):
 # ---------------------------------------------------------------------------
 def _discover_plugins(subparsers) -> None:
     """Discover CLI plugins registered via entry_points."""
-    try:
-        eps = importlib.metadata.entry_points(group=_PLUGIN_GROUP)
-    except TypeError:
-        eps = importlib.metadata.entry_points().get(_PLUGIN_GROUP, [])
+    # ``entry_points(group=...)`` is available on all supported Pythons (3.10+).
+    eps = importlib.metadata.entry_points(group=_PLUGIN_GROUP)
 
     for ep in eps:
         try:
@@ -181,9 +188,7 @@ def _discover_plugins(subparsers) -> None:
             elif hasattr(cmd_cls, "define_args"):
                 cmd_cls.define_args(subparsers)
         except Exception as exc:
-            logging.getLogger(__name__).debug(
-                "Failed to load CLI plugin %r: %s", ep.name, exc
-            )
+            logging.getLogger(__name__).debug("Failed to load CLI plugin %r: %s", ep.name, exc)
 
 
 # ---------------------------------------------------------------------------

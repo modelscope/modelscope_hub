@@ -8,7 +8,8 @@ and the old SDK can delegate to ``modelscope_hub`` without changes.
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import requests as _requests
 
@@ -55,6 +56,7 @@ def snapshot_download(
     effective_id = repo_id or model_id
     if not effective_id:
         from ..errors import InvalidParameter
+
         raise InvalidParameter("Please provide a valid model_id or repo_id")
     effective_type = repo_type or "model"
 
@@ -72,13 +74,17 @@ def snapshot_download(
     if endpoint is None and not local_files_only:
         try:
             endpoint = api.resolve_endpoint_for_read(
-                effective_id, repo_type=effective_type,
+                effective_id,
+                repo_type=effective_type,
             )
             api = HubApi(token=token, endpoint=endpoint)
         except Exception:
             pass
     effective_cache, effective_local = _resolve_legacy_paths(
-        effective_id, cache_dir, local_dir, api,
+        effective_id,
+        cache_dir,
+        local_dir,
+        api,
     )
     try:
         result = api.download_repo(
@@ -95,9 +101,7 @@ def snapshot_download(
             progress_callbacks=progress_callbacks,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
-        raise _requests.exceptions.HTTPError(
-            str(e), response=getattr(e, 'response', None)
-        ) from e
+        raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
     return str(result)
 
 
@@ -137,7 +141,10 @@ def dataset_snapshot_download(
         except Exception:
             pass
     effective_cache, effective_local = _resolve_legacy_paths(
-        dataset_id, cache_dir, local_dir, api,
+        dataset_id,
+        cache_dir,
+        local_dir,
+        api,
     )
     try:
         result = api.download_repo(
@@ -153,9 +160,7 @@ def dataset_snapshot_download(
             user_agent=user_agent,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
-        raise _requests.exceptions.HTTPError(
-            str(e), response=getattr(e, 'response', None)
-        ) from e
+        raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
     return str(result)
 
 

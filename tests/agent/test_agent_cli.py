@@ -6,6 +6,7 @@ These tests exercise the raw transfer command logic with a stub AgentApi
 framework-aware commands (convert/watch/status/backups/restore/stop) now live
 in modelscope-agent.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -62,8 +63,9 @@ class _StubClient:
         type(self).commits.append(actions)
         return {"ok": True}
 
-    def upload_lfs_file(self, path, name, file_path, content, action="create",
-                        revision="master", commit_message="sync"):
+    def upload_lfs_file(
+        self, path, name, file_path, content, action="create", revision="master", commit_message="sync"
+    ):
         type(self).lfs_uploads.append((file_path, content))
         return {"ok": True}
 
@@ -118,8 +120,13 @@ class TestCmdList(unittest.TestCase):
     @mock.patch.object(cli_agent, "AgentApi", _StubClient)
     def test_list_rows(self):
         _StubClient.agents = [
-            {"Path": "user", "Name": "a1", "Framework": "qoder",
-             "Visibility": "public", "LastUpdatedDate": "2024-01-02T03:04:05"},
+            {
+                "Path": "user",
+                "Name": "a1",
+                "Framework": "qoder",
+                "Visibility": "public",
+                "LastUpdatedDate": "2024-01-02T03:04:05",
+            },
         ]
         rc = cli_agent._cmd_list(None, 1, 10, endpoint="https://x", token="t")
         self.assertEqual(rc, 0)
@@ -138,8 +145,8 @@ class TestCmdDownload(unittest.TestCase):
         _StubClient.files = {"AGENTS.md": b"hello", "sub/x.txt": b"world"}
         with tempfile.TemporaryDirectory() as d:
             rc = cli_agent._cmd_download(
-                repo="user/a", local_dir=d, revision="master",
-                endpoint="https://x", token="t", username="user")
+                repo="user/a", local_dir=d, revision="master", endpoint="https://x", token="t", username="user"
+            )
             self.assertEqual(rc, 0)
             self.assertEqual((Path(d) / "AGENTS.md").read_bytes(), b"hello")
             self.assertEqual((Path(d) / "sub" / "x.txt").read_bytes(), b"world")
@@ -149,14 +156,14 @@ class TestCmdDownload(unittest.TestCase):
         _StubClient.exists = False
         with tempfile.TemporaryDirectory() as d:
             rc = cli_agent._cmd_download(
-                repo="user/a", local_dir=d, revision="master",
-                endpoint="https://x", token="t", username="user")
+                repo="user/a", local_dir=d, revision="master", endpoint="https://x", token="t", username="user"
+            )
             self.assertEqual(rc, 1)
 
     def test_download_needs_owner_without_login(self):
         rc = cli_agent._cmd_download(
-            repo="a", local_dir=None, revision="master",
-            endpoint="https://x", token="", username="")
+            repo="a", local_dir=None, revision="master", endpoint="https://x", token="", username=""
+        )
         self.assertEqual(rc, 1)
 
 
@@ -171,8 +178,14 @@ class TestCmdUpload(unittest.TestCase):
             (Path(d) / "sub").mkdir()
             (Path(d) / "sub" / "x.txt").write_bytes(b"world")
             rc = cli_agent._cmd_upload(
-                repo="user/a", local_dir=d, revision="master", dry_run=False,
-                endpoint="https://x", token="t", username="user")
+                repo="user/a",
+                local_dir=d,
+                revision="master",
+                dry_run=False,
+                endpoint="https://x",
+                token="t",
+                username="user",
+            )
             self.assertEqual(rc, 0)
             # one commit with two normal-file actions
             self.assertEqual(len(_StubClient.commits), 1)
@@ -188,8 +201,14 @@ class TestCmdUpload(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "model.bin").write_bytes(b"\x00\x01\x02")
             rc = cli_agent._cmd_upload(
-                repo="user/a", local_dir=d, revision="master", dry_run=False,
-                endpoint="https://x", token="t", username="user")
+                repo="user/a",
+                local_dir=d,
+                revision="master",
+                dry_run=False,
+                endpoint="https://x",
+                token="t",
+                username="user",
+            )
             self.assertEqual(rc, 0)
             self.assertEqual(len(_StubClient.lfs_uploads), 1)
             self.assertEqual(_StubClient.lfs_uploads[0][0], "model.bin")
@@ -200,8 +219,14 @@ class TestCmdUpload(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "AGENTS.md").write_bytes(b"hello")
             rc = cli_agent._cmd_upload(
-                repo="user/a", local_dir=d, revision="master", dry_run=False,
-                endpoint="https://x", token="t", username="user")
+                repo="user/a",
+                local_dir=d,
+                revision="master",
+                dry_run=False,
+                endpoint="https://x",
+                token="t",
+                username="user",
+            )
             self.assertEqual(rc, 0)
             self.assertEqual(_StubClient.created, [("user", "a")])
 
@@ -210,8 +235,14 @@ class TestCmdUpload(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "AGENTS.md").write_bytes(b"hello")
             rc = cli_agent._cmd_upload(
-                repo="user/a", local_dir=d, revision="master", dry_run=True,
-                endpoint="https://x", token="t", username="user")
+                repo="user/a",
+                local_dir=d,
+                revision="master",
+                dry_run=True,
+                endpoint="https://x",
+                token="t",
+                username="user",
+            )
             self.assertEqual(rc, 0)
             self.assertEqual(_StubClient.commits, [])
             self.assertEqual(_StubClient.lfs_uploads, [])
@@ -222,9 +253,15 @@ class TestCmdUpload(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "AGENTS.md").write_bytes(b"hello")
             rc = cli_agent._cmd_upload(
-                repo="user/a", local_dir=d, revision="master", dry_run=False,
-                endpoint="https://x", token="t", username="user",
-                visibility="private")
+                repo="user/a",
+                local_dir=d,
+                revision="master",
+                dry_run=False,
+                endpoint="https://x",
+                token="t",
+                username="user",
+                visibility="private",
+            )
             self.assertEqual(rc, 0)
             self.assertEqual(_StubClient.created_visibility, ["private"])
 

@@ -6,13 +6,13 @@ import hashlib
 import io
 import os
 from pathlib import Path
-from typing import IO, Union
+from typing import IO
 
 from ..constants import DEFAULT_CACHE_DIR_NAME, DOWNLOAD_CHUNK_SIZE, ENV_CACHE
 from ..errors import FileIntegrityError
 
-PathLike = Union[str, os.PathLike[str], Path]
-FileObj = Union[IO[bytes], io.IOBase]
+PathLike = str | os.PathLike[str] | Path
+FileObj = IO[bytes] | io.IOBase
 
 
 def compute_hash(

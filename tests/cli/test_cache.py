@@ -313,7 +313,6 @@ class TestCacheVerifyExecute:
         assert exc_info.value.code == 1
         assert "weights.bin" in capsys.readouterr().err
 
-
     def test_missing_and_extra_warnings_include_bounded_paths(self, parser, mock_api, capsys):
         mock_api.verify_cache.return_value = CacheVerification(
             revision="master",

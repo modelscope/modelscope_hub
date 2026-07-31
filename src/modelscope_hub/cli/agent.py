@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import base64
 import sys
-from argparse import Action, RawDescriptionHelpFormatter
+from argparse import RawDescriptionHelpFormatter
 from pathlib import Path
 
 from ..agent import AgentApi, is_lfs_file
 from ..constants import Visibility
 from ..errors import APIError
-from .base import CLICommand
+from .base import CLICommand, SubParsers
 
 _CONVERT_HINT = (
     "This command transfers raw files only. For framework-aware conversion, "
@@ -68,8 +68,7 @@ def _cmd_list(owner, page_number, page_size, *, endpoint, token) -> int:
         return _fail("not logged in. Provide endpoint.")
     client = AgentApi(endpoint=endpoint, token=token or "")
     try:
-        result = client.list_agents(
-            owner=owner, page_number=page_number, page_size=page_size)
+        result = client.list_agents(owner=owner, page_number=page_number, page_size=page_size)
     except APIError as e:
         return _fail(_api_error_message(e, "list"))
     except Exception as e:
@@ -115,8 +114,8 @@ def _cmd_download(repo, local_dir, revision, *, endpoint, token, username) -> in
         return _fail("not logged in. Provide endpoint.")
     if "/" not in repo and not username:
         return _fail(
-            f"--repo '{repo}' requires login to resolve owner. "
-            f"Use 'owner/name' format or run 'ms login' first.")
+            f"--repo '{repo}' requires login to resolve owner. Use 'owner/name' format or run 'ms login' first."
+        )
 
     group, name = _resolve_repo(repo, username or "")
     client = AgentApi(endpoint=endpoint, token=token or "")
@@ -137,8 +136,7 @@ def _cmd_download(repo, local_dir, revision, *, endpoint, token, username) -> in
     for i, rel in enumerate(paths, 1):
         print(f"  [{i}/{total}] downloading {rel}", flush=True)
         try:
-            data = client.download_repo_file(
-                group, name, rel, revision=revision, binary=True)
+            data = client.download_repo_file(group, name, rel, revision=revision, binary=True)
         except APIError as e:
             return _fail(_api_error_message(e, "download"))
         except Exception as e:
@@ -150,8 +148,7 @@ def _cmd_download(repo, local_dir, revision, *, endpoint, token, username) -> in
     return 0
 
 
-def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username,
-                visibility="public") -> int:
+def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username, visibility="public") -> int:
     """Upload raw files from a local path to a remote repository."""
     if not repo:
         return _fail("--repo is required (the remote repository name).")
@@ -182,8 +179,8 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
         return _fail("not logged in. Run 'ms login' first.")
     if "/" not in repo and not username:
         return _fail(
-            f"--repo '{repo}' requires login to resolve owner. "
-            f"Use 'owner/name' format or run 'ms login' first.")
+            f"--repo '{repo}' requires login to resolve owner. Use 'owner/name' format or run 'ms login' first."
+        )
 
     group, name = _resolve_repo(repo, username or "")
     client = AgentApi(endpoint=endpoint, token=token)
@@ -191,8 +188,7 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
         if not client.check_repo(group, name):
             client.create_repo(group, name, visibility=visibility)
     except Exception as exc:
-        print(f"warning: create_repo check failed ({exc}), proceeding anyway.",
-              file=sys.stderr)
+        print(f"warning: create_repo check failed ({exc}), proceeding anyway.", file=sys.stderr)
 
     # Normal files (< LFS threshold, non-LFS extension) are small by definition
     # and go in a single commit; LFS files are read one at a time to bound
@@ -204,24 +200,30 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
         if is_lfs_file(rel, size):
             lfs_entries.append((rel, fp))
         else:
-            normal_actions.append({
-                "action": "create",
-                "path": rel,
-                "type": "normal",
-                "size": size,
-                "sha256": "",
-                "content": base64.b64encode(fp.read_bytes()).decode("ascii"),
-                "encoding": "base64",
-            })
+            normal_actions.append(
+                {
+                    "action": "create",
+                    "path": rel,
+                    "type": "normal",
+                    "size": size,
+                    "sha256": "",
+                    "content": base64.b64encode(fp.read_bytes()).decode("ascii"),
+                    "encoding": "base64",
+                }
+            )
     try:
         if normal_actions:
-            client.commit_files(
-                group, name, normal_actions, revision=revision,
-                commit_message="upload normal files")
+            client.commit_files(group, name, normal_actions, revision=revision, commit_message="upload normal files")
         for rel, fp in lfs_entries:
             client.upload_lfs_file(
-                group, name, rel, fp.read_bytes(), action="create",
-                revision=revision, commit_message=f"upload LFS {rel}")
+                group,
+                name,
+                rel,
+                fp.read_bytes(),
+                action="create",
+                revision=revision,
+                commit_message=f"upload LFS {rel}",
+            )
     except APIError as e:
         return _fail(_api_error_message(e, "upload"))
     except Exception as e:
@@ -238,7 +240,7 @@ class AgentCommand(CLICommand):
     """Raw agent-repository file transfer: download, upload, list."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         _epilog = (
             "subcommand arguments:\n"
             "  download  -r REPO [--local-dir DIR] [--revision REV]\n"
@@ -256,8 +258,7 @@ class AgentCommand(CLICommand):
         agent_parser = subparsers.add_parser(
             "agent",
             help="Transfer raw agent repository files (download, upload, list).",
-            description="Low-level raw file transfer for remote agent repositories. "
-                        + _CONVERT_HINT,
+            description="Low-level raw file transfer for remote agent repositories. " + _CONVERT_HINT,
             epilog=_epilog,
             formatter_class=RawDescriptionHelpFormatter,
         )
@@ -270,42 +271,45 @@ class AgentCommand(CLICommand):
             "download",
             help="Download raw agent files from a remote repository",
             formatter_class=RawDescriptionHelpFormatter,
-            description="Download all files of a remote agent repository to a local directory.\n"
-                        + _CONVERT_HINT,
+            description="Download all files of a remote agent repository to a local directory.\n" + _CONVERT_HINT,
         )
         p_download.add_argument(
-            "-r", "--repo", required=True,
-            help="Remote repo identifier, supports owner/name format (e.g. user/my-agent)")
+            "-r",
+            "--repo",
+            required=True,
+            help="Remote repo identifier, supports owner/name format (e.g. user/my-agent)",
+        )
         p_download.add_argument(
-            "--local-dir", default=None,
-            help="Destination directory (default: ./<repo-name> under CWD)")
-        p_download.add_argument(
-            "--revision", default="master", help="Repository revision (default: master)")
+            "--local-dir", default=None, help="Destination directory (default: ./<repo-name> under CWD)"
+        )
+        p_download.add_argument("--revision", default="master", help="Repository revision (default: master)")
 
         # ---- upload ----
         p_upload = agent_sub.add_parser(
             "upload",
             help="Upload raw agent files to a remote repository",
             formatter_class=RawDescriptionHelpFormatter,
-            description="Upload files from a local path to a remote agent repository.\n"
-                        + _CONVERT_HINT,
+            description="Upload files from a local path to a remote agent repository.\n" + _CONVERT_HINT,
         )
         p_upload.add_argument(
-            "-r", "--repo", required=True,
-            help="Remote repo identifier, supports owner/name format (e.g. user/my-agent)")
+            "-r",
+            "--repo",
+            required=True,
+            help="Remote repo identifier, supports owner/name format (e.g. user/my-agent)",
+        )
         p_upload.add_argument(
-            "--local-dir", default=None,
-            help="Source path (file or directory) to upload (default: CWD)")
-        p_upload.add_argument(
-            "--revision", default="master", help="Repository revision (default: master)")
+            "--local-dir", default=None, help="Source path (file or directory) to upload (default: CWD)"
+        )
+        p_upload.add_argument("--revision", default="master", help="Repository revision (default: master)")
         p_upload.add_argument(
             "--visibility",
             choices=[Visibility.PUBLIC.label, Visibility.PRIVATE.label],
             default=Visibility.PUBLIC.label,
-            help="Visibility of the remote repo when created (default: public)")
+            help="Visibility of the remote repo when created (default: public)",
+        )
         p_upload.add_argument(
-            "--dry-run", action="store_true",
-            help="List files that would be uploaded, without actually uploading")
+            "--dry-run", action="store_true", help="List files that would be uploaded, without actually uploading"
+        )
 
         # ---- list ----
         p_list = agent_sub.add_parser(
@@ -313,21 +317,20 @@ class AgentCommand(CLICommand):
             help="List remote agent repositories",
             description="Query and display remote agent repositories with pagination.",
         )
+        p_list.add_argument("--owner", default=None, help="Filter by owner username or organization name")
         p_list.add_argument(
-            "--owner", default=None,
-            help="Filter by owner username or organization name")
+            "--page", dest="page_number", type=int, default=1, help="Page number for pagination (default: 1)"
+        )
         p_list.add_argument(
-            "--page", dest="page_number", type=int, default=1,
-            help="Page number for pagination (default: 1)")
-        p_list.add_argument(
-            "--page-size", dest="page_size", type=int, default=10,
-            help="Number of items per page (default: 10)")
+            "--page-size", dest="page_size", type=int, default=10, help="Number of items per page (default: 10)"
+        )
 
     def execute(self) -> None:
         args = self.args
         action = args.agent_command
 
         from ..config import HubConfig
+
         config = HubConfig(
             endpoint=getattr(args, "endpoint", None),
             token=getattr(args, "token", None),
@@ -337,12 +340,10 @@ class AgentCommand(CLICommand):
 
         # Resolve current username for repos given without an explicit owner.
         username = ""
-        needs_user = (
-            action == "upload"
-            or (action == "download" and "/" not in getattr(args, "repo", ""))
-        )
+        needs_user = action == "upload" or (action == "download" and "/" not in getattr(args, "repo", ""))
         if needs_user and token:
             from .._openapi import OpenAPIClient
+
             try:
                 openapi = OpenAPIClient(config=config)
                 user_data = openapi.get_current_user() or {}
