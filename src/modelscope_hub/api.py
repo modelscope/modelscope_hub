@@ -23,23 +23,23 @@ Design principles
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Mapping
+from typing import Any, BinaryIO, TypeAlias
 from urllib.parse import urlparse
 
 from requests.cookies import RequestsCookieJar
 
-from ._cache_manager import clear_cache as _clear_cache
 from ._cache_manager import _resolve_verification_root
+from ._cache_manager import clear_cache as _clear_cache
 from ._cache_manager import scan_cache as _scan_cache
-from ._download import DownloadManager, ProgressCallback
 from ._cache_manager import verify_cache as _verify_cache
-from ._download import DownloadManager
+from ._download import DownloadManager, ProgressCallback
 from ._legacy_api import LegacyClient
 from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .config import HubConfig, get_default_config
-from .constants import RepoType, Visibility
+from .constants import DEFAULT_ENDPOINT, RepoType, Visibility
 from .errors import (
     AuthenticationError,
     HubError,
@@ -55,7 +55,7 @@ __all__ = ["HubApi"]
 
 logger = get_logger("api")
 
-RepoTypeLike = "str | RepoType"
+RepoTypeLike: TypeAlias = "str | RepoType"
 
 
 # Routing tables — declarative dispatch keeps :class:`HubApi` free of long
@@ -185,7 +185,7 @@ class HubApi:
 
             self._legacy = LegacyClient(
                 token=self._config.token,
-                endpoint=self._config.endpoint,
+                endpoint=self._config.endpoint or DEFAULT_ENDPOINT,
                 user_agent=build_user_agent(self._config.get_session_id()),
             )
         elif self._legacy.token != self._config.token and self._config.token:
@@ -999,7 +999,7 @@ class HubApi:
         )
 
         if self._config._endpoint_overridden:
-            return self._config.endpoint
+            return self._config.endpoint or DEFAULT_ENDPOINT
 
         effective_token = token or self._config.token
 
@@ -1485,7 +1485,7 @@ class HubApi:
                     revision=revision or "master",
                 )
                 deleted.append(p)
-            except (AuthenticationError, NetworkError) as exc:
+            except (AuthenticationError, NetworkError):
                 failed.append(p)
                 raise
             except Exception:

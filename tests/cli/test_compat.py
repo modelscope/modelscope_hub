@@ -20,10 +20,15 @@ from modelscope_hub.cli.compat import normalize_download_args, normalize_pattern
 class TestDownloadLegacyEdgeCases:
     def test_legacy_dataset_with_local_dir(self, parser):
         """ms download --dataset owner/repo --local_dir ./temp (regression test)"""
-        args = parser.parse_args([
-            "download", "--dataset", "wangxingjun778/self_cog_data",
-            "--local_dir", "./temp",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "--dataset",
+                "wangxingjun778/self_cog_data",
+                "--local_dir",
+                "./temp",
+            ]
+        )
         assert args.dataset == "wangxingjun778/self_cog_data"
         assert args.local_dir_legacy == "./temp"
 
@@ -49,9 +54,15 @@ class TestNormalizeDownloadArgs:
         assert args.repo_type == "dataset"
 
     def test_local_dir_legacy_merged(self, parser):
-        args = parser.parse_args([
-            "download", "--model", "owner/repo", "--local_dir", "/tmp/out",
-        ])
+        args = parser.parse_args(
+            [
+                "download",
+                "--model",
+                "owner/repo",
+                "--local_dir",
+                "/tmp/out",
+            ]
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", DeprecationWarning)
             normalize_download_args(args)
@@ -120,11 +131,14 @@ class TestVersionFlag:
 # Cross-cutting backward compat: --repo_type (underscore) in multiple commands
 # ---------------------------------------------------------------------------
 class TestRepoTypeUnderscore:
-    @pytest.mark.parametrize("cmd,expected_type", [
-        (["info", "o/r", "--repo_type", "dataset"], "dataset"),
-        (["list", "--repo_type", "model"], "model"),
-        (["delete", "o/r", "--repo_type", "model"], "model"),
-    ])
+    @pytest.mark.parametrize(
+        "cmd,expected_type",
+        [
+            (["info", "o/r", "--repo_type", "dataset"], "dataset"),
+            (["list", "--repo_type", "model"], "model"),
+            (["delete", "o/r", "--repo_type", "model"], "model"),
+        ],
+    )
     def test_repo_type_underscore_in_all_commands(self, parser, cmd, expected_type):
         """--repo_type (underscore) works in info, list, delete."""
         args = parser.parse_args(cmd)

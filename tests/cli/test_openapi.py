@@ -2,6 +2,7 @@
 
 Covers fixes from audit items 2,3,4,5,6,8,10 and Section III risks.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -9,7 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from modelscope_hub._openapi import OpenAPIClient, _RETRYABLE_POST_PATHS
+from modelscope_hub._openapi import _RETRYABLE_POST_PATHS, OpenAPIClient
 from modelscope_hub.api import HubApi
 from modelscope_hub.config import HubConfig
 from modelscope_hub.errors import InvalidParameter, RateLimitError, ServerError
@@ -148,6 +149,7 @@ class TestStopStudioBody:
 class TestGetStudioAuth:
     def test_requires_token_raises_without_token(self):
         from modelscope_hub.errors import AuthenticationError
+
         config = HubConfig(token="placeholder", endpoint="https://modelscope.cn")
         config.token = None
         client = OpenAPIClient(config)
@@ -244,14 +246,14 @@ class TestRetryIdempotentPost:
         error_resp = _mock_response(status_code=500, json_data={"message": "Internal error"})
         success_resp = _mock_response(status_code=200, json_data={"success": True, "data": {"status": "deploying"}})
         with patch.object(client._session, "request", side_effect=[error_resp, success_resp]) as mock_req:
-            result = client.deploy_studio("org", "demo")
+            client.deploy_studio("org", "demo")
         assert mock_req.call_count == 2
 
     def test_stop_studio_retried_on_server_error(self, client):
         error_resp = _mock_response(status_code=500, json_data={"message": "Internal error"})
         success_resp = _mock_response(status_code=200, json_data={"success": True, "data": {"status": "stopped"}})
         with patch.object(client._session, "request", side_effect=[error_resp, success_resp]) as mock_req:
-            result = client.stop_studio("org", "demo")
+            client.stop_studio("org", "demo")
         assert mock_req.call_count == 2
 
     def test_create_skill_not_retried(self, client):
@@ -265,8 +267,36 @@ class TestRetryIdempotentPost:
         error_resp = _mock_response(status_code=500, json_data={"message": "Internal error"})
         success_resp = _mock_response(status_code=200, json_data={"success": True, "data": {"status": "running"}})
         with patch.object(client._session, "request", side_effect=[error_resp, success_resp]) as mock_req:
-            result = client.deploy_mcp_server("123")
+            client.deploy_mcp_server("123")
         assert mock_req.call_count == 2
+
+
+# ==================================================================
+# deploy_mcp_server payload hygiene: None values are dropped before
+# the default transport is applied, so ``transport_type=None`` can
+# never reach the wire.
+# ==================================================================
+class TestDeployMcpServerPayload:
+    def test_default_transport_applied(self, client):
+        resp = _mock_response(json_data={"success": True, "data": {}})
+        with patch.object(client._session, "request", return_value=resp) as mock_req:
+            client.deploy_mcp_server("123")
+        assert mock_req.call_args.kwargs["json"] == {"transport_type": "sse"}
+
+    def test_explicit_none_replaced_by_default(self, client):
+        resp = _mock_response(json_data={"success": True, "data": {}})
+        with patch.object(client._session, "request", return_value=resp) as mock_req:
+            client.deploy_mcp_server("123", {"transport_type": None, "expiration_minutes": None})
+        assert mock_req.call_args.kwargs["json"] == {"transport_type": "sse"}
+
+    def test_caller_payload_preserved(self, client):
+        resp = _mock_response(json_data={"success": True, "data": {}})
+        payload = {"transport_type": "streamable_http", "expiration_minutes": -1, "env_info": {"K": "v"}}
+        with patch.object(client._session, "request", return_value=resp) as mock_req:
+            client.deploy_mcp_server("123", payload)
+        assert mock_req.call_args.kwargs["json"] == payload
+        # The client works on a copy; the caller's dict is untouched.
+        assert "transport_type" in payload and payload["expiration_minutes"] == -1
 
 
 # ==================================================================
@@ -284,9 +314,10 @@ class TestRateLimitRetry:
             json_data={"message": "commit lock busy, please try again"},
         )
         ok = _mock_response(status_code=200, json_data={"success": True, "data": {}})
-        with patch("modelscope_hub._openapi.time.sleep"), \
-                patch.object(client._session, "request",
-                             side_effect=[busy, busy, ok]) as mock_req:
+        with (
+            patch("modelscope_hub._openapi.time.sleep"),
+            patch.object(client._session, "request", side_effect=[busy, busy, ok]) as mock_req,
+        ):
             client.request("POST", url=self._COMMIT_URL, json_body={"actions": []})
         # two 429s then success -> three calls total (i.e. it retried).
         assert mock_req.call_count == 3
@@ -296,8 +327,10 @@ class TestRateLimitRetry:
             status_code=429,
             json_data={"message": "commit lock busy, please try again"},
         )
-        with patch("modelscope_hub._openapi.time.sleep"), \
-                patch.object(client._session, "request", return_value=busy) as mock_req:
+        with (
+            patch("modelscope_hub._openapi.time.sleep"),
+            patch.object(client._session, "request", return_value=busy) as mock_req,
+        ):
             with pytest.raises(RateLimitError):
                 client.request("POST", url=self._COMMIT_URL, json_body={"actions": []})
         # Exhausts all attempts rather than failing on the first 429.
@@ -306,8 +339,10 @@ class TestRateLimitRetry:
     def test_bare_post_not_retried_on_plain_400(self, client):
         """A non-rate-limit 400 on a bare url= POST is still NOT retried."""
         bad = _mock_response(status_code=400, json_data={"message": "invalid parameter"})
-        with patch("modelscope_hub._openapi.time.sleep"), \
-                patch.object(client._session, "request", return_value=bad) as mock_req:
+        with (
+            patch("modelscope_hub._openapi.time.sleep"),
+            patch.object(client._session, "request", return_value=bad) as mock_req,
+        ):
             with pytest.raises(InvalidParameter):
                 client.request("POST", url=self._COMMIT_URL, json_body={"actions": []})
         assert mock_req.call_count == 1
@@ -325,17 +360,20 @@ class TestForeignHostCredentialIsolation:
             client.request("POST", url=url, json_body={})
         call_kwargs = mock_req.call_args.kwargs
         assert call_kwargs["headers"].get("Authorization") == "Bearer test-token"
-        assert call_kwargs["cookies"] == {
-            "m_session_id": "test-token", "modelscope_session": "test-token"}
+        assert call_kwargs["cookies"] == {"m_session_id": "test-token", "modelscope_session": "test-token"}
 
     def test_foreign_host_absolute_url_strips_auth_and_cookies(self, client):
         resp = _mock_response()
         url = "https://oss-cn-hangzhou.aliyuncs.com/bucket/obj?sig=abc"
         with patch.object(client._session, "request", return_value=resp) as mock_req:
             client.request(
-                "PUT", url=url, data=b"blob",
+                "PUT",
+                url=url,
+                data=b"blob",
                 headers={"Content-Type": "application/octet-stream"},
-                require_token=False, unwrap=False)
+                require_token=False,
+                unwrap=False,
+            )
         call_kwargs = mock_req.call_args.kwargs
         assert "Authorization" not in call_kwargs["headers"]
         assert call_kwargs["cookies"] == {}

@@ -1,4 +1,5 @@
 """Tests for CLI entry point, global parameters, exception handling, and version."""
+
 from __future__ import annotations
 
 import logging
@@ -6,7 +7,6 @@ from unittest.mock import patch
 
 import pytest
 
-from modelscope_hub import __version__
 from modelscope_hub.cli.main import run_cmd
 from modelscope_hub.errors import HubError, InvalidParameter, NetworkError, NotSupportedError
 
@@ -70,9 +70,16 @@ class TestGlobalParameterParsing:
         assert args.verbose is False
 
     def test_global_flags_before_subcommand(self, parser):
-        args = parser.parse_args([
-            "--token", "tok", "--endpoint", "https://x.cn", "-v", "whoami",
-        ])
+        args = parser.parse_args(
+            [
+                "--token",
+                "tok",
+                "--endpoint",
+                "https://x.cn",
+                "-v",
+                "whoami",
+            ]
+        )
         assert args.token == "tok"
         assert args.endpoint == "https://x.cn"
         assert args.verbose is True
@@ -104,9 +111,7 @@ class TestExceptionHandlingUnit:
 
     def test_not_supported_error_exits_2(self):
         with patch("modelscope_hub.cli.login.make_api") as mock_make:
-            mock_make.return_value.whoami.side_effect = NotSupportedError(
-                "not supported", suggestion="use Y"
-            )
+            mock_make.return_value.whoami.side_effect = NotSupportedError("not supported", suggestion="use Y")
             code, out, err = run_cli(["whoami"], token="fake")
         assert code == 2
         assert "not supported" in err

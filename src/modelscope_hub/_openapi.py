@@ -19,8 +19,9 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Mapping
+from typing import Any, BinaryIO
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -57,7 +58,9 @@ _RETRYABLE_POST_PATHS: frozenset[str] = frozenset({"/deploy", "/stop", "/undeplo
 
 # Errors that warrant a transparent retry.
 _RETRYABLE_EXC: tuple[type[BaseException], ...] = (
-    NetworkError, ServerError, RateLimitError,
+    NetworkError,
+    ServerError,
+    RateLimitError,
 )
 
 JSON = dict[str, Any]
@@ -94,8 +97,7 @@ class OpenAPIClient:
         self._config = config or get_default_config()
         self._session = session or requests.Session()
         self._timeout: float | tuple[float, float] = (
-            float(timeout) if timeout is not None
-            else (float(API_CONNECT_TIMEOUT), float(API_TIMEOUT))
+            float(timeout) if timeout is not None else (float(API_CONNECT_TIMEOUT), float(API_TIMEOUT))
         )
         self._max_retries = int(max_retries) if max_retries is not None else int(API_MAX_RETRIES)
 
@@ -106,7 +108,7 @@ class OpenAPIClient:
         """Release the underlying HTTP session."""
         self._session.close()
 
-    def __enter__(self) -> "OpenAPIClient":
+    def __enter__(self) -> OpenAPIClient:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -139,10 +141,16 @@ class OpenAPIClient:
         When *unwrap* is ``False`` the raw :class:`requests.Response` is returned.
         """
         return self._request(
-            method, path,
+            method,
+            path,
             url=url,
-            params=params, json_body=json_body, data=data, files=files,
-            headers=headers, require_token=require_token, unwrap=unwrap,
+            params=params,
+            json_body=json_body,
+            data=data,
+            files=files,
+            headers=headers,
+            require_token=require_token,
+            unwrap=unwrap,
             timeout=timeout,
         )
 
@@ -152,7 +160,7 @@ class OpenAPIClient:
     @property
     def base_url(self) -> str:
         """Fully-qualified OpenAPI base URL, including trailing slash."""
-        return f"{self._config.endpoint.rstrip('/')}{OPENAPI_PREFIX}/"
+        return f"{(self._config.endpoint or '').rstrip('/')}{OPENAPI_PREFIX}/"
 
     def _url(self, path: str) -> str:
         # ``urljoin`` treats absolute leading slashes as roots, which would
@@ -172,9 +180,7 @@ class OpenAPIClient:
         token = self._resolve_token()
         if not token:
             if require_token:
-                raise AuthenticationError(
-                    "Missing API token. Call HubApi.login(...) or set MODELSCOPE_API_TOKEN."
-                )
+                raise AuthenticationError("Missing API token. Call HubApi.login(...) or set MODELSCOPE_API_TOKEN.")
             return {}
         return {"Authorization": f"Bearer {token}"}
 
@@ -346,7 +352,11 @@ class OpenAPIClient:
                 backoff = min(2 ** (attempt - 1), 16) + random.uniform(0, 0.5)
             _logger.debug(
                 "Retrying %s %s after %s (attempt %d/%d)",
-                method_upper, final_url, last_exc, attempt, attempts,
+                method_upper,
+                final_url,
+                last_exc,
+                attempt,
+                attempts,
             )
             time.sleep(backoff)
 
@@ -397,9 +407,7 @@ class OpenAPIClient:
         ``custom_tag``, ``license``, ``deploy``.
         """
         if page_number * page_size > 3000:
-            raise InvalidParameter(
-                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
-            )
+            raise InvalidParameter(f"page_number * page_size must be <= 3000 (got {page_number * page_size}).")
         params = self._merge_params(
             {
                 "search": search,
@@ -431,9 +439,7 @@ class OpenAPIClient:
     ) -> JSON:
         """``GET /datasets`` — list datasets. Filter keys: ``task``, ``license``."""
         if page_number * page_size > 3000:
-            raise InvalidParameter(
-                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
-            )
+            raise InvalidParameter(f"page_number * page_size must be <= 3000 (got {page_number * page_size}).")
         params = self._merge_params(
             {
                 "search": search,
@@ -518,9 +524,7 @@ class OpenAPIClient:
         ``owner``.
         """
         if page_number * page_size > 3000:
-            raise InvalidParameter(
-                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
-            )
+            raise InvalidParameter(f"page_number * page_size must be <= 3000 (got {page_number * page_size}).")
         params = self._merge_params(
             {
                 "search": search,
@@ -696,9 +700,7 @@ class OpenAPIClient:
     ) -> JSON:
         """``GET /mcp/servers/{id}`` — fetch a single MCP server's manifest."""
         params = self._merge_params({"get_operational_url": get_operational_url})
-        return self._request(
-            "GET", f"/mcp/servers/{server_id}", params=params, require_token=False
-        )
+        return self._request("GET", f"/mcp/servers/{server_id}", params=params, require_token=False)
 
     def deploy_mcp_server(
         self,
@@ -706,7 +708,9 @@ class OpenAPIClient:
         payload: DeployMcpServerPayload | Mapping[str, Any] | None = None,
     ) -> JSON:
         """``POST /mcp/servers/{id}/deploy`` — deploy an MCP server for the caller."""
-        body = dict(payload or {})
+        # Drop explicit None values so they never reach the wire, then apply
+        # the platform default transport.
+        body = {k: v for k, v in dict(payload or {}).items() if v is not None}
         body.setdefault("transport_type", "sse")
         return self._request(
             "POST",

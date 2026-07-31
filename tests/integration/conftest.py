@@ -1,4 +1,5 @@
 """Integration test fixtures — real API calls with cleanup."""
+
 from __future__ import annotations
 
 import pytest

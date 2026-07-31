@@ -8,9 +8,9 @@ independently.
 from __future__ import annotations
 
 import getpass
-from argparse import Action, SUPPRESS
+from argparse import SUPPRESS
 
-from .base import CLICommand, error, info, make_api, success
+from .base import CLICommand, SubParsers, error, info, make_api, success
 from .compat import add_subcmd_token_endpoint
 
 
@@ -18,7 +18,7 @@ class LoginCommand(CLICommand):
     """Persist a token and verify it via ``GET /users/me``."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         parser = subparsers.add_parser(
             "login",
             help="Authenticate with ModelScope Hub and persist the token locally.",
@@ -61,7 +61,7 @@ class WhoamiCommand(CLICommand):
     """Show the currently authenticated user."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         parser = subparsers.add_parser(
             "whoami",
             help="Show the user identified by the active token.",

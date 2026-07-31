@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
 
 # ---------------------------------------------------------------------------
 # Size formatting
@@ -101,8 +101,7 @@ def tabulate(
         raise ValueError(f"max_width must be >= 1, got {max_width}")
     ncols = len(headers)
     str_rows: list[list[str]] = [
-        [_cell(row[i] if i < len(row) else "", max_width) for i in range(ncols)]
-        for row in rows
+        [_cell(row[i] if i < len(row) else "", max_width) for i in range(ncols)] for row in rows
     ]
 
     widths = [len(h) for h in headers]

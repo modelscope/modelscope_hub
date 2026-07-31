@@ -6,6 +6,7 @@ the real ``HubApi.download_repo`` facade both execute. This guarantees the
 whole ``compat -> HubApi facade -> DownloadManager`` forwarding chain is
 exercised (a facade that drops ``progress_callbacks`` would fail here).
 """
+
 from __future__ import annotations
 
 from unittest import mock
@@ -21,9 +22,7 @@ class _DummyCallback(ProgressCallback):
 
 class TestSnapshotDownloadProgressCallbacks:
     def test_progress_callbacks_forwarded_through_facade(self):
-        with mock.patch.object(
-                DownloadManager, "download_repo",
-                return_value="/tmp/snapshot") as m:
+        with mock.patch.object(DownloadManager, "download_repo", return_value="/tmp/snapshot") as m:
             result = snapshot_download(
                 "owner/repo",
                 progress_callbacks=[_DummyCallback],
@@ -35,9 +34,7 @@ class TestSnapshotDownloadProgressCallbacks:
         assert kwargs["progress_callbacks"] == [_DummyCallback]
 
     def test_progress_callbacks_default_none(self):
-        with mock.patch.object(
-                DownloadManager, "download_repo",
-                return_value="/tmp/snapshot") as m:
+        with mock.patch.object(DownloadManager, "download_repo", return_value="/tmp/snapshot") as m:
             snapshot_download("owner/repo", local_files_only=True)
 
         _, kwargs = m.call_args

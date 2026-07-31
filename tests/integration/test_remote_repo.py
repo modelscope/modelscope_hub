@@ -3,6 +3,7 @@
 These tests create real repos on ModelScope and clean up after themselves.
 Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -40,7 +41,7 @@ class TestRemoteRepoLifecycle:
             # Cleanup
             try:
                 api.delete_repo(repo_id, "model")
-                print(f"** delete_repo: success")
+                print("** delete_repo: success")
             except Exception as e:
                 print(f"** delete_repo: failed - {e}")
 
@@ -67,7 +68,7 @@ class TestRemoteRepoLifecycle:
             # Cleanup
             try:
                 api.delete_repo(repo_id, "dataset")
-                print(f"** delete_repo: success")
+                print("** delete_repo: success")
             except Exception as e:
                 print(f"** delete_repo: failed - {e}")
 

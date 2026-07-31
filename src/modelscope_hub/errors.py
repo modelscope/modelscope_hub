@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from requests import Response
@@ -28,16 +28,36 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 # Credential redaction helpers
 # ---------------------------------------------------------------------------
 _SENSITIVE_KEYWORDS: tuple[str, ...] = (
-    "token", "secret", "password", "cookie", "authorization",
-    "credential", "session", "api_key", "apikey",
+    "token",
+    "secret",
+    "password",
+    "cookie",
+    "authorization",
+    "credential",
+    "session",
+    "api_key",
+    "apikey",
 )
-_SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset({
-    "token", "access_token", "auth_token", "api_key", "apikey",
-    "cookie", "m_session_id", "session",
-    "secret", "password", "key", "authorization", "credentials",
-})
+_SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset(
+    {
+        "token",
+        "access_token",
+        "auth_token",
+        "api_key",
+        "apikey",
+        "cookie",
+        "m_session_id",
+        "session",
+        "secret",
+        "password",
+        "key",
+        "authorization",
+        "credentials",
+    }
+)
 _SENSITIVE_BODY_KEYS: re.Pattern[str] = re.compile(
-    "|".join(_SENSITIVE_KEYWORDS), re.IGNORECASE,
+    "|".join(_SENSITIVE_KEYWORDS),
+    re.IGNORECASE,
 )
 _REDACTED = "***"
 
@@ -64,10 +84,7 @@ def _redact_url(url: str) -> str:
 def _redact_body(body: Any) -> Any:
     """Deep-redact sensitive keys in a response body structure."""
     if isinstance(body, dict):
-        return {
-            k: _REDACTED if _SENSITIVE_BODY_KEYS.search(k) else _redact_body(v)
-            for k, v in body.items()
-        }
+        return {k: _REDACTED if _SENSITIVE_BODY_KEYS.search(k) else _redact_body(v) for k, v in body.items()}
     if isinstance(body, list):
         return [_redact_body(item) for item in body]
     return body
@@ -306,9 +323,7 @@ class StorageError(HubError):
 
     error_code = "E1003"
     retryable = True
-    suggestion = (
-        "File upload/download failed (storage service error). Please retry later."
-    )
+    suggestion = "File upload/download failed (storage service error). Please retry later."
 
 
 class FileIntegrityError(HubError):
@@ -388,8 +403,10 @@ _CN_TO_EN: dict[str, str] = {
     "模型不存在": "Model does not exist.",
     "数据集不存在": "Dataset does not exist.",
     "创建空间失败": "Failed to create studio.",
-    "the current token no longer supports deletion operations. Please go to the site page : https://www.modelscope.cn to delete":
-        "Deletion is restricted to web console. Visit https://modelscope.cn to delete.",
+    "the current token no longer supports deletion operations. "
+    "Please go to the site page : https://www.modelscope.cn to delete": (
+        "Deletion is restricted to web console. Visit https://modelscope.cn to delete."
+    ),
 }
 
 
@@ -403,7 +420,7 @@ def _translate_message(msg: str) -> str:
     return msg
 
 
-def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]:
+def _extract_payload(response: Response) -> tuple[str, str | None, Any | None]:
     """Best-effort extraction of (message, request_id, body) from a response."""
     request_id = response.headers.get("x-request-id") or response.headers.get("X-Request-Id")
     body: Any | None = None
@@ -429,14 +446,11 @@ def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]
             if isinstance(value, str) and value.strip():
                 message = value.strip()
                 break
-        request_id = (
-            body.get("request_id") or body.get("requestId")
-            or body.get("RequestId") or request_id
-        )
+        request_id = body.get("request_id") or body.get("requestId") or body.get("RequestId") or request_id
     return _translate_message(message), request_id, body
 
 
-def raise_for_status(response: "Response") -> None:
+def raise_for_status(response: Response) -> None:
     """Inspect ``response`` and raise the most specific exception on failure.
 
     Parameters
@@ -468,8 +482,7 @@ def raise_for_status(response: "Response") -> None:
     # Detect "already exists" errors before falling back to InvalidParameter
     if exc_cls is InvalidParameter and isinstance(body, dict):
         code = body.get("Code") or body.get("code")
-        msg_text = (body.get("Message") or body.get("message")
-                    or body.get("msg") or body.get("Msg") or "").lower()
+        msg_text = (body.get("Message") or body.get("message") or body.get("msg") or body.get("Msg") or "").lower()
         is_exists = False
         if code is not None:
             try:
@@ -511,20 +524,22 @@ def raise_for_status(response: "Response") -> None:
 # Repo-exists detection (shared by cli/repo.py and compat/hub_api.py)
 # ---------------------------------------------------------------------------
 _ALREADY_EXISTS_CODES: set[int] = {
-    10020101001,   # 国内站 - 数据集已存在
-    10010101001,   # 国内站 - 模型已存在
-    10010202004,   # 国际站 - 名称已被使用
+    10020101001,  # 国内站 - 数据集已存在
+    10010101001,  # 国内站 - 模型已存在
+    10010202004,  # 国际站 - 名称已被使用
 }
 
-_ALREADY_EXISTS_KEYWORDS: frozenset[str] = frozenset({
-    "exist",
-    "already",
-    "can not be used",
-    "not available",
-    "已被注册",
-    "已存在",
-    "名称不可用",
-})
+_ALREADY_EXISTS_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "exist",
+        "already",
+        "can not be used",
+        "not available",
+        "已被注册",
+        "已存在",
+        "名称不可用",
+    }
+)
 
 
 def is_repo_exists_error(exc: BaseException) -> bool:
@@ -545,7 +560,7 @@ def is_repo_exists_error(exc: BaseException) -> bool:
     if isinstance(body, dict):
         code = body.get("Code") or body.get("code")
         try:
-            if int(code) in _ALREADY_EXISTS_CODES:
+            if code is not None and int(code) in _ALREADY_EXISTS_CODES:
                 return True
         except (TypeError, ValueError):
             pass

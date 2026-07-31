@@ -3,6 +3,7 @@
 These tests hit the real ModelScope API. They require
 MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -70,9 +71,7 @@ class TestRemoteFileOperations:
         """delete_files removes the file from the repo."""
         print(f"\n** repo_id: {self.repo_id}")
         print("** Deleting test_file.txt ...")
-        result = self.api.delete_files(
-            self.repo_id, "model", ["test_file.txt"], commit_message="cleanup"
-        )
+        result = self.api.delete_files(self.repo_id, "model", ["test_file.txt"], commit_message="cleanup")
         print(f"** delete_files response: {result}")
         assert "test_file.txt" in result["deleted_files"]
         files = self.api.list_repo_files(self.repo_id, "model")

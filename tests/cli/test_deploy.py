@@ -5,6 +5,7 @@ Includes:
 - Execution tests: mock HubApi to verify command logic
 - Remote tests: real API lifecycle (existing)
 """
+
 from __future__ import annotations
 
 import warnings
@@ -37,9 +38,16 @@ class TestDeployParser:
         assert args.repo_type == "studio"
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "deploy", "o/r", "--token", "tk", "--endpoint", "https://x.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "deploy",
+                "o/r",
+                "--token",
+                "tk",
+                "--endpoint",
+                "https://x.cn",
+            ]
+        )
         assert args.subcmd_token == "tk"
         assert args.subcmd_endpoint == "https://x.cn"
 
@@ -124,13 +132,20 @@ class TestLogsParser:
         assert args.keyword is None
 
     def test_all_options_combined(self, parser):
-        args = parser.parse_args([
-            "logs", "org/demo",
-            "--log-type", "build",
-            "--page", "2",
-            "--page-size", "50",
-            "--keyword", "Exception",
-        ])
+        args = parser.parse_args(
+            [
+                "logs",
+                "org/demo",
+                "--log-type",
+                "build",
+                "--page",
+                "2",
+                "--page-size",
+                "50",
+                "--keyword",
+                "Exception",
+            ]
+        )
         assert args.repo_id == "org/demo"
         assert args.log_type == "build"
         assert args.page_num == 2
@@ -236,8 +251,12 @@ class TestLogsExecute:
         with patch("modelscope_hub.cli.deploy.make_api", return_value=mock_api):
             LogsCommand(args).execute()
         mock_api.get_repo_logs.assert_called_once_with(
-            "org/demo", "studio",
-            log_type="run", page_num=1, page_size=100, keyword=None,
+            "org/demo",
+            "studio",
+            log_type="run",
+            page_num=1,
+            page_size=100,
+            keyword=None,
         )
         out = capsys.readouterr().out
         assert "line1" in out
@@ -279,7 +298,9 @@ class TestSettingsExecute:
         with patch("modelscope_hub.cli.deploy.make_api", return_value=mock_api):
             SettingsCommand(args).execute()
         mock_api.update_repo_settings.assert_called_once_with(
-            "org/demo", "studio", cpu="4",
+            "org/demo",
+            "studio",
+            cpu="4",
         )
         out = capsys.readouterr().out
         assert "Updated 1 setting" in out
@@ -289,15 +310,24 @@ class TestSettingsExecute:
         with patch("modelscope_hub.cli.deploy.make_api", return_value=mock_api):
             SettingsCommand(args).execute()
         mock_api.update_repo_settings.assert_called_once_with(
-            "org/demo", "studio", cpu="4", memory="8192",
+            "org/demo",
+            "studio",
+            cpu="4",
+            memory="8192",
         )
         out = capsys.readouterr().out
         assert "Updated 2 setting" in out
 
     def test_settings_skill_type(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "settings", "org/skill1", "timeout=30", "--repo-type", "skill",
-        ])
+        args = parser.parse_args(
+            [
+                "settings",
+                "org/skill1",
+                "timeout=30",
+                "--repo-type",
+                "skill",
+            ]
+        )
         with patch("modelscope_hub.cli.deploy.make_api", return_value=mock_api):
             SettingsCommand(args).execute()
         assert mock_api.update_repo_settings.call_args.args[1] == "skill"

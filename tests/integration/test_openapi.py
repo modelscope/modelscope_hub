@@ -6,6 +6,7 @@ independent of the HubApi facade.
 
 Requires MODELSCOPE_TEST_TOKEN and MODELSCOPE_TEST_OWNER in tests/.env.
 """
+
 from __future__ import annotations
 
 import pytest

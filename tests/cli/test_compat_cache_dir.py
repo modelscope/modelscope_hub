@@ -8,10 +8,18 @@ CLI ``ms download`` behavior.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# ``modelscope_hub.compat.snapshot_download`` (the submodule) is shadowed by
+# the same-named function re-exported in ``compat/__init__``. String targets
+# like ``patch("modelscope_hub.compat.snapshot_download.HubApi")`` resolve to
+# the *function* on Python 3.10 (mock walks attributes before importing
+# submodules), so grab the real module object and use ``patch.object``.
+_snapshot_download_mod = importlib.import_module("modelscope_hub.compat.snapshot_download")
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +82,7 @@ class TestResolveLegacyPaths:
 class TestSnapshotDownloadCacheCompat:
     """Verify path conversion propagates correctly to download_repo."""
 
-    @patch("modelscope_hub.compat.snapshot_download.HubApi")
+    @patch.object(_snapshot_download_mod, "HubApi")
     def test_cache_dir_passed_through(self, MockHubApi):
         """cache_dir without local_dir -> download_repo gets cache_dir directly."""
         from modelscope_hub.compat.snapshot_download import snapshot_download
@@ -84,14 +92,14 @@ class TestSnapshotDownloadCacheCompat:
         mock_api.download_repo.return_value = "/tmp/cache/models/damo--bert/snapshots/master"
         MockHubApi.return_value = mock_api
 
-        result = snapshot_download(model_id="damo/bert", cache_dir="/tmp/cache")
+        snapshot_download(model_id="damo/bert", cache_dir="/tmp/cache")
 
         mock_api.download_repo.assert_called_once()
         call_kwargs = mock_api.download_repo.call_args[1]
         assert call_kwargs["cache_dir"] == "/tmp/cache"
         assert call_kwargs["local_dir"] is None
 
-    @patch("modelscope_hub.compat.snapshot_download.HubApi")
+    @patch.object(_snapshot_download_mod, "HubApi")
     def test_local_dir_explicit_not_overridden(self, MockHubApi):
         """Explicit local_dir is passed through without modification."""
         from modelscope_hub.compat.snapshot_download import snapshot_download
@@ -101,13 +109,13 @@ class TestSnapshotDownloadCacheCompat:
         mock_api.download_repo.return_value = "/custom/dir"
         MockHubApi.return_value = mock_api
 
-        result = snapshot_download(model_id="damo/bert", local_dir="/custom/dir")
+        snapshot_download(model_id="damo/bert", local_dir="/custom/dir")
 
         mock_api.download_repo.assert_called_once()
         call_kwargs = mock_api.download_repo.call_args[1]
         assert call_kwargs["local_dir"] == "/custom/dir"
 
-    @patch("modelscope_hub.compat.snapshot_download.HubApi")
+    @patch.object(_snapshot_download_mod, "HubApi")
     def test_dataset_snapshot_download_cache_dir_passthrough(self, MockHubApi):
         """dataset_snapshot_download passes cache_dir through."""
         from modelscope_hub.compat.snapshot_download import dataset_snapshot_download
@@ -117,8 +125,9 @@ class TestSnapshotDownloadCacheCompat:
         mock_api.download_repo.return_value = "/data/hub/datasets/my_org--dataset1/snapshots/master"
         MockHubApi.return_value = mock_api
 
-        result = dataset_snapshot_download(
-            dataset_id="my_org/dataset1", cache_dir="/data/hub",
+        dataset_snapshot_download(
+            dataset_id="my_org/dataset1",
+            cache_dir="/data/hub",
         )
 
         mock_api.download_repo.assert_called_once()
@@ -144,7 +153,7 @@ class TestFileDownloadCacheCompat:
         mock_api.download_file.return_value = "/data/hub/models/qwen--chat/snapshots/master/model.bin"
         MockHubApi.return_value = mock_api
 
-        result = model_file_download("qwen/chat", "model.bin", cache_dir="/data/hub")
+        model_file_download("qwen/chat", "model.bin", cache_dir="/data/hub")
 
         mock_api.download_file.assert_called_once()
         call_kwargs = mock_api.download_file.call_args[1]
@@ -161,8 +170,10 @@ class TestFileDownloadCacheCompat:
         mock_api.download_file.return_value = "/my/dir/model.bin"
         MockHubApi.return_value = mock_api
 
-        result = model_file_download(
-            "qwen/chat", "model.bin", local_dir="/my/dir",
+        model_file_download(
+            "qwen/chat",
+            "model.bin",
+            local_dir="/my/dir",
         )
 
         mock_api.download_file.assert_called_once()
@@ -179,8 +190,10 @@ class TestFileDownloadCacheCompat:
         mock_api.download_file.return_value = "/data/hub/datasets/org--ds/snapshots/master/train.csv"
         MockHubApi.return_value = mock_api
 
-        result = dataset_file_download(
-            "org/ds", "train.csv", cache_dir="/data/hub",
+        dataset_file_download(
+            "org/ds",
+            "train.csv",
+            cache_dir="/data/hub",
         )
 
         mock_api.download_file.assert_called_once()
@@ -206,14 +219,14 @@ class TestStandardCacheLayout:
         mock_api.download_file.return_value = "/default/cache/models/owner--name/snapshots/master/README.md"
         MockHubApi.return_value = mock_api
 
-        result = model_file_download("owner/name", "README.md")
+        model_file_download("owner/name", "README.md")
 
         mock_api.download_file.assert_called_once()
         call_kwargs = mock_api.download_file.call_args[1]
         assert call_kwargs["cache_dir"] is None
         assert call_kwargs["local_dir"] is None
 
-    @patch("modelscope_hub.compat.snapshot_download.HubApi")
+    @patch.object(_snapshot_download_mod, "HubApi")
     def test_snapshot_no_args_uses_standard_cache(self, MockHubApi):
         """snapshot_download with no explicit dirs -> standard cache layout."""
         from modelscope_hub.compat.snapshot_download import snapshot_download
@@ -223,7 +236,7 @@ class TestStandardCacheLayout:
         mock_api.download_repo.return_value = "/default/cache/models/org--model/snapshots/master"
         MockHubApi.return_value = mock_api
 
-        result = snapshot_download(model_id="org/model")
+        snapshot_download(model_id="org/model")
 
         mock_api.download_repo.assert_called_once()
         call_kwargs = mock_api.download_repo.call_args[1]

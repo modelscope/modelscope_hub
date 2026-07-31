@@ -7,13 +7,22 @@ The legacy ``ms repo <action>`` form is preserved as a hidden alias.
 from __future__ import annotations
 
 import argparse
-from argparse import Action
 from pathlib import Path
 
 from ..constants import RepoType
 from ..errors import AlreadyExistsError, is_repo_exists_error
 from ..types import RepoInfo
-from .base import CLICommand, add_repo_type_arg, error, info, make_api, print_env_table, render_table, success
+from .base import (
+    CLICommand,
+    SubParsers,
+    add_repo_type_arg,
+    error,
+    info,
+    make_api,
+    print_env_table,
+    render_table,
+    success,
+)
 from .compat import add_subcmd_token_endpoint
 
 
@@ -44,7 +53,7 @@ class CreateCommand(CLICommand):
     """``ms create`` — create a new repository."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("create", help="Create a new repository.")
         CreateCommand._add_arguments(p)
         p.set_defaults(_command=CreateCommand)
@@ -57,16 +66,26 @@ class CreateCommand(CLICommand):
         p.add_argument("--license", dest="license", default=None)
         p.add_argument("--chinese-name", "--chinese_name", dest="chinese_name", default=None)
         p.add_argument("--description", dest="description", default=None)
-        p.add_argument("--exist-ok", "--exist_ok", dest="exist_ok",
-                       action="store_true", default=False,
-                       help="Do not error if repository already exists.")
+        p.add_argument(
+            "--exist-ok",
+            "--exist_ok",
+            dest="exist_ok",
+            action="store_true",
+            default=False,
+            help="Do not error if repository already exists.",
+        )
         gated_group = p.add_mutually_exclusive_group()
         gated_group.add_argument(
-            "--gated", dest="gated", action="store_true", default=None,
+            "--gated",
+            dest="gated",
+            action="store_true",
+            default=None,
             help="Create a gated (application-required) repo. Implies private visibility.",
         )
         gated_group.add_argument(
-            "--no-gated", dest="gated", action="store_false",
+            "--no-gated",
+            dest="gated",
+            action="store_false",
             help="Explicitly create a non-gated repo (default).",
         )
         p.add_argument(
@@ -81,16 +100,20 @@ class CreateCommand(CLICommand):
         p.add_argument("--cover-image", dest="cover_image", default=None, help="Studio cover image URL.")
         p.add_argument("--hardware", dest="hardware", default=None, help="Studio hardware spec.")
         p.add_argument(
-            "--category", dest="category", default=None,
+            "--category",
+            dest="category",
+            default=None,
             help="Skill category (required for skill repos). Options: "
-                 "skill-management, developer-tools, marketing-seo, "
-                 "frontend-development, ai-media, code-quality-testing, "
-                 "mobile-development, cloud-devops, other.",
+            "skill-management, developer-tools, marketing-seo, "
+            "frontend-development, ai-media, code-quality-testing, "
+            "mobile-development, cloud-devops, other.",
         )
         p.add_argument(
-            "--skill-file", dest="skill_file", default=None,
+            "--skill-file",
+            dest="skill_file",
+            default=None,
             help="Local zip for skill (max 5 MB, root must contain exactly one "
-                 "SKILL.md with YAML front-matter: name, version, description).",
+            "SKILL.md with YAML front-matter: name, version, description).",
         )
         add_subcmd_token_endpoint(p)
 
@@ -143,7 +166,7 @@ class InfoCommand(CLICommand):
     """``ms info`` — show metadata for a repository."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("info", help="Show metadata for a repository.")
         InfoCommand._add_arguments(p)
         p.set_defaults(_command=InfoCommand)
@@ -164,7 +187,7 @@ class DeleteCommand(CLICommand):
     """``ms delete`` — delete a repository."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("delete", help="Delete a repository (model or dataset).")
         DeleteCommand._add_arguments(p)
         p.set_defaults(_command=DeleteCommand)
@@ -178,9 +201,11 @@ class DeleteCommand(CLICommand):
 
     def execute(self) -> None:
         if not self.args.yes:
-            answer = input(
-                f"Delete {self.args.repo_type} {self.args.repo_id!r}? This cannot be undone. [y/N] "
-            ).strip().lower()
+            answer = (
+                input(f"Delete {self.args.repo_type} {self.args.repo_id!r}? This cannot be undone. [y/N] ")
+                .strip()
+                .lower()
+            )
             if answer not in ("y", "yes"):
                 info("Aborted.")
                 return
@@ -193,7 +218,7 @@ class ListCommand(CLICommand):
     """``ms list`` — list repositories or environment variables."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("list", help="List repositories or show configurable env vars.")
         ListCommand._add_arguments(p)
         p.set_defaults(_command=ListCommand)
@@ -201,7 +226,9 @@ class ListCommand(CLICommand):
     @staticmethod
     def _add_arguments(p) -> None:
         p.add_argument(
-            "--envs", action="store_true", default=False,
+            "--envs",
+            action="store_true",
+            default=False,
             help="Show all configurable environment variables and exit.",
         )
         add_repo_type_arg(
@@ -218,8 +245,9 @@ class ListCommand(CLICommand):
         p.add_argument("--owner", default=None)
         p.add_argument("--search", default=None, help=argparse.SUPPRESS)
         paging = p.add_mutually_exclusive_group()
-        paging.add_argument("--all", dest="fetch_all", action="store_true", default=False,
-                            help="Fetch all pages automatically.")
+        paging.add_argument(
+            "--all", dest="fetch_all", action="store_true", default=False, help="Fetch all pages automatically."
+        )
         paging.add_argument("--page", dest="page_number", type=int, default=1)
         p.add_argument("--page-size", dest="page_size", type=int, default=10)
         add_subcmd_token_endpoint(p)
@@ -256,10 +284,7 @@ class ListCommand(CLICommand):
                 info("(no repositories found)")
                 return
             self._render_table(result.items)
-            info(
-                f"\npage {result.page_number} / total {result.total_count} "
-                f"(page_size={result.page_size})"
-            )
+            info(f"\npage {result.page_number} / total {result.total_count} (page_size={result.page_size})")
 
     def _fetch_all_pages(self, api) -> list[RepoInfo]:
         page_size = min(self.args.page_size, self._MAX_PAGE_SIZE)
@@ -304,15 +329,14 @@ class RepoCommand(CLICommand):
     """Hidden compat dispatcher for ``ms repo create/info/list/delete``."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         parser = subparsers.add_parser("repo")
 
-        try:
-            subparsers._choices_actions = [
-                a for a in subparsers._choices_actions if a.dest != "repo"
-            ]
-        except AttributeError:
-            pass
+        # Hide the compat group from ``--help`` output. ``_choices_actions``
+        # is private argparse state, so access it defensively.
+        choices_actions = getattr(subparsers, "_choices_actions", None)
+        if choices_actions is not None:
+            subparsers._choices_actions = [a for a in choices_actions if a.dest != "repo"]  # type: ignore[attr-defined]
         sub = parser.add_subparsers(dest="repo_action", metavar="ACTION")
         sub.required = True
 

@@ -5,10 +5,10 @@ Includes:
 - Execution tests: mock HubApi for file/folder upload logic
 - Remote tests: real API upload (existing)
 """
+
 from __future__ import annotations
 
 import warnings
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -48,15 +48,27 @@ class TestUploadParser:
             parser.parse_args(["upload", "o/r", ".", "--repo-type", "studio"])
 
     def test_commit_message(self, parser):
-        args = parser.parse_args([
-            "upload", "o/r", ".", "--commit-message", "add weights",
-        ])
+        args = parser.parse_args(
+            [
+                "upload",
+                "o/r",
+                ".",
+                "--commit-message",
+                "add weights",
+            ]
+        )
         assert args.commit_message == "add weights"
 
     def test_commit_description(self, parser):
-        args = parser.parse_args([
-            "upload", "o/r", ".", "--commit-description", "extended desc",
-        ])
+        args = parser.parse_args(
+            [
+                "upload",
+                "o/r",
+                ".",
+                "--commit-description",
+                "extended desc",
+            ]
+        )
         assert args.commit_description == "extended desc"
 
     def test_revision(self, parser):
@@ -100,26 +112,45 @@ class TestUploadParser:
         assert args.disable_tqdm is False
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "upload", "o/r", ".",
-            "--token", "ms-tok", "--endpoint", "https://x.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "upload",
+                "o/r",
+                ".",
+                "--token",
+                "ms-tok",
+                "--endpoint",
+                "https://x.cn",
+            ]
+        )
         assert args.subcmd_token == "ms-tok"
         assert args.subcmd_endpoint == "https://x.cn"
 
     def test_all_options_combined(self, parser):
-        args = parser.parse_args([
-            "upload", "my-org/my-model", "./output", "weights/",
-            "--repo-type", "dataset",
-            "--commit-message", "v2",
-            "--commit-description", "retrained",
-            "--revision", "dev",
-            "--include", "*.safetensors",
-            "--exclude", "*.ckpt",
-            "--max-workers", "4",
-            "--no-cache",
-            "--disable-tqdm",
-        ])
+        args = parser.parse_args(
+            [
+                "upload",
+                "my-org/my-model",
+                "./output",
+                "weights/",
+                "--repo-type",
+                "dataset",
+                "--commit-message",
+                "v2",
+                "--commit-description",
+                "retrained",
+                "--revision",
+                "dev",
+                "--include",
+                "*.safetensors",
+                "--exclude",
+                "*.ckpt",
+                "--max-workers",
+                "4",
+                "--no-cache",
+                "--disable-tqdm",
+            ]
+        )
         assert args.repo_id == "my-org/my-model"
         assert args.local_path == "./output"
         assert args.path_in_repo == "weights/"
@@ -189,11 +220,17 @@ class TestUploadExecute:
     def test_commit_message_forwarded(self, parser, mock_api, tmp_path, capsys):
         test_file = tmp_path / "f.bin"
         test_file.write_text("data")
-        args = parser.parse_args([
-            "upload", "o/r", str(test_file),
-            "--commit-message", "add weights",
-            "--commit-description", "desc",
-        ])
+        args = parser.parse_args(
+            [
+                "upload",
+                "o/r",
+                str(test_file),
+                "--commit-message",
+                "add weights",
+                "--commit-description",
+                "desc",
+            ]
+        )
         with patch("modelscope_hub.cli.upload.make_api", return_value=mock_api):
             UploadCommand(args).execute()
         kw = mock_api.upload_file.call_args.kwargs
@@ -203,9 +240,15 @@ class TestUploadExecute:
     def test_dataset_upload(self, parser, mock_api, tmp_path, capsys):
         test_file = tmp_path / "data.csv"
         test_file.write_text("a,b\n1,2")
-        args = parser.parse_args([
-            "upload", "o/r", str(test_file), "--repo-type", "dataset",
-        ])
+        args = parser.parse_args(
+            [
+                "upload",
+                "o/r",
+                str(test_file),
+                "--repo-type",
+                "dataset",
+            ]
+        )
         with patch("modelscope_hub.cli.upload.make_api", return_value=mock_api):
             UploadCommand(args).execute()
         assert mock_api.upload_file.call_args.args[1] == "dataset"
@@ -222,10 +265,17 @@ class TestUploadExecute:
         upload_dir = tmp_path / "src"
         upload_dir.mkdir()
         (upload_dir / "a.py").write_text("x")
-        args = parser.parse_args([
-            "upload", "o/r", str(upload_dir),
-            "--include", "*.py", "--exclude", "*.pyc",
-        ])
+        args = parser.parse_args(
+            [
+                "upload",
+                "o/r",
+                str(upload_dir),
+                "--include",
+                "*.py",
+                "--exclude",
+                "*.pyc",
+            ]
+        )
         with patch("modelscope_hub.cli.upload.make_api", return_value=mock_api):
             UploadCommand(args).execute()
         kw = mock_api.upload_folder.call_args.kwargs
@@ -260,8 +310,7 @@ class TestUploadExecute:
     def test_resolve_paths_no_local_path(self, parser, mock_api, tmp_path, capsys):
         args = parser.parse_args(["upload", "o/nonexistent"])
         cmd = UploadCommand(args)
-        with patch("os.path.isfile", return_value=False), \
-             patch("os.path.isdir", return_value=False):
+        with patch("os.path.isfile", return_value=False), patch("os.path.isdir", return_value=False):
             local, pir = cmd._resolve_paths()
         assert local == "."
         assert pir is None

@@ -8,17 +8,20 @@ both production deployments and ad-hoc experimentation.
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
-
 # ---------------------------------------------------------------------------
 # StrEnum compatibility shim (Python 3.10 lacks :class:`enum.StrEnum`).
+# ``sys.version_info`` branching (instead of try/except) lets type checkers
+# resolve the correct definition statically.
 # ---------------------------------------------------------------------------
-try:  # pragma: no cover - exercised implicitly by the import path
-    from enum import StrEnum  # type: ignore[attr-defined]
-except ImportError:  # Python 3.10
-    class StrEnum(str, Enum):  # type: ignore[no-redef]
+if sys.version_info >= (3, 11):
+    from enum import StrEnum
+else:
+
+    class StrEnum(str, Enum):
         """Minimal backport of :class:`enum.StrEnum` for Python 3.10."""
 
         def __str__(self) -> str:  # noqa: D401 - mirror stdlib behaviour
@@ -38,10 +41,16 @@ class EnvVar:
     category: str  # Core, Network, Download, Upload, Logging, Deprecated
     deprecated_names: tuple[str, ...] = ()
 
+
 ENV_REGISTRY: list[EnvVar] = []
 
 CATEGORY_ORDER: tuple[str, ...] = (
-    "Core", "Network", "Download", "Upload", "Logging", "Deprecated",
+    "Core",
+    "Network",
+    "Download",
+    "Upload",
+    "Logging",
+    "Deprecated",
 )
 
 
@@ -75,7 +84,7 @@ class Visibility(IntEnum):
         return self.name.lower()
 
     @classmethod
-    def from_label(cls, label: str) -> "Visibility":
+    def from_label(cls, label: str) -> Visibility:
         """Resolve a visibility from its lowercase label or numeric string.
 
         Supports both label strings ('private', 'internal', 'public') and
@@ -139,9 +148,9 @@ def _env(name: str, *deprecated_names: str) -> str | None:
         value = os.environ.get(old)
         if value is not None:
             import warnings
+
             warnings.warn(
-                f"Environment variable {old!r} is deprecated, "
-                f"use {name!r} instead.",
+                f"Environment variable {old!r} is deprecated, use {name!r} instead.",
                 FutureWarning,
                 stacklevel=4,
             )
@@ -159,8 +168,7 @@ def _env_int(
     """Read a positive integer from the environment and register it."""
     all_deprecated = deprecated_names or _DEPRECATED_LOOKUP.get(name, ())
     if description and category:
-        _env_register(name, str(default), description, category,
-                      deprecated_names=all_deprecated)
+        _env_register(name, str(default), description, category, deprecated_names=all_deprecated)
     raw = _env(name, *all_deprecated)
     if raw is None or raw.strip() == "":
         return default
@@ -186,8 +194,7 @@ def _env_int_mb(
     """
     all_deprecated = deprecated_byte_names or _DEPRECATED_LOOKUP.get(name, ())
     if description and category:
-        _env_register(name, str(default_mb), description, category,
-                      deprecated_names=all_deprecated)
+        _env_register(name, str(default_mb), description, category, deprecated_names=all_deprecated)
     # Check the new name first (value in MB)
     raw = os.environ.get(name)
     if raw is not None and raw.strip():
@@ -201,6 +208,7 @@ def _env_int_mb(
         raw = os.environ.get(old)
         if raw is not None and raw.strip():
             import warnings
+
             warnings.warn(
                 f"Environment variable {old!r} is deprecated, "
                 f"use {name!r} instead. Note: {name!r} expects a value in MB.",
@@ -224,8 +232,7 @@ def _env_bool(
 ) -> bool:
     """Read a boolean from the environment and register it."""
     if description and category:
-        _env_register(name, str(default).lower(), description, category,
-                      deprecated_names=deprecated_names)
+        _env_register(name, str(default).lower(), description, category, deprecated_names=deprecated_names)
     all_deprecated = deprecated_names or _DEPRECATED_LOOKUP.get(name, ())
     raw = _env(name, *all_deprecated)
     if raw is None or raw.strip() == "":
@@ -266,19 +273,25 @@ _env_register("MODELSCOPE_HOME", "~/.modelscope", "SDK config directory", "Core"
 # Network / IO tunables
 # ---------------------------------------------------------------------------
 API_TIMEOUT: int = _env_int(
-    "MODELSCOPE_API_TIMEOUT", 60,
-    "HTTP request timeout (seconds)", "Network",
+    "MODELSCOPE_API_TIMEOUT",
+    60,
+    "HTTP request timeout (seconds)",
+    "Network",
     "API_TIMEOUT",
 )
 
 API_CONNECT_TIMEOUT: int = _env_int(
-    "MODELSCOPE_API_CONNECT_TIMEOUT", 10,
-    "HTTP connect timeout (seconds)", "Network",
+    "MODELSCOPE_API_CONNECT_TIMEOUT",
+    10,
+    "HTTP connect timeout (seconds)",
+    "Network",
 )
 
 API_MAX_RETRIES: int = _env_int(
-    "MODELSCOPE_API_MAX_RETRIES", 5,
-    "Max retry attempts for transient failures", "Network",
+    "MODELSCOPE_API_MAX_RETRIES",
+    5,
+    "Max retry attempts for transient failures",
+    "Network",
     "API_MAX_RETRIES",
 )
 
@@ -298,38 +311,54 @@ DEFAULT_INTL_ENDPOINT: str = "https://www.modelscope.ai"
 # Download tunables
 # ---------------------------------------------------------------------------
 DOWNLOAD_CHUNK_SIZE: int = _env_int_mb(
-    "MODELSCOPE_DOWNLOAD_CHUNK_SIZE_MB", 1,
-    "Streaming chunk size (MB)", "Download",
+    "MODELSCOPE_DOWNLOAD_CHUNK_SIZE_MB",
+    1,
+    "Streaming chunk size (MB)",
+    "Download",
     "DOWNLOAD_CHUNK_SIZE",
 )
 
-DOWNLOAD_PARALLEL_THRESHOLD: int = _env_int(
-    "MODELSCOPE_DOWNLOAD_PARALLEL_THRESHOLD_MB", 500,
-    "Parallel download threshold (MB)", "Download",
-    "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB",
-) * 1024 * 1024
+DOWNLOAD_PARALLEL_THRESHOLD: int = (
+    _env_int(
+        "MODELSCOPE_DOWNLOAD_PARALLEL_THRESHOLD_MB",
+        500,
+        "Parallel download threshold (MB)",
+        "Download",
+        "MODELSCOPE_PARALLEL_DOWNLOAD_THRESHOLD_MB",
+    )
+    * 1024
+    * 1024
+)
 
 DOWNLOAD_PARALLELS: int = _env_int(
-    "MODELSCOPE_DOWNLOAD_PARALLEL_WORKERS", 1,
-    "Parallel range-download streams", "Download",
+    "MODELSCOPE_DOWNLOAD_PARALLEL_WORKERS",
+    1,
+    "Parallel range-download streams",
+    "Download",
     "MODELSCOPE_DOWNLOAD_PARALLELS",
 )
 
 DOWNLOAD_RETRY_TIMES: int = _env_int(
-    "MODELSCOPE_DOWNLOAD_MAX_RETRIES", 5,
-    "Per-file download retry count", "Download",
+    "MODELSCOPE_DOWNLOAD_MAX_RETRIES",
+    5,
+    "Per-file download retry count",
+    "Download",
     "DOWNLOAD_RETRY_TIMES",
 )
 
 DOWNLOAD_TIMEOUT: int = _env_int(
-    "MODELSCOPE_DOWNLOAD_TIMEOUT", 60,
-    "Per-file download timeout (seconds)", "Download",
+    "MODELSCOPE_DOWNLOAD_TIMEOUT",
+    60,
+    "Per-file download timeout (seconds)",
+    "Download",
     "DOWNLOAD_TIMEOUT",
 )
 
 DOWNLOAD_PART_SIZE: int = _env_int_mb(
-    "MODELSCOPE_DOWNLOAD_PART_SIZE_MB", 160,
-    "Parallel range chunk size (MB)", "Download",
+    "MODELSCOPE_DOWNLOAD_PART_SIZE_MB",
+    160,
+    "Parallel range chunk size (MB)",
+    "Download",
     "DOWNLOAD_PART_SIZE",
 )
 
@@ -340,20 +369,36 @@ FILE_HASH_FIELD: str = "Sha256"
 """API response field name for file hash."""
 
 ENV_FILE_LOCK: str = "MODELSCOPE_DOWNLOAD_FILE_LOCK"
-_env_register(ENV_FILE_LOCK, "true", "File lock for multiprocess download safety", "Download",
-              deprecated_names=("MODELSCOPE_HUB_FILE_LOCK",))
+_env_register(
+    ENV_FILE_LOCK,
+    "true",
+    "File lock for multiprocess download safety",
+    "Download",
+    deprecated_names=("MODELSCOPE_HUB_FILE_LOCK",),
+)
 
 ENV_INTRA_CLOUD_ACCELERATION: str = "MODELSCOPE_DOWNLOAD_INTRA_CLOUD"
-_env_register(ENV_INTRA_CLOUD_ACCELERATION, "true", "Alibaba cloud intra-cloud acceleration", "Download",
-              deprecated_names=("INTRA_CLOUD_ACCELERATION",))
+_env_register(
+    ENV_INTRA_CLOUD_ACCELERATION,
+    "true",
+    "Alibaba cloud intra-cloud acceleration",
+    "Download",
+    deprecated_names=("INTRA_CLOUD_ACCELERATION",),
+)
 
 ENV_INTRA_CLOUD_REGION: str = "MODELSCOPE_DOWNLOAD_INTRA_CLOUD_REGION"
-_env_register(ENV_INTRA_CLOUD_REGION, "(auto)", "Override intra-cloud region ID", "Download",
-              deprecated_names=("INTRA_CLOUD_ACCELERATION_REGION",))
+_env_register(
+    ENV_INTRA_CLOUD_REGION,
+    "(auto)",
+    "Override intra-cloud region ID",
+    "Download",
+    deprecated_names=("INTRA_CLOUD_ACCELERATION_REGION",),
+)
 
 ENV_INTER_CLOUD_REGIONS: str = "MODELSCOPE_DOWNLOAD_INTER_CLOUD_REGIONS"
-_env_register(ENV_INTER_CLOUD_REGIONS, "",
-              "Comma-separated peer regions for cross-region internal acceleration", "Download")
+_env_register(
+    ENV_INTER_CLOUD_REGIONS, "", "Comma-separated peer regions for cross-region internal acceleration", "Download"
+)
 
 UPLOAD_LFS_THRESHOLD: int = _env_int("UPLOAD_LFS_THRESHOLD", 5 * 1024 * 1024)
 UPLOAD_LFS_ENFORCE_THRESHOLD: int = _env_int("UPLOAD_LFS_ENFORCE_THRESHOLD", 1 * 1024 * 1024)
@@ -366,21 +411,23 @@ UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD: int = _env_int("UPLOAD_BLOB_TQDM_DISABLE_THR
 
 # Upload: blob timeout
 UPLOAD_BLOB_CONNECT_TIMEOUT: int = _env_int(
-    "MODELSCOPE_UPLOAD_CONNECT_TIMEOUT", 30,
-    "Upload connect timeout (seconds)", "Upload",
+    "MODELSCOPE_UPLOAD_CONNECT_TIMEOUT",
+    30,
+    "Upload connect timeout (seconds)",
+    "Upload",
     "UPLOAD_BLOB_CONNECT_TIMEOUT",
 )
 UPLOAD_BLOB_READ_TIMEOUT: int = _env_int(
-    "MODELSCOPE_UPLOAD_READ_TIMEOUT", 3600,
-    "Upload read timeout (seconds)", "Upload",
+    "MODELSCOPE_UPLOAD_READ_TIMEOUT",
+    3600,
+    "Upload read timeout (seconds)",
+    "Upload",
     "UPLOAD_BLOB_READ_TIMEOUT",
 )
 
 # Upload: urllib3 retry
 UPLOAD_RETRY_ALLOWED_METHODS: frozenset[str] = frozenset(
-    os.environ.get(
-        "UPLOAD_RETRY_ALLOWED_METHODS", "GET,HEAD,DELETE,OPTIONS,TRACE"
-    ).split(",")
+    os.environ.get("UPLOAD_RETRY_ALLOWED_METHODS", "GET,HEAD,DELETE,OPTIONS,TRACE").split(",")
 )
 
 # Upload: batching
@@ -415,15 +462,19 @@ UPLOAD_REACT_MAX_DELAY: int = _env_int("UPLOAD_REACT_MAX_DELAY", 120)
 
 # Upload: workers
 DEFAULT_MAX_WORKERS: int = _env_int(
-    "MODELSCOPE_UPLOAD_MAX_WORKERS", min(8, (os.cpu_count() or 4) + 4),
-    "Default parallel worker threads (min(8, cpu+4))", "Upload",
+    "MODELSCOPE_UPLOAD_MAX_WORKERS",
+    min(8, (os.cpu_count() or 4) + 4),
+    "Default parallel worker threads (min(8, cpu+4))",
+    "Upload",
     "DEFAULT_MAX_WORKERS",
 )
 
 # Upload: cache / tracker
 UPLOAD_USE_CACHE: bool = _env_bool(
-    "MODELSCOPE_UPLOAD_CACHE", True,
-    "Enable resumable upload cache", "Upload",
+    "MODELSCOPE_UPLOAD_CACHE",
+    True,
+    "Enable resumable upload cache",
+    "Upload",
     "UPLOAD_USE_CACHE",
 )
 UPLOAD_CACHE_FILE: str = ".ms_upload_cache"
@@ -431,13 +482,17 @@ UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 
 # Upload: limits
 UPLOAD_MAX_FILE_SIZE: int = _env_int_mb(
-    "MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB", 100 * 1024,
-    "Max single file size (MB, default 100 GB)", "Upload",
+    "MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB",
+    100 * 1024,
+    "Max single file size (MB, default 100 GB)",
+    "Upload",
     "UPLOAD_MAX_FILE_SIZE",
 )
 UPLOAD_MAX_FILE_COUNT: int = _env_int(
-    "MODELSCOPE_UPLOAD_MAX_FILE_COUNT", 100_000,
-    "Max total files per upload", "Upload",
+    "MODELSCOPE_UPLOAD_MAX_FILE_COUNT",
+    100_000,
+    "Max total files per upload",
+    "Upload",
     "UPLOAD_MAX_FILE_COUNT",
 )
 UPLOAD_MAX_FILE_COUNT_IN_DIR: int = _env_int("UPLOAD_MAX_FILE_COUNT_IN_DIR", 50_000)
@@ -445,24 +500,94 @@ UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT: int = _env_int("UPLOAD_NORMAL_FILE_SIZE_TOT
 
 # LFS suffix lists (from old SDK — determines upload mode regardless of size)
 MODEL_LFS_SUFFIX: list[str] = [
-    ".7z", ".arrow", ".bin", ".bz2", ".ckpt", ".ftz", ".gz", ".h5",
-    ".joblib", ".mlmodel", ".model", ".msgpack", ".npy", ".npz", ".onnx",
-    ".ot", ".parquet", ".pb", ".pickle", ".pkl", ".pt", ".pth", ".rar",
-    ".safetensors", ".tar", ".tflite", ".tgz", ".wasm", ".xz", ".zip", ".zst",
+    ".7z",
+    ".arrow",
+    ".bin",
+    ".bz2",
+    ".ckpt",
+    ".ftz",
+    ".gz",
+    ".h5",
+    ".joblib",
+    ".mlmodel",
+    ".model",
+    ".msgpack",
+    ".npy",
+    ".npz",
+    ".onnx",
+    ".ot",
+    ".parquet",
+    ".pb",
+    ".pickle",
+    ".pkl",
+    ".pt",
+    ".pth",
+    ".rar",
+    ".safetensors",
+    ".tar",
+    ".tflite",
+    ".tgz",
+    ".wasm",
+    ".xz",
+    ".zip",
+    ".zst",
 ]
 DATASET_LFS_SUFFIX: list[str] = [
-    ".7z", ".aac", ".arrow", ".audio", ".bmp", ".bin", ".bz2", ".flac",
-    ".ftz", ".gif", ".gz", ".h5", ".jack", ".jpeg", ".jpg", ".png", ".jsonl",
-    ".joblib", ".lz4", ".msgpack", ".npy", ".npz", ".ot", ".parquet", ".pb",
-    ".pickle", ".pcm", ".pkl", ".raw", ".rar", ".sam", ".tar", ".tgz",
-    ".wasm", ".wav", ".webm", ".webp", ".zip", ".zst", ".tiff", ".mp3",
-    ".mp4", ".ogg",
+    ".7z",
+    ".aac",
+    ".arrow",
+    ".audio",
+    ".bmp",
+    ".bin",
+    ".bz2",
+    ".flac",
+    ".ftz",
+    ".gif",
+    ".gz",
+    ".h5",
+    ".jack",
+    ".jpeg",
+    ".jpg",
+    ".png",
+    ".jsonl",
+    ".joblib",
+    ".lz4",
+    ".msgpack",
+    ".npy",
+    ".npz",
+    ".ot",
+    ".parquet",
+    ".pb",
+    ".pickle",
+    ".pcm",
+    ".pkl",
+    ".raw",
+    ".rar",
+    ".sam",
+    ".tar",
+    ".tgz",
+    ".wasm",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".zip",
+    ".zst",
+    ".tiff",
+    ".mp3",
+    ".mp4",
+    ".ogg",
 ]
 
 # Default ignore patterns for folder upload
 DEFAULT_IGNORE_PATTERNS: list[str] = [
-    ".git", ".git/*", "*/.git", "**/.git/**",
-    ".cache", ".cache/*", "*/.cache", "**/.cache/**",
+    ".git",
+    ".git/*",
+    "*/.git",
+    "**/.git/**",
+    ".cache",
+    ".cache/*",
+    "*/.cache",
+    "**/.cache/**",
 ]
 
 
@@ -486,8 +611,13 @@ MODELSCOPE_ASCII = r"""
 # Logging / deprecated (read logic in utils/logger.py, cli/compat.py)
 # ---------------------------------------------------------------------------
 _env_register("MODELSCOPE_LOG_LEVEL", "INFO", "SDK log level (DEBUG/INFO/WARNING/ERROR)", "Logging")
-_env_register("MODELSCOPE_NO_DEPRECATION_WARNINGS", "-", "Suppress deprecation warnings", "Logging",
-              deprecated_names=("MODELSCOPE_HUB_NO_DEPRECATION_WARNINGS",))
+_env_register(
+    "MODELSCOPE_NO_DEPRECATION_WARNINGS",
+    "-",
+    "Suppress deprecation warnings",
+    "Logging",
+    deprecated_names=("MODELSCOPE_HUB_NO_DEPRECATION_WARNINGS",),
+)
 
 
 # ---------------------------------------------------------------------------

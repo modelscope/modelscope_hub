@@ -20,7 +20,7 @@ def _resolve_legacy_paths(
     repo_id: str,
     cache_dir: str | None,
     local_dir: str | None,
-    api: "HubApi",
+    api: HubApi,
 ) -> tuple[str | None, str | None]:
     """Resolve cache_dir/local_dir for legacy API compatibility.
 
@@ -63,7 +63,10 @@ def model_file_download(
         except Exception:
             pass
     effective_cache, effective_local = _resolve_legacy_paths(
-        model_id, cache_dir, local_dir, api,
+        model_id,
+        cache_dir,
+        local_dir,
+        api,
     )
     try:
         result = api.download_file(
@@ -77,9 +80,7 @@ def model_file_download(
             user_agent=user_agent,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
-        raise _requests.exceptions.HTTPError(
-            str(e), response=getattr(e, 'response', None)
-        ) from e
+        raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
     return str(result)
 
 
@@ -112,7 +113,10 @@ def dataset_file_download(
         except Exception:
             pass
     effective_cache, effective_local = _resolve_legacy_paths(
-        dataset_id, cache_dir, local_dir, api,
+        dataset_id,
+        cache_dir,
+        local_dir,
+        api,
     )
     try:
         result = api.download_file(
@@ -126,7 +130,5 @@ def dataset_file_download(
             user_agent=user_agent,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
-        raise _requests.exceptions.HTTPError(
-            str(e), response=getattr(e, 'response', None)
-        ) from e
+        raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
     return str(result)
