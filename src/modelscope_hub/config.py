@@ -64,6 +64,7 @@ class HubConfig:
     token: str | None = None
     _logged_out: bool = field(default=False, init=False, repr=False)
     _endpoint_overridden: bool = field(default=False, init=False, repr=False)
+    _token_overridden: bool = field(default=False, init=False, repr=False)
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -94,8 +95,17 @@ class HubConfig:
         if self.endpoint and not self.endpoint.startswith(("http://", "https://")):
             self.endpoint = f"https://{self.endpoint}"
         self.endpoint = self.endpoint.rstrip("/")
-        if self.token is None:
-            self.token = os.environ.get(ENV_TOKEN) or self.load_token()
+        # Token precedence: explicit arg > MODELSCOPE_API_TOKEN env var >
+        # persisted credential. An explicitly provided value wins even when
+        # empty ("" means "use no token"), so an explicit override never
+        # silently falls back to the stored credential.
+        if self.token is not None:
+            self._token_overridden = True
+        elif ENV_TOKEN in os.environ:
+            self.token = os.environ[ENV_TOKEN]
+            self._token_overridden = True
+        else:
+            self.token = self.load_token()
 
     # ------------------------------------------------------------------
     # Path helpers

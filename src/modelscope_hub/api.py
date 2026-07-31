@@ -160,6 +160,7 @@ class HubApi:
             self._config._endpoint_overridden = True
         if token is not None:
             self._config.token = token
+            self._config._token_overridden = True
 
         self._openapi: OpenAPIClient | None = None
         self._legacy: LegacyClient | None = None
@@ -445,9 +446,12 @@ class HubApi:
             jar.set("m_session_id", token, domain=domain, path="/")
             return jar
 
-        cookies = self._config.load_cookies()
-        if cookies is not None:
-            return cookies
+        # An explicitly overridden (empty) token means "run without local
+        # credentials" -- never silently fall back to the persisted cookies.
+        if not getattr(self._config, "_token_overridden", False):
+            cookies = self._config.load_cookies()
+            if cookies is not None:
+                return cookies
 
         if cookies_required:
             raise AuthenticationError(

@@ -17,6 +17,7 @@ Design goals
 
 from __future__ import annotations
 
+import random
 import time
 from pathlib import Path
 from typing import Any, BinaryIO, Iterable, Mapping
@@ -161,7 +162,7 @@ class OpenAPIClient:
     def _resolve_token(self) -> str | None:
         """Resolve the current API token (from config or persisted credential)."""
         token = self._config.token
-        if not token:
+        if not token and not getattr(self._config, "_token_overridden", False):
             token = self._config.load_token()
             if token:
                 self._config.token = token
@@ -185,19 +186,33 @@ class OpenAPIClient:
         return {"m_session_id": token, "modelscope_session": token}
 
     def _same_host_as_endpoint(self, target_url: str) -> bool:
-        """True when *target_url* points at the configured endpoint host.
+        """True when *target_url* points at the endpoint host or its LFS sibling.
 
         Credentials (the ``Authorization`` header and session cookies) must only
-        be attached to our own host. Absolute URLs pointing elsewhere -- e.g. the
-        signed OSS blob-upload URLs returned by the LFS batch API -- must never
-        receive our token, otherwise it leaks to a third-party domain.
+        be attached to our own hosts. Absolute URLs pointing elsewhere -- e.g. the
+        signed OSS blob-upload URLs on ``*.aliyuncs.com`` -- must never receive
+        our token, otherwise it leaks to a third-party domain.
+
+        The LFS blob endpoints live on a sibling host derived from the endpoint
+        by swapping the leading label for ``lfs`` / ``pre-lfs`` (e.g. endpoint
+        ``pre.modelscope.cn`` -> ``pre-lfs.modelscope.cn``, ``modelscope.cn`` ->
+        ``lfs.modelscope.cn``). Those hosts DO require our credentials, so they
+        are trusted here too.
         """
         try:
-            target_host = urlsplit(target_url).hostname or ""
+            target_host = (urlsplit(target_url).hostname or "").lower()
         except ValueError:
             return False
-        endpoint_host = urlsplit(self._config.endpoint or "").hostname or ""
-        return bool(target_host) and target_host.lower() == endpoint_host.lower()
+        endpoint_host = (urlsplit(self._config.endpoint or "").hostname or "").lower()
+        if not target_host or not endpoint_host:
+            return False
+        if target_host == endpoint_host:
+            return True
+        # Base domain = endpoint host minus its leading sub-label (if any), so
+        # ``pre.modelscope.cn`` -> ``modelscope.cn`` while ``modelscope.cn`` stays.
+        labels = endpoint_host.split(".")
+        base = ".".join(labels[1:]) if len(labels) >= 3 else endpoint_host
+        return target_host in {f"lfs.{base}", f"pre-lfs.{base}"}
 
     @staticmethod
     def _flatten_filters(filters: Filters) -> QueryParams:
@@ -310,13 +325,25 @@ class OpenAPIClient:
                     return self._decode(response, unwrap=True)
 
             # Retry policy: idempotent methods + known-idempotent POST paths.
+            # A rate-limited / lock-busy response (RateLimitError) is always
+            # safe to retry -- even for a non-idempotent POST -- because the
+            # server rejected the request WITHOUT processing it (unlike
+            # NetworkError/ServerError, which may have been partially applied).
             is_retryable = (
-                method_upper in _IDEMPOTENT_METHODS
+                isinstance(last_exc, RateLimitError)
+                or method_upper in _IDEMPOTENT_METHODS
                 or (method_upper == "POST" and path and any(path.endswith(p) for p in _RETRYABLE_POST_PATHS))
             )
             if attempt >= attempts or not is_retryable:
                 break
-            backoff = min(2 ** (attempt - 1), 16)
+            # Honor a server-provided Retry-After; otherwise exponential backoff.
+            # A little jitter avoids concurrent losers retrying in lockstep and
+            # colliding on the same per-repo commit lock again.
+            retry_after = getattr(last_exc, "retry_after", None)
+            if retry_after is not None:
+                backoff: float = float(retry_after)
+            else:
+                backoff = min(2 ** (attempt - 1), 16) + random.uniform(0, 0.5)
             _logger.debug(
                 "Retrying %s %s after %s (attempt %d/%d)",
                 method_upper, final_url, last_exc, attempt, attempts,
