@@ -17,10 +17,12 @@ Design goals
 
 from __future__ import annotations
 
+import random
 import time
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Mapping
-from urllib.parse import urljoin
+from typing import Any, BinaryIO
+from urllib.parse import urljoin, urlsplit
 
 import requests
 
@@ -56,7 +58,9 @@ _RETRYABLE_POST_PATHS: frozenset[str] = frozenset({"/deploy", "/stop", "/undeplo
 
 # Errors that warrant a transparent retry.
 _RETRYABLE_EXC: tuple[type[BaseException], ...] = (
-    NetworkError, ServerError, RateLimitError,
+    NetworkError,
+    ServerError,
+    RateLimitError,
 )
 
 JSON = dict[str, Any]
@@ -93,8 +97,7 @@ class OpenAPIClient:
         self._config = config or get_default_config()
         self._session = session or requests.Session()
         self._timeout: float | tuple[float, float] = (
-            float(timeout) if timeout is not None
-            else (float(API_CONNECT_TIMEOUT), float(API_TIMEOUT))
+            float(timeout) if timeout is not None else (float(API_CONNECT_TIMEOUT), float(API_TIMEOUT))
         )
         self._max_retries = int(max_retries) if max_retries is not None else int(API_MAX_RETRIES)
 
@@ -105,7 +108,7 @@ class OpenAPIClient:
         """Release the underlying HTTP session."""
         self._session.close()
 
-    def __enter__(self) -> "OpenAPIClient":
+    def __enter__(self) -> OpenAPIClient:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -138,10 +141,16 @@ class OpenAPIClient:
         When *unwrap* is ``False`` the raw :class:`requests.Response` is returned.
         """
         return self._request(
-            method, path,
+            method,
+            path,
             url=url,
-            params=params, json_body=json_body, data=data, files=files,
-            headers=headers, require_token=require_token, unwrap=unwrap,
+            params=params,
+            json_body=json_body,
+            data=data,
+            files=files,
+            headers=headers,
+            require_token=require_token,
+            unwrap=unwrap,
             timeout=timeout,
         )
 
@@ -151,7 +160,7 @@ class OpenAPIClient:
     @property
     def base_url(self) -> str:
         """Fully-qualified OpenAPI base URL, including trailing slash."""
-        return f"{self._config.endpoint.rstrip('/')}{OPENAPI_PREFIX}/"
+        return f"{(self._config.endpoint or '').rstrip('/')}{OPENAPI_PREFIX}/"
 
     def _url(self, path: str) -> str:
         # ``urljoin`` treats absolute leading slashes as roots, which would
@@ -161,7 +170,7 @@ class OpenAPIClient:
     def _resolve_token(self) -> str | None:
         """Resolve the current API token (from config or persisted credential)."""
         token = self._config.token
-        if not token:
+        if not token and not getattr(self._config, "_token_overridden", False):
             token = self._config.load_token()
             if token:
                 self._config.token = token
@@ -171,9 +180,7 @@ class OpenAPIClient:
         token = self._resolve_token()
         if not token:
             if require_token:
-                raise AuthenticationError(
-                    "Missing API token. Call HubApi.login(...) or set MODELSCOPE_API_TOKEN."
-                )
+                raise AuthenticationError("Missing API token. Call HubApi.login(...) or set MODELSCOPE_API_TOKEN.")
             return {}
         return {"Authorization": f"Bearer {token}"}
 
@@ -183,6 +190,35 @@ class OpenAPIClient:
         if not token:
             return {}
         return {"m_session_id": token, "modelscope_session": token}
+
+    def _same_host_as_endpoint(self, target_url: str) -> bool:
+        """True when *target_url* points at the endpoint host or its LFS sibling.
+
+        Credentials (the ``Authorization`` header and session cookies) must only
+        be attached to our own hosts. Absolute URLs pointing elsewhere -- e.g. the
+        signed OSS blob-upload URLs on ``*.aliyuncs.com`` -- must never receive
+        our token, otherwise it leaks to a third-party domain.
+
+        The LFS blob endpoints live on a sibling host derived from the endpoint
+        by swapping the leading label for ``lfs`` / ``pre-lfs`` (e.g. endpoint
+        ``pre.modelscope.cn`` -> ``pre-lfs.modelscope.cn``, ``modelscope.cn`` ->
+        ``lfs.modelscope.cn``). Those hosts DO require our credentials, so they
+        are trusted here too.
+        """
+        try:
+            target_host = (urlsplit(target_url).hostname or "").lower()
+        except ValueError:
+            return False
+        endpoint_host = (urlsplit(self._config.endpoint or "").hostname or "").lower()
+        if not target_host or not endpoint_host:
+            return False
+        if target_host == endpoint_host:
+            return True
+        # Base domain = endpoint host minus its leading sub-label (if any), so
+        # ``pre.modelscope.cn`` -> ``modelscope.cn`` while ``modelscope.cn`` stays.
+        labels = endpoint_host.split(".")
+        base = ".".join(labels[1:]) if len(labels) >= 3 else endpoint_host
+        return target_host in {f"lfs.{base}", f"pre-lfs.{base}"}
 
     @staticmethod
     def _flatten_filters(filters: Filters) -> QueryParams:
@@ -238,7 +274,15 @@ class OpenAPIClient:
         final URL is derived from *path* via :meth:`_url`.
         """
         final_url = url or self._url(path)
-        merged_headers = dict(self._auth_headers(require_token=require_token))
+        # Only attach our credentials when the target is our own host. Absolute
+        # URLs to a foreign host (e.g. signed OSS upload URLs) must not receive
+        # the Authorization header or session cookies, which carry the token.
+        if self._same_host_as_endpoint(final_url):
+            merged_headers = dict(self._auth_headers(require_token=require_token))
+            request_cookies = self._auth_cookies()
+        else:
+            merged_headers = {}
+            request_cookies = {}
         if headers:
             merged_headers.update(headers)
 
@@ -257,7 +301,7 @@ class OpenAPIClient:
                     data=data,
                     files=files,
                     headers=merged_headers,
-                    cookies=self._auth_cookies(),
+                    cookies=request_cookies,
                     timeout=timeout if timeout is not None else self._timeout,
                 )
             except requests.Timeout as exc:
@@ -287,16 +331,32 @@ class OpenAPIClient:
                     return self._decode(response, unwrap=True)
 
             # Retry policy: idempotent methods + known-idempotent POST paths.
+            # A rate-limited / lock-busy response (RateLimitError) is always
+            # safe to retry -- even for a non-idempotent POST -- because the
+            # server rejected the request WITHOUT processing it (unlike
+            # NetworkError/ServerError, which may have been partially applied).
             is_retryable = (
-                method_upper in _IDEMPOTENT_METHODS
+                isinstance(last_exc, RateLimitError)
+                or method_upper in _IDEMPOTENT_METHODS
                 or (method_upper == "POST" and path and any(path.endswith(p) for p in _RETRYABLE_POST_PATHS))
             )
             if attempt >= attempts or not is_retryable:
                 break
-            backoff = min(2 ** (attempt - 1), 16)
+            # Honor a server-provided Retry-After; otherwise exponential backoff.
+            # A little jitter avoids concurrent losers retrying in lockstep and
+            # colliding on the same per-repo commit lock again.
+            retry_after = getattr(last_exc, "retry_after", None)
+            if retry_after is not None:
+                backoff: float = float(retry_after)
+            else:
+                backoff = min(2 ** (attempt - 1), 16) + random.uniform(0, 0.5)
             _logger.debug(
                 "Retrying %s %s after %s (attempt %d/%d)",
-                method_upper, final_url, last_exc, attempt, attempts,
+                method_upper,
+                final_url,
+                last_exc,
+                attempt,
+                attempts,
             )
             time.sleep(backoff)
 
@@ -347,9 +407,7 @@ class OpenAPIClient:
         ``custom_tag``, ``license``, ``deploy``.
         """
         if page_number * page_size > 3000:
-            raise InvalidParameter(
-                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
-            )
+            raise InvalidParameter(f"page_number * page_size must be <= 3000 (got {page_number * page_size}).")
         params = self._merge_params(
             {
                 "search": search,
@@ -381,9 +439,7 @@ class OpenAPIClient:
     ) -> JSON:
         """``GET /datasets`` — list datasets. Filter keys: ``task``, ``license``."""
         if page_number * page_size > 3000:
-            raise InvalidParameter(
-                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
-            )
+            raise InvalidParameter(f"page_number * page_size must be <= 3000 (got {page_number * page_size}).")
         params = self._merge_params(
             {
                 "search": search,
@@ -468,9 +524,7 @@ class OpenAPIClient:
         ``owner``.
         """
         if page_number * page_size > 3000:
-            raise InvalidParameter(
-                f"page_number * page_size must be <= 3000 (got {page_number * page_size})."
-            )
+            raise InvalidParameter(f"page_number * page_size must be <= 3000 (got {page_number * page_size}).")
         params = self._merge_params(
             {
                 "search": search,
@@ -646,9 +700,7 @@ class OpenAPIClient:
     ) -> JSON:
         """``GET /mcp/servers/{id}`` — fetch a single MCP server's manifest."""
         params = self._merge_params({"get_operational_url": get_operational_url})
-        return self._request(
-            "GET", f"/mcp/servers/{server_id}", params=params, require_token=False
-        )
+        return self._request("GET", f"/mcp/servers/{server_id}", params=params, require_token=False)
 
     def deploy_mcp_server(
         self,
@@ -656,7 +708,9 @@ class OpenAPIClient:
         payload: DeployMcpServerPayload | Mapping[str, Any] | None = None,
     ) -> JSON:
         """``POST /mcp/servers/{id}/deploy`` — deploy an MCP server for the caller."""
-        body = dict(payload or {})
+        # Drop explicit None values so they never reach the wire, then apply
+        # the platform default transport.
+        body = {k: v for k, v in dict(payload or {}).items() if v is not None}
         body.setdefault("transport_type", "sse")
         return self._request(
             "POST",

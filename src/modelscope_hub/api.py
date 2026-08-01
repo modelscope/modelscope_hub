@@ -23,20 +23,23 @@ Design principles
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any, BinaryIO, Iterable, Mapping
+from typing import Any, BinaryIO, TypeAlias
 from urllib.parse import urlparse
 
 from requests.cookies import RequestsCookieJar
 
+from ._cache_manager import _resolve_verification_root
 from ._cache_manager import clear_cache as _clear_cache
 from ._cache_manager import scan_cache as _scan_cache
-from ._download import DownloadManager
+from ._cache_manager import verify_cache as _verify_cache
+from ._download import DownloadManager, ProgressCallback
 from ._legacy_api import LegacyClient
 from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .config import HubConfig, get_default_config
-from .constants import RepoType, Visibility
+from .constants import DEFAULT_ENDPOINT, RepoType, Visibility
 from .errors import (
     AuthenticationError,
     HubError,
@@ -45,21 +48,19 @@ from .errors import (
     NotExistError,
     NotSupportedError,
 )
-from .types import CacheInfo, FileInfo, PagedResult, RepoInfo, UserInfo
+from .types import CacheInfo, CacheVerification, FileInfo, PagedResult, RepoInfo, UserInfo
 from .utils.logger import get_logger
 
 __all__ = ["HubApi"]
 
 logger = get_logger("api")
 
-RepoTypeLike = "str | RepoType"
+RepoTypeLike: TypeAlias = "str | RepoType"
 
 
 # Routing tables — declarative dispatch keeps :class:`HubApi` free of long
 # if/elif chains and makes adding new repo types a one-line change.
-_CREATABLE_TYPES: frozenset[RepoType] = frozenset(
-    {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
-)
+_CREATABLE_TYPES: frozenset[RepoType] = frozenset({RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL})
 _OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset({RepoType.STUDIO, RepoType.SKILL})
 _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
     {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
@@ -92,9 +93,7 @@ _STUDIO_FIELD_RENAMES: dict[str, str] = {
 
 # Reserved fields that are controlled by create_repo method parameters.
 # These MUST NOT be overridden via extra kwargs to avoid silent conflicts.
-_RESERVED_EXTRA_FIELDS: frozenset[str] = frozenset(
-    {"Path", "Owner", "Name"}
-)
+_RESERVED_EXTRA_FIELDS: frozenset[str] = frozenset({"Path", "Owner", "Name"})
 
 
 class HubApi:
@@ -148,6 +147,7 @@ class HubApi:
         base = config or get_default_config()
         if config is None and (endpoint is not None or token is not None):
             from dataclasses import replace
+
             was_overridden = base._endpoint_overridden
             base = replace(base)
             # replace() re-runs __post_init__ which sees the inherited
@@ -156,10 +156,11 @@ class HubApi:
             base._endpoint_overridden = was_overridden
         self._config = base
         if endpoint is not None:
-            self._config.endpoint = endpoint.rstrip("/")
+            self._config.endpoint = HubConfig.normalize_endpoint(endpoint)
             self._config._endpoint_overridden = True
         if token is not None:
             self._config.token = token
+            self._config._token_overridden = True
 
         self._openapi: OpenAPIClient | None = None
         self._legacy: LegacyClient | None = None
@@ -184,10 +185,12 @@ class HubApi:
 
             self._legacy = LegacyClient(
                 token=self._config.token,
-                endpoint=self._config.endpoint,
+                endpoint=self._config.endpoint or DEFAULT_ENDPOINT,
                 user_agent=build_user_agent(self._config.get_session_id()),
             )
-        elif self._legacy.token != self._config.token and self._config.token:
+        elif self._legacy.token != self._config.token:
+            # Clears propagate as well as changes: a cached client left holding a
+            # revoked token would keep authenticating with it.
             self._legacy.token = self._config.token
         return self._legacy
 
@@ -221,9 +224,7 @@ class HubApi:
     def _parse_repo_id(repo_id: str) -> tuple[str, str]:
         """Split a canonical ``owner/name`` identifier into its two halves."""
         if not repo_id or "/" not in repo_id:
-            raise InvalidParameter(
-                f"repo_id {repo_id!r} should be in format of 'owner/name'."
-            )
+            raise InvalidParameter(f"repo_id {repo_id!r} should be in format of 'owner/name'.")
         owner, _, name = repo_id.partition("/")
         if not owner or not name:
             raise InvalidParameter(
@@ -247,9 +248,7 @@ class HubApi:
             return RepoType(str(repo_type).lower())
         except ValueError as exc:
             allowed = ", ".join(t.value for t in RepoType)
-            raise InvalidParameter(
-                f"Unknown repo_type {repo_type!r}. Expected one of: {allowed}."
-            ) from exc
+            raise InvalidParameter(f"Unknown repo_type {repo_type!r}. Expected one of: {allowed}.") from exc
 
     @staticmethod
     def _normalize_visibility(visibility: int | str | Visibility | None) -> int | None:
@@ -263,14 +262,34 @@ class HubApi:
         return int(Visibility.from_label(str(visibility)))
 
     _PAGED_ITEM_KEYS = (
-        "items", "list", "data", "results",
-        "models", "datasets", "skills", "servers", "mcp_server_list",
-        "Models", "Datasets", "Skills", "Servers",
+        "items",
+        "list",
+        "data",
+        "results",
+        "models",
+        "datasets",
+        "skills",
+        "servers",
+        "mcp_server_list",
+        "Models",
+        "Datasets",
+        "Skills",
+        "Servers",
     )
-    _PAGED_META_KEYS = frozenset({
-        "total_count", "total", "page_number", "page", "page_size", "size",
-        "TotalCount", "Total", "PageNumber", "PageSize",
-    })
+    _PAGED_META_KEYS = frozenset(
+        {
+            "total_count",
+            "total",
+            "page_number",
+            "page",
+            "page_size",
+            "size",
+            "TotalCount",
+            "Total",
+            "PageNumber",
+            "PageSize",
+        }
+    )
 
     @staticmethod
     def _extract_paged(payload: Any) -> tuple[list[Any], int, int, int]:
@@ -429,9 +448,12 @@ class HubApi:
             jar.set("m_session_id", token, domain=domain, path="/")
             return jar
 
-        cookies = self._config.load_cookies()
-        if cookies is not None:
-            return cookies
+        # An explicitly overridden (empty) token means "run without local
+        # credentials" -- never silently fall back to the persisted cookies.
+        if not getattr(self._config, "_token_overridden", False):
+            cookies = self._config.load_cookies()
+            if cookies is not None:
+                return cookies
 
         if cookies_required:
             raise AuthenticationError(
@@ -463,8 +485,19 @@ class HubApi:
         InvalidParameter
             When ``token`` is empty or whitespace-only.
         AuthenticationError
-            When the server rejects the token. The bad token is cleared
-            from local storage before re-raising.
+            When the server rejects the token. The server's own explanation is
+            preserved, and an endpoint hint is appended when the token turns
+            out to be valid on the peer ModelScope site.
+        HubError
+            Transport, timeout and server-side failures propagate unchanged --
+            they are never reported as a rejected token.
+
+        Notes
+        -----
+        A failed attempt leaves persisted credentials untouched. Until the
+        server has accepted the new token, the stored credential is still the
+        caller's only working one, so revoking it on failure would turn a
+        mistyped token into an unintended logout.
 
         Examples
         --------
@@ -477,6 +510,8 @@ class HubApi:
             raise InvalidParameter("token must be a non-empty string")
 
         token = token.strip()
+        previous_token = self._config.token
+        previous_logged_out = self._config._logged_out
         self._config.token = token
         self._config._logged_out = False
         self._openapi = None
@@ -485,12 +520,12 @@ class HubApi:
 
         try:
             data, cookies = self.legacy.login(token)
-        except (AuthenticationError, HubError) as exc:
-            self._config.clear_token()
-            raise AuthenticationError(
-                "Login failed: the provided token was rejected by the server.",
-                status_code=getattr(exc, "status_code", None),
-            ) from exc
+        except HubError as exc:
+            self._restore_credential_state(previous_token, previous_logged_out)
+            explained = self._explain_login_failure(token, exc)
+            if explained is exc:
+                raise
+            raise explained from exc
 
         git_token = data.get("AccessToken", "")
         username = data.get("Username", "")
@@ -503,6 +538,91 @@ class HubApi:
             self._config.save_user_info(username, email or "")
 
         return self.whoami()
+
+    def _restore_credential_state(self, token: str | None, logged_out: bool) -> None:
+        """Roll the in-memory credential back to its pre-login value.
+
+        Persisted credentials are deliberately left alone; only this instance's
+        transient state is rewound, so a failed attempt leaves the object
+        exactly as it was found instead of poisoning it with a rejected token.
+        """
+        self._config.token = token
+        self._config._logged_out = logged_out
+        self._openapi = None
+        if self._legacy is not None:
+            self._legacy.token = token
+
+    def _explain_login_failure(self, token: str, exc: HubError) -> HubError:
+        """Return the exception to surface for a failed login attempt.
+
+        Only authentication failures are re-worded. Network, timeout and
+        server-side errors are handed back untouched, because presenting them
+        as a rejected token would send the caller after the wrong remedy.
+
+        The two ModelScope sites keep separate account systems and answer an
+        unknown token with the same business code, so the server cannot tell
+        "invalid token" apart from "token issued by the other site". Only the
+        client knows which site it addressed, which is why that disambiguation
+        has to happen here.
+        """
+        if not isinstance(exc, AuthenticationError):
+            return exc
+        peer = self._peer_site_endpoint()
+        if peer is None or not self._token_valid_on(token, peer):
+            return exc
+        return AuthenticationError(
+            f"{exc.message} This token is valid on {peer} instead; retry with "
+            f"--endpoint {peer} (or set MODELSCOPE_ENDPOINT={peer}).",
+            status_code=exc.status_code,
+            request_id=exc.request_id,
+            response_body=exc.response_body,
+            url=exc.url,
+            method=exc.method,
+        )
+
+    def _peer_site_endpoint(self) -> str | None:
+        """Return the sibling ModelScope site, or ``None`` when not applicable.
+
+        An explicitly configured endpoint is always respected, mirroring
+        :meth:`resolve_endpoint_for_read`: when the caller has pinned a site we
+        do not second-guess it.
+        """
+        if self._config._endpoint_overridden:
+            return None
+        from .constants import DEFAULT_INTL_ENDPOINT
+
+        def site_key(url: str) -> str:
+            host = (urlparse(url).hostname or "").lower()
+            return host[4:] if host.startswith("www.") else host
+
+        current = site_key(self._config.endpoint or DEFAULT_ENDPOINT)
+        for candidate in (DEFAULT_ENDPOINT, DEFAULT_INTL_ENDPOINT):
+            if site_key(candidate) != current:
+                return candidate
+        return None
+
+    @staticmethod
+    def _token_valid_on(token: str, endpoint: str) -> bool:
+        """Best-effort check of whether *token* authenticates against *endpoint*.
+
+        Runs on the failure path only and is strictly advisory: any error means
+        "cannot confirm", so a probe outage degrades to the plain server message
+        rather than producing a misleading hint. Retries are disabled to keep
+        the failure path responsive.
+        """
+        from .constants import API_CONNECT_TIMEOUT
+
+        probe = LegacyClient(
+            token=None,
+            endpoint=endpoint,
+            timeout=API_CONNECT_TIMEOUT,
+            max_retries=0,
+        )
+        try:
+            probe.login(token)
+        except Exception:  # advisory only -- never mask the original failure
+            return False
+        return True
 
     def logout(self) -> None:
         """Clear the locally persisted token.
@@ -626,8 +746,7 @@ class HubApi:
         if rt not in _CREATABLE_TYPES:
             supported = ", ".join(sorted(t.value for t in _CREATABLE_TYPES))
             raise NotSupportedError(
-                f"create_repo does not support repo_type={rt.value!r}. "
-                f"Supported types: {supported}."
+                f"create_repo does not support repo_type={rt.value!r}. Supported types: {supported}."
             )
         owner, name = self._parse_repo_id(repo_id)
         vis = self._normalize_visibility(visibility)
@@ -662,14 +781,8 @@ class HubApi:
                 if old_key in extra:
                     extra[new_key] = extra.pop(old_key)
             payload.update(extra)
-            data = (
-                self.openapi.create_studio(payload)
-                if rt is RepoType.STUDIO
-                else self.openapi.create_skill(payload)
-            )
-            return self._repo_info_from_payload(
-                data, rt, owner_hint=owner, name_hint=name
-            )
+            data = self.openapi.create_studio(payload) if rt is RepoType.STUDIO else self.openapi.create_skill(payload)
+            return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
 
         if rt is RepoType.DATASET:
             body: dict[str, Any] = {
@@ -707,24 +820,17 @@ class HubApi:
         filtered: dict[str, Any] = {}
         for k, v in extra.items():
             if k in _RESERVED_EXTRA_FIELDS:
-                logger.warning(
-                    "Reserved field %r in extra ignored (controlled by method params)", k
-                )
+                logger.warning("Reserved field %r in extra ignored (controlled by method params)", k)
                 continue
             filtered[k] = v
         if "ProtectedMode" in filtered:
             pm = filtered["ProtectedMode"]
             if not isinstance(pm, int) or isinstance(pm, bool) or pm not in (1, 2):
-                raise ValueError(
-                    "ProtectedMode must be int 1 (gated) or 2 (off); "
-                    "use gated_mode=True/False instead"
-                )
+                raise ValueError("ProtectedMode must be int 1 (gated) or 2 (off); use gated_mode=True/False instead")
         body.update(filtered)
 
         data = self.legacy.create_repo(repo_type=str(rt), body=body)
-        return self._repo_info_from_payload(
-            data, rt, owner_hint=owner, name_hint=name
-        )
+        return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
 
     def get_repo(
         self,
@@ -791,9 +897,7 @@ class HubApi:
         else:  # pragma: no cover - defensive
             raise NotSupportedError(f"get_repo not supported for {rt}")
 
-        return self._repo_info_from_payload(
-            data, rt, owner_hint=owner, name_hint=name
-        )
+        return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
 
     def list_repos(
         self,
@@ -855,14 +959,20 @@ class HubApi:
 
         if rt is RepoType.MODEL:
             payload = self.openapi.list_models(
-                search=search, owner=owner, sort=sort,
-                page_number=page_number, page_size=page_size,
+                search=search,
+                owner=owner,
+                sort=sort,
+                page_number=page_number,
+                page_size=page_size,
                 filters=clean_filters or None,
             )
         elif rt is RepoType.DATASET:
             payload = self.openapi.list_datasets(
-                search=search, owner=owner, sort=sort,
-                page_number=page_number, page_size=page_size,
+                search=search,
+                owner=owner,
+                sort=sort,
+                page_number=page_number,
+                page_size=page_size,
                 filters=clean_filters or None,
             )
         elif rt is RepoType.SKILL:
@@ -870,19 +980,19 @@ class HubApi:
                 clean_filters.setdefault("owner", owner)
             payload = self.openapi.list_skills(
                 search=search,
-                page_number=page_number, page_size=page_size,
+                page_number=page_number,
+                page_size=page_size,
                 filters=clean_filters or None,
             )
         elif rt is RepoType.MCP:
             payload = self.openapi.list_mcp_servers(
                 search=search,
-                page_number=page_number, page_size=page_size,
+                page_number=page_number,
+                page_size=page_size,
                 filter=clean_filters or None,
             )
         elif rt is RepoType.STUDIO:
-            raise NotSupportedError(
-                "Listing studios is not supported by the OpenAPI surface yet."
-            )
+            raise NotSupportedError("Listing studios is not supported by the OpenAPI surface yet.")
         else:  # pragma: no cover - defensive
             raise NotSupportedError(f"list_repos not supported for {rt}")
 
@@ -920,6 +1030,7 @@ class HubApi:
             Repository type (``"model"``, ``"dataset"``, etc.).
         """
         import warnings
+
         warnings.warn(
             "This function is deprecated due to security reasons, "
             "and will be recovered in future versions with proper token authentication. "
@@ -988,7 +1099,7 @@ class HubApi:
         )
 
         if self._config._endpoint_overridden:
-            return self._config.endpoint
+            return self._config.endpoint or DEFAULT_ENDPOINT
 
         effective_token = token or self._config.token
 
@@ -1010,9 +1121,7 @@ class HubApi:
             )
             return fallback
 
-        raise NotExistError(
-            f"Repo {repo_id} not found on either {primary} or {fallback}"
-        )
+        raise NotExistError(f"Repo {repo_id} not found on either {primary} or {fallback}")
 
     # ==================================================================
     # Files
@@ -1289,6 +1398,7 @@ class HubApi:
         max_workers: int = 4,
         local_files_only: bool = False,
         user_agent: dict | str | None = None,
+        progress_callbacks: list[type[ProgressCallback]] | None = None,
     ) -> Path:
         """Download an entire repository snapshot.
 
@@ -1317,6 +1427,9 @@ class HubApi:
             When ``True``, return the cached snapshot path without network.
         user_agent : dict, str or None, optional
             Custom user-agent info for download headers.
+        progress_callbacks : list of ProgressCallback subclasses, optional
+            Callback *classes* (not instances); each is instantiated per file
+            to report byte-level download progress.
 
         Returns
         -------
@@ -1354,6 +1467,7 @@ class HubApi:
             max_workers=max_workers,
             local_files_only=local_files_only,
             user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
         )
 
     def list_repo_files(
@@ -1401,6 +1515,7 @@ class HubApi:
                 "path": item.get("Path") or item.get("path") or item.get("Name") or "",
                 "size": int(item.get("Size") or item.get("size") or 0),
                 "blob_id": item.get("BlobId") or item.get("blob_id") or item.get("Sha256"),
+                "sha256": item.get("Sha256") or item.get("sha256"),
                 "type": item.get("Type") or item.get("type") or "blob",
                 "last_modified": item.get("CommittedDate") or item.get("last_modified"),
                 "lfs": item.get("Lfs") or item.get("lfs"),
@@ -1470,7 +1585,7 @@ class HubApi:
                     revision=revision or "master",
                 )
                 deleted.append(p)
-            except (AuthenticationError, NetworkError) as exc:
+            except (AuthenticationError, NetworkError):
                 failed.append(p)
                 raise
             except Exception:
@@ -1481,9 +1596,7 @@ class HubApi:
     # ==================================================================
     # Versioning
     # ==================================================================
-    def list_repo_revisions(
-        self, repo_id: str, repo_type: RepoTypeLike
-    ) -> list[dict]:
+    def list_repo_revisions(self, repo_id: str, repo_type: RepoTypeLike) -> list[dict]:
         """Return branches and tags of a repository (legacy).
 
         Examples
@@ -1566,9 +1679,7 @@ class HubApi:
             return self.openapi.deploy_studio(owner, name, payload)
         if rt is RepoType.MCP:
             return self.openapi.deploy_mcp_server(repo_id, payload)
-        raise NotSupportedError(
-            f"deploy_repo is not supported for repo_type={rt.value!r}."
-        )
+        raise NotSupportedError(f"deploy_repo is not supported for repo_type={rt.value!r}.")
 
     def stop_repo(
         self,
@@ -1587,9 +1698,7 @@ class HubApi:
             return self.openapi.stop_studio(owner, name)
         if rt is RepoType.MCP:
             return self.openapi.undeploy_mcp_server(repo_id)
-        raise NotSupportedError(
-            f"stop_repo is not supported for repo_type={rt.value!r}."
-        )
+        raise NotSupportedError(f"stop_repo is not supported for repo_type={rt.value!r}.")
 
     def get_repo_logs(
         self,
@@ -1643,14 +1752,17 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotSupportedError(
-                f"get_repo_logs is currently only supported for studio (got {rt.value!r})."
-            )
+            raise NotSupportedError(f"get_repo_logs is currently only supported for studio (got {rt.value!r}).")
         owner, name = self._parse_repo_id(repo_id)
         return self.openapi.get_studio_logs(
-            owner, name, log_type,
-            page_num=page_num, page_size=page_size, keyword=keyword,
-            start_timestamp=start_timestamp, end_timestamp=end_timestamp,
+            owner,
+            name,
+            log_type,
+            page_num=page_num,
+            page_size=page_size,
+            keyword=keyword,
+            start_timestamp=start_timestamp,
+            end_timestamp=end_timestamp,
         )
 
     def update_repo_settings(
@@ -1698,16 +1810,12 @@ class HubApi:
             return self.openapi.update_studio_settings(owner, name, settings)
         if rt is RepoType.SKILL:
             return self.openapi.update_skill_settings(owner, name, settings)
-        raise NotSupportedError(
-            f"update_repo_settings is not supported for repo_type={rt.value!r}."
-        )
+        raise NotSupportedError(f"update_repo_settings is not supported for repo_type={rt.value!r}.")
 
     # ==================================================================
     # Secrets
     # ==================================================================
-    def list_secrets(
-        self, repo_id: str, repo_type: RepoTypeLike = RepoType.STUDIO
-    ) -> list[dict]:
+    def list_secrets(self, repo_id: str, repo_type: RepoTypeLike = RepoType.STUDIO) -> list[dict]:
         """List secrets attached to a Studio.
 
         Examples
@@ -1717,9 +1825,7 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
-            raise NotSupportedError(
-                f"Secret management is only supported for studio (got {rt.value!r})."
-            )
+            raise NotSupportedError(f"Secret management is only supported for studio (got {rt.value!r}).")
         owner, name = self._parse_repo_id(repo_id)
         data = self.openapi.list_studio_secrets(owner, name)
         if isinstance(data, list):
@@ -1856,13 +1962,9 @@ class HubApi:
         >>> info["operational_url"]
         'https://...'
         """
-        return self.openapi.get_mcp_server(
-            server_id, get_operational_url=get_operational_url
-        )
+        return self.openapi.get_mcp_server(server_id, get_operational_url=get_operational_url)
 
-    def deploy_mcp_server(
-        self, server_id: str, *, payload: Mapping[str, Any] | None = None
-    ) -> dict:
+    def deploy_mcp_server(self, server_id: str, *, payload: Mapping[str, Any] | None = None) -> dict:
         """Deploy or redeploy an MCP server.
 
         Examples
@@ -1883,6 +1985,37 @@ class HubApi:
     # ==================================================================
     # Cache
     # ==================================================================
+    def verify_cache(
+        self,
+        repo_id: str,
+        repo_type: RepoTypeLike = "model",
+        *,
+        revision: str | None = None,
+        cache_dir: str | Path | None = None,
+        local_dir: str | Path | None = None,
+    ) -> CacheVerification:
+        """Verify local repository files against SHA-256 checksums from the Hub."""
+        if cache_dir is not None and local_dir is not None:
+            raise InvalidParameter("cache_dir and local_dir are mutually exclusive")
+        rt = self._normalize_repo_type(repo_type)
+        _, resolved_revision = _resolve_verification_root(
+            repo_id,
+            str(rt),
+            revision=revision,
+            cache_dir=cache_dir,
+            local_dir=local_dir,
+        )
+        files = self.list_repo_files(repo_id, rt, revision=resolved_revision, recursive=True)
+        expected = {file.path: file.sha256 for file in files if not file.is_dir and file.path}
+        return _verify_cache(
+            repo_id,
+            str(rt),
+            expected,
+            revision=resolved_revision,
+            cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
+        )
+
     def scan_cache(self, cache_dir: str | Path | None = None) -> CacheInfo:
         """Inspect the local cache directory.
 

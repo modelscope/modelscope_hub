@@ -7,10 +7,11 @@ client forward-compatible while still benefiting from static typing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Generic, Mapping, Type, TypedDict, TypeVar
+from typing import Any, Generic, TypedDict, TypeVar
 
 from .constants import RepoType, Visibility
 
@@ -40,7 +41,7 @@ class _FromDictMixin:
     """Adds tolerant ``from_dict`` construction to a dataclass."""
 
     @classmethod
-    def from_dict(cls: Type[_TDataclass], data: Mapping[str, Any] | None) -> _TDataclass:
+    def from_dict(cls: type[_TDataclass], data: Mapping[str, Any] | None) -> _TDataclass:
         if not data:
             return cls()  # type: ignore[call-arg]
         known = {f.name for f in fields(cls)}  # type: ignore[arg-type]
@@ -142,6 +143,7 @@ class FileInfo(_FromDictMixin):
     type: str = "blob"  # "blob" | "tree"
     last_modified: datetime | str | int | None = None
     lfs: dict[str, Any] | None = None
+    sha256: str | None = None
 
     def __post_init__(self) -> None:
         self.last_modified = _coerce_datetime(self.last_modified) or self.last_modified
@@ -189,10 +191,7 @@ class PagedResult(Generic[T]):
         Uses collection_key for the items array name (e.g. 'datasets', 'models').
         """
         return {
-            self.collection_key: [
-                item.to_dict() if hasattr(item, "to_dict") else item
-                for item in self.items
-            ],
+            self.collection_key: [item.to_dict() if hasattr(item, "to_dict") else item for item in self.items],
             "total_count": self.total_count,
             "page_number": self.page_number,
             "page_size": self.page_size,
@@ -215,7 +214,7 @@ class CachedRepoInfo(_FromDictMixin):
     revision: str | None = None
     size_on_disk: int = 0
     nb_files: int = 0
-    last_accessed: datetime | str | int | None = None
+    last_accessed: datetime | str | int | float | None = None
     local_path: str | None = None
 
     def __post_init__(self) -> None:
@@ -236,6 +235,27 @@ class CacheInfo:
     @property
     def total_repos(self) -> int:
         return len(self.repos)
+
+
+@dataclass(slots=True)
+class VerificationMismatch:
+    path: str
+    expected: str
+    actual: str
+    algorithm: str = "sha256"
+
+
+@dataclass(slots=True)
+class CacheVerification:
+    """Result of comparing local repository files with Hub checksums."""
+
+    revision: str
+    verified_path: str
+    checked_count: int = 0
+    mismatches: list[VerificationMismatch] = field(default_factory=list)
+    missing_paths: list[str] = field(default_factory=list)
+    extra_paths: list[str] = field(default_factory=list)
+    unverified_paths: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +331,7 @@ class DeployMcpServerPayload(TypedDict, total=False):
 
 
 __all__ = [
+    "CacheVerification",
     "CacheInfo",
     "CachedRepoInfo",
     "CommitInfo",
@@ -323,4 +344,5 @@ __all__ = [
     "UpdateSkillSettingsPayload",
     "UpdateStudioSettingsPayload",
     "UserInfo",
+    "VerificationMismatch",
 ]

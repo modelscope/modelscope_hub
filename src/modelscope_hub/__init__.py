@@ -35,13 +35,15 @@ from .errors import (
     ValidationError,
 )
 from .types import (
-    CacheInfo,
     CachedRepoInfo,
+    CacheInfo,
+    CacheVerification,
     CommitInfo,
     FileInfo,
     PagedResult,
     RepoInfo,
     UserInfo,
+    VerificationMismatch,
 )
 from .version import __version__
 
@@ -62,12 +64,14 @@ __all__ = [
     "TqdmCallback",
     # Data classes
     "CacheInfo",
+    "CacheVerification",
     "CachedRepoInfo",
     "CommitInfo",
     "FileInfo",
     "PagedResult",
     "RepoInfo",
     "UserInfo",
+    "VerificationMismatch",
     # Errors (canonical names per error-code spec)
     "APIError",
     "AuthenticationError",

@@ -14,12 +14,27 @@ from __future__ import annotations
 
 import sys
 from abc import ABC, abstractmethod
-from argparse import Action, ArgumentParser, Namespace
-from typing import Any, Iterable, Sequence
+from argparse import ArgumentParser, Namespace
+from collections.abc import Iterable, Sequence
+from typing import Any, Protocol
 
 from ..api import HubApi
 from ..constants import RepoType
 from ..utils.format import tabulate as _tabulate
+
+
+# ---------------------------------------------------------------------------
+# Structural type for argparse sub-parser containers
+# ---------------------------------------------------------------------------
+class SubParsers(Protocol):
+    """Structural stand-in for ``argparse._SubParsersAction``.
+
+    argparse only exposes its sub-parsers container as a private class, so
+    commands accept anything that provides ``add_parser`` instead. This keeps
+    both mypy and IDE inspections happy without referencing private names.
+    """
+
+    def add_parser(self, name: str, **kwargs: Any) -> ArgumentParser: ...
 
 
 # ---------------------------------------------------------------------------
@@ -33,7 +48,7 @@ class CLICommand(ABC):
 
     @staticmethod
     @abstractmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         """Attach this command's argparse parser to ``subparsers``."""
 
     @abstractmethod
@@ -78,7 +93,8 @@ def add_repo_type_arg(
     """
     valid = list(choices) if choices else [t.value for t in RepoType]
     parser.add_argument(
-        "--repo-type", "--repo_type",
+        "--repo-type",
+        "--repo_type",
         dest="repo_type",
         choices=valid,
         default=default,
@@ -124,9 +140,7 @@ def parse_kv_pairs(values: Iterable[str]) -> dict[str, str]:
     result: dict[str, str] = {}
     for raw in values:
         if "=" not in raw:
-            raise ValueError(
-                f"Invalid setting {raw!r}: expected 'key=value' format."
-            )
+            raise ValueError(f"Invalid setting {raw!r}: expected 'key=value' format.")
         key, _, value = raw.partition("=")
         key = key.strip()
         if not key:

@@ -9,6 +9,7 @@ Usage:
 This script discovers and runs every ``test_*.py`` under ``tests/cli/``,
 excluding tests marked ``@pytest.mark.remote`` which require live API access.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -21,7 +22,9 @@ _PROJECT_ROOT = _TESTS_DIR.parent.parent
 
 def main() -> int:
     cmd = [
-        sys.executable, "-m", "pytest",
+        sys.executable,
+        "-m",
+        "pytest",
         str(_TESTS_DIR),
         "-v",
         "--tb=short",

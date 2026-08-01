@@ -12,6 +12,7 @@ Public API
 - :class:`RemoteFileInfo` -- metadata for a single remote file.
 - :func:`is_lfs_file` -- decide whether a file must use the LFS upload path.
 """
+
 from ._api import AgentApi, RemoteFileInfo, is_lfs_file
 
 __all__ = [

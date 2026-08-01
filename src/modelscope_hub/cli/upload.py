@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import os
-from argparse import Action
 from pathlib import Path
 
 from ..constants import RepoType
-from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
+from .base import CLICommand, SubParsers, add_repo_type_arg, error, info, make_api, success
 from .compat import PatternAction, add_subcmd_token_endpoint
 
 
@@ -19,7 +18,7 @@ class UploadCommand(CLICommand):
     """
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser(
             "upload",
             help="Upload a file or folder to a repository.",
@@ -44,8 +43,12 @@ class UploadCommand(CLICommand):
             required=False,
         )
         p.add_argument("--commit-message", dest="commit_message", default=None)
-        p.add_argument("--commit-description", dest="commit_description", default=None,
-                       help="Description for the generated commit.")
+        p.add_argument(
+            "--commit-description",
+            dest="commit_description",
+            default=None,
+            help="Description for the generated commit.",
+        )
         p.add_argument("--revision", default=None, help="Target branch (default: master).")
         p.add_argument(
             "--include",

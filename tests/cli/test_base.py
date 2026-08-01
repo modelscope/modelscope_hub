@@ -1,4 +1,5 @@
 """Tests for base.py helper functions — render_table, parse_kv_pairs, make_api, etc."""
+
 from __future__ import annotations
 
 from argparse import ArgumentParser, Namespace
@@ -110,9 +111,7 @@ class TestMakeApi:
         args = Namespace(token=None, endpoint="https://custom.endpoint.com")
         with patch("modelscope_hub.cli.base.HubApi") as mock_hub:
             make_api(args)
-            mock_hub.assert_called_once_with(
-                token=None, endpoint="https://custom.endpoint.com"
-            )
+            mock_hub.assert_called_once_with(token=None, endpoint="https://custom.endpoint.com")
 
 
 class TestAddRepoTypeArg:

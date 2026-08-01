@@ -8,7 +8,8 @@ and the old SDK can delegate to ``modelscope_hub`` without changes.
 from __future__ import annotations
 
 import warnings
-from typing import Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import requests as _requests
 
@@ -18,6 +19,9 @@ from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
 from ..utils.patterns import normalize_patterns
 from .constants import DEFAULT_DATASET_REVISION
 from .file_download import _resolve_legacy_paths
+
+if TYPE_CHECKING:
+    from .._download import ProgressCallback
 
 
 def snapshot_download(
@@ -38,16 +42,21 @@ def snapshot_download(
     endpoint: str | None = None,
     local_files_only: bool = False,
     user_agent: dict | str | None = None,
+    progress_callbacks: list[type[ProgressCallback]] | None = None,
 ) -> str:
     """Download a repo snapshot (legacy signature).
 
     Parameters mirror the old ``modelscope.hub.snapshot_download.snapshot_download``.
     ``allow_patterns``/``ignore_patterns`` take priority over the
     ``allow_file_pattern``/``ignore_file_pattern`` aliases when both are set.
+    ``progress_callbacks`` takes a list of :class:`ProgressCallback`
+    subclasses (not instances); each is instantiated per file to report
+    download progress.
     """
     effective_id = repo_id or model_id
     if not effective_id:
         from ..errors import InvalidParameter
+
         raise InvalidParameter("Please provide a valid model_id or repo_id")
     effective_type = repo_type or "model"
 
@@ -65,13 +74,17 @@ def snapshot_download(
     if endpoint is None and not local_files_only:
         try:
             endpoint = api.resolve_endpoint_for_read(
-                effective_id, repo_type=effective_type,
+                effective_id,
+                repo_type=effective_type,
             )
             api = HubApi(token=token, endpoint=endpoint)
         except Exception:
             pass
     effective_cache, effective_local = _resolve_legacy_paths(
-        effective_id, cache_dir, local_dir, api,
+        effective_id,
+        cache_dir,
+        local_dir,
+        api,
     )
     try:
         result = api.download_repo(
@@ -85,11 +98,10 @@ def snapshot_download(
             max_workers=max_workers,
             local_files_only=local_files_only,
             user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
-        raise _requests.exceptions.HTTPError(
-            str(e), response=getattr(e, 'response', None)
-        ) from e
+        raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
     return str(result)
 
 
@@ -129,7 +141,10 @@ def dataset_snapshot_download(
         except Exception:
             pass
     effective_cache, effective_local = _resolve_legacy_paths(
-        dataset_id, cache_dir, local_dir, api,
+        dataset_id,
+        cache_dir,
+        local_dir,
+        api,
     )
     try:
         result = api.download_repo(
@@ -145,9 +160,7 @@ def dataset_snapshot_download(
             user_agent=user_agent,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
-        raise _requests.exceptions.HTTPError(
-            str(e), response=getattr(e, 'response', None)
-        ) from e
+        raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
     return str(result)
 
 

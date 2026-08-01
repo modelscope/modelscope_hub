@@ -20,13 +20,12 @@ import hashlib
 import io
 import json
 import os
-import re
 import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, BinaryIO, IO, Union
+from typing import IO, TYPE_CHECKING, Any, BinaryIO
 
 from tqdm.auto import tqdm
 
@@ -78,7 +77,7 @@ if TYPE_CHECKING:
 logger = get_logger("upload")
 
 
-PathOrFileObj = Union[str, Path, bytes, BinaryIO, IO[bytes]]
+PathOrFileObj = str | Path | bytes | BinaryIO | IO[bytes]
 
 _TRACKER_VERSION = 3
 
@@ -91,8 +90,7 @@ _TRACKER_VERSION = 3
 class _CountedReadStream:
     """File wrapper that counts bytes read and updates a progress bar."""
 
-    def __init__(self, file_obj: Any, expected_size: int,
-                 pbar: Any, chunk_size: int) -> None:
+    def __init__(self, file_obj: Any, expected_size: int, pbar: Any, chunk_size: int) -> None:
         self._file = file_obj
         self._expected_size = expected_size
         self._pbar = pbar
@@ -221,19 +219,19 @@ class _ErrorCategory:
 
 
 _CATEGORY_BY_ERROR_CODE: dict[str, str] = {
-    "E1001": _ErrorCategory.TRANSIENT_NETWORK,   # timeout
-    "E1002": _ErrorCategory.TRANSIENT_SERVER,     # server error
-    "E1003": _ErrorCategory.TRANSIENT_SERVER,     # storage error
-    "E1020": _ErrorCategory.TRANSIENT_NETWORK,    # network/connection error
-    "E1021": _ErrorCategory.THROTTLED,            # rate limit
-    "E1022": _ErrorCategory.FILE_INVALID,         # cache error
-    "E2020": _ErrorCategory.TRANSIENT_SERVER,     # file integrity (auto-retry)
-    "E3001": _ErrorCategory.AUTH_FAILED,          # authentication
-    "E3002": _ErrorCategory.AUTH_FAILED,          # permission
-    "E3020": _ErrorCategory.NOT_FOUND,            # not exist
-    "E3021": _ErrorCategory.FILE_INVALID,         # invalid parameter
-    "E3023": _ErrorCategory.FILE_INVALID,         # not supported
-    "E9001": _ErrorCategory.UNKNOWN,              # unknown/fallback
+    "E1001": _ErrorCategory.TRANSIENT_NETWORK,  # timeout
+    "E1002": _ErrorCategory.TRANSIENT_SERVER,  # server error
+    "E1003": _ErrorCategory.TRANSIENT_SERVER,  # storage error
+    "E1020": _ErrorCategory.TRANSIENT_NETWORK,  # network/connection error
+    "E1021": _ErrorCategory.THROTTLED,  # rate limit
+    "E1022": _ErrorCategory.FILE_INVALID,  # cache error
+    "E2020": _ErrorCategory.TRANSIENT_SERVER,  # file integrity (auto-retry)
+    "E3001": _ErrorCategory.AUTH_FAILED,  # authentication
+    "E3002": _ErrorCategory.AUTH_FAILED,  # permission
+    "E3020": _ErrorCategory.NOT_FOUND,  # not exist
+    "E3021": _ErrorCategory.FILE_INVALID,  # invalid parameter
+    "E3023": _ErrorCategory.FILE_INVALID,  # not supported
+    "E9001": _ErrorCategory.UNKNOWN,  # unknown/fallback
 }
 
 
@@ -305,8 +303,7 @@ class UploadTracker:
             "file_size": entry["size"],
         }
 
-    def put_hash(self, rel_path: str, mtime: float, size: int,
-                 hash_info: dict) -> None:
+    def put_hash(self, rel_path: str, mtime: float, size: int, hash_info: dict) -> None:
         key = self._make_key(rel_path, mtime, size)
         with self._lock:
             entry = self._files.get(key, {})
@@ -334,9 +331,7 @@ class UploadTracker:
                 self._files[key]["status"] = FileStatus.UPLOADED
                 self._dirty = True
 
-    def mark_committed_batch(
-        self, file_keys: list[tuple[str, float, int]]
-    ) -> None:
+    def mark_committed_batch(self, file_keys: list[tuple[str, float, int]]) -> None:
         with self._lock:
             for rel_path, mtime, size in file_keys:
                 key = self._make_key(rel_path, mtime, size)
@@ -344,8 +339,7 @@ class UploadTracker:
                     self._files[key]["status"] = FileStatus.COMMITTED
             self._dirty = True
 
-    def mark_failed(self, rel_path: str, mtime: float, size: int,
-                    error_type: str = "") -> None:
+    def mark_failed(self, rel_path: str, mtime: float, size: int, error_type: str = "") -> None:
         key = self._make_key(rel_path, mtime, size)
         with self._lock:
             if key in self._files:
@@ -371,9 +365,7 @@ class UploadTracker:
             self._dirty = False
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(self._path.parent), suffix=".tmp"
-            )
+            fd, tmp_path = tempfile.mkstemp(dir=str(self._path.parent), suffix=".tmp")
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(data, f, ensure_ascii=False)
@@ -398,7 +390,7 @@ class UploadTracker:
             self._check_legacy_progress()
             return
         try:
-            with open(self._path, "r") as f:
+            with open(self._path) as f:
                 data = json.load(f)
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to load upload tracker, starting fresh: %s", e)
@@ -412,21 +404,19 @@ class UploadTracker:
         stored_repo = data.get("repo_id", "")
         if stored_repo and stored_repo != self._repo_id:
             logger.warning(
-                "Tracker repo_id mismatch (cached: %s, current: %s), "
-                "ignoring stale tracker.",
-                stored_repo, self._repo_id,
+                "Tracker repo_id mismatch (cached: %s, current: %s), ignoring stale tracker.",
+                stored_repo,
+                self._repo_id,
             )
             return
 
         self._files = data.get("files", {})
-        committed_count = sum(
-            1 for e in self._files.values()
-            if e.get("status") == FileStatus.COMMITTED
-        )
+        committed_count = sum(1 for e in self._files.values() if e.get("status") == FileStatus.COMMITTED)
         if committed_count > 0:
             logger.info(
                 "Upload tracker loaded: %d entries, %d committed.",
-                len(self._files), committed_count,
+                len(self._files),
+                committed_count,
             )
         self._check_legacy_progress()
 
@@ -450,8 +440,7 @@ class UploadTracker:
         legacy_path = self._path.parent / UPLOAD_LEGACY_PROGRESS_FILE
         if legacy_path.exists():
             logger.warning(
-                "Legacy upload progress file detected: %s. "
-                "This file is no longer used. You may delete it safely.",
+                "Legacy upload progress file detected: %s. This file is no longer used. You may delete it safely.",
                 legacy_path,
             )
 
@@ -462,8 +451,7 @@ class NullTracker:
     def get_hash(self, rel_path: str, mtime: float, size: int) -> None:
         return None
 
-    def put_hash(self, rel_path: str, mtime: float, size: int,
-                 hash_info: dict) -> None:
+    def put_hash(self, rel_path: str, mtime: float, size: int, hash_info: dict) -> None:
         pass
 
     def is_committed(self, rel_path: str, mtime: float, size: int) -> bool:
@@ -478,8 +466,7 @@ class NullTracker:
     def mark_committed_batch(self, file_keys: list) -> None:
         pass
 
-    def mark_failed(self, rel_path: str, mtime: float, size: int,
-                    error_type: str = "") -> None:
+    def mark_failed(self, rel_path: str, mtime: float, size: int, error_type: str = "") -> None:
         pass
 
     def save(self) -> None:
@@ -499,23 +486,15 @@ class BatchTracker:
 
     def __init__(self, total_files: int, batch_size: int) -> None:
         self._batch_size = batch_size
-        self._num_batches = (
-            (total_files - 1) // batch_size + 1 if total_files > 0 else 0
-        )
-        self._batch_results: list[list[dict]] = [
-            [] for _ in range(self._num_batches)
-        ]
-        self._batch_failures: list[list[tuple]] = [
-            [] for _ in range(self._num_batches)
-        ]
+        self._num_batches = (total_files - 1) // batch_size + 1 if total_files > 0 else 0
+        self._batch_results: list[list[dict]] = [[] for _ in range(self._num_batches)]
+        self._batch_failures: list[list[tuple]] = [[] for _ in range(self._num_batches)]
         self._batch_expected: list[int] = []
         for i in range(self._num_batches):
             start = i * batch_size
             end = min(start + batch_size, total_files)
             self._batch_expected.append(end - start)
-        self._batch_events: list[threading.Event] = [
-            threading.Event() for _ in range(self._num_batches)
-        ]
+        self._batch_events: list[threading.Event] = [threading.Event() for _ in range(self._num_batches)]
         self._lock = threading.Lock()
 
     @property
@@ -532,8 +511,7 @@ class BatchTracker:
             if self._is_batch_complete(idx):
                 self._batch_events[idx].set()
 
-    def record_failure(self, file_index: int, item: tuple,
-                       error: Exception) -> None:
+    def record_failure(self, file_index: int, item: tuple, error: Exception) -> None:
         idx = self.batch_index(file_index)
         with self._lock:
             self._batch_failures[idx].append((item, error))
@@ -547,9 +525,7 @@ class BatchTracker:
             if self._is_batch_complete(idx):
                 self._batch_events[idx].set()
 
-    def wait_for_batch(
-        self, batch_idx: int
-    ) -> tuple[list[dict], list[tuple]]:
+    def wait_for_batch(self, batch_idx: int) -> tuple[list[dict], list[tuple]]:
         self._batch_events[batch_idx].wait()
         with self._lock:
             return (
@@ -558,10 +534,7 @@ class BatchTracker:
             )
 
     def _is_batch_complete(self, batch_idx: int) -> bool:
-        count = (
-            len(self._batch_results[batch_idx])
-            + len(self._batch_failures[batch_idx])
-        )
+        count = len(self._batch_results[batch_idx]) + len(self._batch_failures[batch_idx])
         return count >= self._batch_expected[batch_idx]
 
 
@@ -575,9 +548,9 @@ class UploadManager:
 
     def __init__(
         self,
-        legacy_client: "LegacyClient",
-        config: "HubConfig",
-        openapi_client: "OpenAPIClient | None" = None,
+        legacy_client: LegacyClient,
+        config: HubConfig,
+        openapi_client: OpenAPIClient | None = None,
         *,
         create_repo_fn: Any = None,
     ) -> None:
@@ -607,9 +580,7 @@ class UploadManager:
             raise InvalidParameter("Path or file object cannot be None!")
 
         if isinstance(path_or_fileobj, (str, Path)):
-            path_or_fileobj = os.path.abspath(
-                os.path.expanduser(str(path_or_fileobj))
-            )
+            path_or_fileobj = os.path.abspath(os.path.expanduser(str(path_or_fileobj)))
             path_in_repo = path_in_repo or os.path.basename(path_or_fileobj)
         else:
             if not path_in_repo:
@@ -706,15 +677,9 @@ class UploadManager:
         ignore_patterns += DEFAULT_IGNORE_PATTERNS
 
         if allow_patterns is not None:
-            ignore_patterns = [
-                p for p in ignore_patterns if p not in allow_patterns
-            ]
+            ignore_patterns = [p for p in ignore_patterns if p not in allow_patterns]
 
-        commit_message = (
-            commit_message
-            if commit_message is not None
-            else f"Upload to {repo_id} on ModelScope hub"
-        )
+        commit_message = commit_message if commit_message is not None else f"Upload to {repo_id} on ModelScope hub"
         commit_description = commit_description or "Uploading files"
 
         # Exclude internal cache files from upload
@@ -762,22 +727,17 @@ class UploadManager:
             commit_batch_size = _calculate_adaptive_batch_size(len(sorted_files))
             logger.info(
                 "Adaptive batch size: %d (for %d files)",
-                commit_batch_size, len(sorted_files),
+                commit_batch_size,
+                len(sorted_files),
             )
         else:
-            commit_batch_size = (
-                UPLOAD_COMMIT_BATCH_SIZE
-                if UPLOAD_COMMIT_BATCH_SIZE > 0
-                else len(sorted_files)
-            )
+            commit_batch_size = UPLOAD_COMMIT_BATCH_SIZE if UPLOAD_COMMIT_BATCH_SIZE > 0 else len(sorted_files)
 
         # Initialize tracker
         folder_path_resolved = Path(folder_path).resolve()
         if use_cache:
             cache_path = folder_path_resolved / UPLOAD_CACHE_FILE
-            tracker: UploadTracker | NullTracker = UploadTracker(
-                cache_path, repo_id=repo_id
-            )
+            tracker: UploadTracker | NullTracker = UploadTracker(cache_path, repo_id=repo_id)
         else:
             tracker = NullTracker()
         batch_tracker = BatchTracker(len(sorted_files), commit_batch_size)
@@ -788,20 +748,17 @@ class UploadManager:
         for file_idx, (file_path_in_repo, file_path) in enumerate(sorted_files):
             try:
                 st = os.stat(file_path)
-                if tracker.is_committed(
-                    file_path_in_repo, st.st_mtime, st.st_size
-                ):
+                if tracker.is_committed(file_path_in_repo, st.st_mtime, st.st_size):
                     skipped_indices.add(file_idx)
                     batch_tracker.mark_file_skipped(file_idx)
                     continue
             except OSError as e:
                 logger.warning(
                     "Cannot stat file %s, will re-upload: %s",
-                    file_path_in_repo, e,
+                    file_path_in_repo,
+                    e,
                 )
-            files_to_upload.append(
-                (file_idx, (file_path_in_repo, file_path))
-            )
+            files_to_upload.append((file_idx, (file_path_in_repo, file_path)))
 
         # Batch pre-validation for LFS files with cached hashes
         pre_validated_map: dict[str, str | None] = {}
@@ -810,14 +767,15 @@ class UploadManager:
         for file_idx, (file_path_in_repo, file_path) in files_to_upload:
             try:
                 st = os.stat(file_path)
-                cached = tracker.get_hash(
-                    file_path_in_repo, st.st_mtime, st.st_size
-                )
+                cached = tracker.get_hash(file_path_in_repo, st.st_mtime, st.st_size)
                 if cached is not None:
                     if (
                         _upload_mode(
-                            file_path_in_repo, cached["file_size"], repo_type,
-                        ) == "lfs"
+                            file_path_in_repo,
+                            cached["file_size"],
+                            repo_type,
+                        )
+                        == "lfs"
                     ):
                         lfs_hash_info_map[file_idx] = (cached, st)
                     continue
@@ -825,19 +783,15 @@ class UploadManager:
                 pass
 
         if lfs_hash_info_map:
-            objects = [
-                {"oid": info["file_hash"], "size": info["file_size"]}
-                for info, _ in lfs_hash_info_map.values()
-            ]
-            validated = self._validate_blobs_batch(
-                repo_id=repo_id, repo_type=repo_type, objects=objects
-            )
+            objects = [{"oid": info["file_hash"], "size": info["file_size"]} for info, _ in lfs_hash_info_map.values()]
+            validated = self._validate_blobs_batch(repo_id=repo_id, repo_type=repo_type, objects=objects)
             pre_validated_map = validated
             reused = sum(1 for v in validated.values() if v is None)
             logger.info(
-                "Pre-validated %d cached LFS hash(es): %d globally existing, "
-                "%d need upload.",
-                len(objects), reused, len(objects) - reused,
+                "Pre-validated %d cached LFS hash(es): %d globally existing, %d need upload.",
+                len(objects),
+                reused,
+                len(objects) - reused,
             )
 
         skipped_count = len(skipped_indices)
@@ -846,18 +800,20 @@ class UploadManager:
 
         logger.info(
             "Scan complete: %d total, %d committed (skip), %d to process.",
-            len(sorted_files), skipped_count, len(files_to_upload),
+            len(sorted_files),
+            skipped_count,
+            len(files_to_upload),
         )
 
         logger.info(
             "Uploading %d file(s) in %d batch(es) of size %d (pipeline mode).",
-            len(files_to_upload), batch_tracker.num_batches, commit_batch_size,
+            len(files_to_upload),
+            batch_tracker.num_batches,
+            commit_batch_size,
         )
 
         # Pipeline: upload workers
-        def _upload_worker(
-            file_idx: int, file_info: tuple, pre_validated: Any = None
-        ) -> None:
+        def _upload_worker(file_idx: int, file_info: tuple, pre_validated: Any = None) -> None:
             path_in_repo_w, file_path_w = file_info
             try:
                 logger.debug("Uploading: %s ...", path_in_repo_w)
@@ -885,7 +841,7 @@ class UploadManager:
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for file_idx, file_info in files_to_upload:
-                    pv = None
+                    pv: str | bool | None = None
                     if file_idx in lfs_hash_info_map:
                         cached_hash = lfs_hash_info_map[file_idx][0]["file_hash"]
                         pv = pre_validated_map.get(cached_hash)
@@ -901,16 +857,12 @@ class UploadManager:
                     disable=disable_tqdm,
                 ):
                     batch_start = batch_idx * commit_batch_size
-                    batch_end = min(
-                        batch_start + commit_batch_size, len(sorted_files)
-                    )
-                    if all(
-                        i in skipped_indices
-                        for i in range(batch_start, batch_end)
-                    ):
+                    batch_end = min(batch_start + commit_batch_size, len(sorted_files))
+                    if all(i in skipped_indices for i in range(batch_start, batch_end)):
                         logger.info(
                             "Batch %d/%d fully committed, skipping.",
-                            batch_idx + 1, num_batches,
+                            batch_idx + 1,
+                            num_batches,
                         )
                         continue
 
@@ -923,19 +875,16 @@ class UploadManager:
 
                     self._track_uploaded_batch(tracker, results)
 
-                    operations = self._build_batch_operations(
-                        results, repo_type
-                    )
+                    operations = self._build_batch_operations(results, repo_type)
                     if not operations:
                         logger.error(
                             "Batch %d/%d: all files failed, skipping commit.",
-                            batch_idx + 1, num_batches,
+                            batch_idx + 1,
+                            num_batches,
                         )
                         continue
 
-                    batch_commit_message = (
-                        f"{commit_message} (batch {batch_idx + 1}/{num_batches})"
-                    )
+                    batch_commit_message = f"{commit_message} (batch {batch_idx + 1}/{num_batches})"
                     try:
                         commit_info = self._commit_with_retry(
                             repo_id=repo_id,
@@ -948,14 +897,18 @@ class UploadManager:
                         all_results.extend(results)
                         logger.info(
                             "Batch %d/%d: committed %d file(s).",
-                            batch_idx + 1, num_batches, len(results),
+                            batch_idx + 1,
+                            num_batches,
+                            len(results),
                         )
                         self._track_committed_batch(tracker, results)
                         consecutive_failures = 0
                     except Exception as e:
                         logger.error(
                             "Batch %d/%d commit failed: %s",
-                            batch_idx + 1, num_batches, e,
+                            batch_idx + 1,
+                            num_batches,
+                            e,
                         )
                         category = classify_error(e)
                         if not _ErrorCategory.is_retryable(category):
@@ -967,10 +920,11 @@ class UploadManager:
                                     error_type="commit_" + category,
                                 )
                             logger.error(
-                                "Batch %d/%d: permanent failure (%s), "
-                                "%d file(s) will not be retried.",
-                                batch_idx + 1, num_batches,
-                                category, len(results),
+                                "Batch %d/%d: permanent failure (%s), %d file(s) will not be retried.",
+                                batch_idx + 1,
+                                num_batches,
+                                category,
+                                len(results),
                             )
                             consecutive_failures += 1
                         else:
@@ -982,10 +936,11 @@ class UploadManager:
                                     )
                                 )
                             logger.warning(
-                                "Batch %d/%d: %d file(s) recovered to retry "
-                                "queue (error_category=%s).",
-                                batch_idx + 1, num_batches,
-                                len(results), category,
+                                "Batch %d/%d: %d file(s) recovered to retry queue (error_category=%s).",
+                                batch_idx + 1,
+                                num_batches,
+                                len(results),
+                                category,
                             )
                             consecutive_failures += 1
 
@@ -999,17 +954,15 @@ class UploadManager:
 
         # ReAct progressive retry fallback
         if total_failed_files and UPLOAD_REACT_ENABLED:
-            total_failed_files, react_commits, react_results = (
-                self._retry_failed_files_react(
-                    failed_files=total_failed_files,
-                    tracker=tracker,
-                    repo_id=repo_id,
-                    repo_type=repo_type,
-                    commit_message=commit_message,
-                    revision=revision,
-                    max_workers=max_workers,
-                    disable_tqdm=disable_tqdm,
-                )
+            total_failed_files, react_commits, react_results = self._retry_failed_files_react(
+                failed_files=total_failed_files,
+                tracker=tracker,
+                repo_id=repo_id,
+                repo_type=repo_type,
+                commit_message=commit_message,
+                revision=revision,
+                max_workers=max_workers,
+                disable_tqdm=disable_tqdm,
             )
             commit_infos.extend(react_commits)
             all_results.extend(react_results)
@@ -1042,10 +995,7 @@ class UploadManager:
             )
             if orphans:
                 delete_ops = self._build_delete_operations(orphans)
-                delete_commit_message = (
-                    f"{commit_message} "
-                    f"(sync: delete {len(orphans)} orphan file(s))"
-                )
+                delete_commit_message = f"{commit_message} (sync: delete {len(orphans)} orphan file(s))"
                 try:
                     delete_commit = self._commit_with_retry(
                         repo_id=repo_id,
@@ -1067,16 +1017,9 @@ class UploadManager:
         elapsed = time.time() - start_time
         total_files = len(sorted_files)
         failed_count = len(total_failed_files)
-        lfs_reused_count = sum(
-            1 for r in all_results
-            if r.get("upload_mode") == "lfs" and r.get("is_reused")
-        )
-        lfs_uploaded_count = sum(
-            1 for r in all_results if r.get("is_blob_uploaded")
-        )
-        normal_count = sum(
-            1 for r in all_results if r.get("upload_mode") == "normal"
-        )
+        lfs_reused_count = sum(1 for r in all_results if r.get("upload_mode") == "lfs" and r.get("is_reused"))
+        lfs_uploaded_count = sum(1 for r in all_results if r.get("is_blob_uploaded"))
+        normal_count = sum(1 for r in all_results if r.get("upload_mode") == "normal")
         committed_count = len(all_results)
 
         print("=" * 60)
@@ -1141,9 +1084,7 @@ class UploadManager:
             item_type = item.get("Type") or item.get("type") or "blob"
             if item_type == "tree":
                 continue
-            path = (
-                item.get("Path") or item.get("path") or item.get("Name") or ""
-            )
+            path = item.get("Path") or item.get("path") or item.get("Name") or ""
             if not path:
                 continue
             remote_paths.append(path)
@@ -1151,14 +1092,13 @@ class UploadManager:
         # Filter by prefix scope
         if path_in_repo_prefix:
             scope_prefix = path_in_repo_prefix + "/"
-            remote_paths = [
-                p for p in remote_paths if p.startswith(scope_prefix)
-            ]
+            remote_paths = [p for p in remote_paths if p.startswith(scope_prefix)]
 
         orphans = [p for p in remote_paths if p not in local_paths_in_repo]
         logger.info(
             "Sync: %d remote file(s) in scope, %d orphan(s) detected.",
-            len(remote_paths), len(orphans),
+            len(remote_paths),
+            len(orphans),
         )
         return orphans
 
@@ -1201,9 +1141,7 @@ class UploadManager:
         if is_real_path:
             try:
                 file_stat = os.stat(file_path)
-                cached = tracker.get_hash(
-                    file_path_in_repo, file_stat.st_mtime, file_stat.st_size
-                )
+                cached = tracker.get_hash(file_path_in_repo, file_stat.st_mtime, file_stat.st_size)
                 if cached is not None:
                     hash_info_d = cached
                     hash_info_d["file_path_or_obj"] = file_path
@@ -1217,8 +1155,10 @@ class UploadManager:
                     if file_stat is None:
                         file_stat = os.stat(file_path)
                     tracker.put_hash(
-                        file_path_in_repo, file_stat.st_mtime,
-                        file_stat.st_size, hash_info_d,
+                        file_path_in_repo,
+                        file_stat.st_mtime,
+                        file_stat.st_size,
+                        hash_info_d,
                     )
                 except OSError:
                     pass
@@ -1253,10 +1193,7 @@ class UploadManager:
                         sha256=file_hash,
                         size=file_size,
                         data=file_path,
-                        disable_tqdm=(
-                            disable_tqdm
-                            or file_size <= UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD
-                        ),
+                        disable_tqdm=(disable_tqdm or file_size <= UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD),
                         tqdm_desc=f"[Uploading {file_path_in_repo}]",
                         pre_validated=pre_validated,
                     )
@@ -1267,20 +1204,21 @@ class UploadManager:
                     last_error = e
                     if attempt < UPLOAD_BLOB_MAX_RETRIES - 1:
                         wait = min(
-                            UPLOAD_BLOB_RETRY_BACKOFF ** attempt,
+                            UPLOAD_BLOB_RETRY_BACKOFF**attempt,
                             UPLOAD_BLOB_RETRY_MAX_WAIT,
                         )
                         logger.warning(
-                            "Blob upload attempt %d/%d failed for %s: %s, "
-                            "retrying in %ds ...",
-                            attempt + 1, UPLOAD_BLOB_MAX_RETRIES,
-                            file_path_in_repo, e, wait,
+                            "Blob upload attempt %d/%d failed for %s: %s, retrying in %ds ...",
+                            attempt + 1,
+                            UPLOAD_BLOB_MAX_RETRIES,
+                            file_path_in_repo,
+                            e,
+                            wait,
                         )
                         time.sleep(wait)
             else:
                 raise StorageError(
-                    f"Blob upload failed after {UPLOAD_BLOB_MAX_RETRIES} attempts "
-                    f"for {file_path_in_repo}: {last_error}"
+                    f"Blob upload failed after {UPLOAD_BLOB_MAX_RETRIES} attempts for {file_path_in_repo}: {last_error}"
                 ) from last_error
         else:
             if isinstance(file_path, (str, os.PathLike)):
@@ -1302,10 +1240,7 @@ class UploadManager:
             "file_path_in_repo": file_path_in_repo,
             "file_path": file_path,
             "file_mtime": file_stat.st_mtime if file_stat else 0,
-            "file_size_on_disk": (
-                file_stat.st_size if file_stat
-                else hash_info_d.get("file_size", 0)
-            ),
+            "file_size_on_disk": (file_stat.st_size if file_stat else hash_info_d.get("file_size", 0)),
             "is_uploaded": upload_res["is_uploaded"],
             "is_reused": upload_res.get("is_reused", False),
             "is_blob_uploaded": upload_res.get("is_blob_uploaded", False),
@@ -1323,7 +1258,7 @@ class UploadManager:
         repo_type: str,
         sha256: str,
         size: int,
-        data: str | Path | bytes | BinaryIO,
+        data: PathOrFileObj,
         disable_tqdm: bool = False,
         tqdm_desc: str = "[Uploading]",
         buffer_size_mb: int = 16,
@@ -1343,21 +1278,20 @@ class UploadManager:
             return res_d
 
         if isinstance(pre_validated, str):
-            upload_url = pre_validated
+            upload_url: str = pre_validated
         else:
             validated = self._client.validate_blobs(
                 repo_id=repo_id,
                 repo_type=repo_type,
                 objects=[{"oid": sha256, "size": size}],
             )
-            upload_url = validated.get(sha256)
-            if upload_url is None:
-                logger.info(
-                    "Blob %s already exists globally, reuse.", sha256[:8]
-                )
+            maybe_url = validated.get(sha256)
+            if maybe_url is None:
+                logger.info("Blob %s already exists globally, reuse.", sha256[:8])
                 res_d["is_uploaded"] = True
                 res_d["is_reused"] = True
                 return res_d
+            upload_url = maybe_url
 
         chunk_size = buffer_size_mb * 1024 * 1024
 
@@ -1371,23 +1305,15 @@ class UploadManager:
             if isinstance(data, (str, Path)):
                 with open(data, "rb") as f:
                     stream = _CountedReadStream(f, size, pbar, chunk_size)
-                    self._client.upload_blob(
-                        upload_url=upload_url, data=stream, size=size
-                    )
+                    self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
                 stream.verify_complete()
             elif isinstance(data, bytes):
-                stream = _CountedReadStream(
-                    io.BytesIO(data), size, pbar, chunk_size
-                )
-                self._client.upload_blob(
-                    upload_url=upload_url, data=stream, size=size
-                )
+                stream = _CountedReadStream(io.BytesIO(data), size, pbar, chunk_size)
+                self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
                 stream.verify_complete()
             else:
                 stream = _CountedReadStream(data, size, pbar, chunk_size)
-                self._client.upload_blob(
-                    upload_url=upload_url, data=stream, size=size
-                )
+                self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
                 stream.verify_complete()
 
         res_d["url"] = upload_url
@@ -1431,7 +1357,7 @@ class UploadManager:
         revision: str = "master",
         max_retries: int = UPLOAD_COMMIT_MAX_RETRIES,
     ) -> dict:
-        last_error = None
+        last_error: Exception | None = None
         start_time = time.monotonic()
         for attempt in range(max_retries):
             try:
@@ -1465,15 +1391,16 @@ class UploadManager:
                 break
             logger.warning(
                 "Commit attempt %d/%d failed: %s, retrying in %ds ...",
-                attempt + 1, max_retries, last_error, wait,
+                attempt + 1,
+                max_retries,
+                last_error,
+                wait,
             )
             time.sleep(wait)
 
         if isinstance(last_error, HubError):
             raise last_error
-        raise NetworkError(
-            f"Commit failed after {max_retries} attempts: {last_error}"
-        ) from last_error
+        raise NetworkError(f"Commit failed after {max_retries} attempts: {last_error}") from last_error
 
     # ------------------------------------------------------------------
     # Internal: build operations
@@ -1515,9 +1442,7 @@ class UploadManager:
                 "encoding": "base64",
             }
 
-    def _build_batch_operations(
-        self, results: list[dict], repo_type: str
-    ) -> list[dict]:
+    def _build_batch_operations(self, results: list[dict], repo_type: str) -> list[dict]:
         operations = []
         for item_d in results:
             file_path = item_d["file_path"]
@@ -1546,9 +1471,7 @@ class UploadManager:
         results: list[dict],
     ) -> None:
         for r in results:
-            tracker.mark_uploaded(
-                r["file_path_in_repo"], r["file_mtime"], r["file_size_on_disk"]
-            )
+            tracker.mark_uploaded(r["file_path_in_repo"], r["file_mtime"], r["file_size_on_disk"])
         tracker.save()
 
     def _track_committed_batch(
@@ -1557,10 +1480,7 @@ class UploadManager:
         results: list[dict],
     ) -> None:
         tracker.mark_committed_batch(
-            [
-                (r["file_path_in_repo"], r["file_mtime"], r["file_size_on_disk"])
-                for r in results
-            ]
+            [(r["file_path_in_repo"], r["file_mtime"], r["file_size_on_disk"]) for r in results]
         )
         tracker.save()
 
@@ -1579,15 +1499,10 @@ class UploadManager:
         if not folder.is_dir():
             raise InvalidParameter(f"Provided path: '{folder}' is not a directory")
 
-        all_files = sorted(
-            path for path in folder.glob("**/*") if path.is_file()
-        )
+        all_files = sorted(path for path in folder.glob("**/*") if path.is_file())
 
         if len(all_files) > UPLOAD_MAX_FILE_COUNT:
-            raise InvalidParameter(
-                f"Too many files ({len(all_files)}) in folder, "
-                f"max allowed: {UPLOAD_MAX_FILE_COUNT}"
-            )
+            raise InvalidParameter(f"Too many files ({len(all_files)}) in folder, max allowed: {UPLOAD_MAX_FILE_COUNT}")
 
         # Per-directory file count check
         dir_counts: dict[str, int] = {}
@@ -1623,10 +1538,7 @@ class UploadManager:
                 UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT,
             )
 
-        relpath_to_abspath = {
-            path.relative_to(folder).as_posix(): str(path)
-            for path in all_files
-        }
+        relpath_to_abspath = {path.relative_to(folder).as_posix(): str(path) for path in all_files}
 
         filtered_keys = _filter_repo_objects(
             list(relpath_to_abspath.keys()),
@@ -1635,10 +1547,7 @@ class UploadManager:
         )
 
         prefix = f"{path_in_repo.strip('/')}/" if path_in_repo else ""
-        prepared = [
-            (prefix + relpath, relpath_to_abspath[relpath])
-            for relpath in filtered_keys
-        ]
+        prepared = [(prefix + relpath, relpath_to_abspath[relpath]) for relpath in filtered_keys]
 
         logger.info("Prepared %d files for upload.", len(prepared))
         return prepared
@@ -1672,11 +1581,7 @@ class UploadManager:
             else:
                 permanent_failures.append(item_err)
                 try:
-                    st = (
-                        os.stat(file_path_r)
-                        if isinstance(file_path_r, (str, os.PathLike))
-                        else None
-                    )
+                    st = os.stat(file_path_r) if isinstance(file_path_r, (str, os.PathLike)) else None
                 except OSError:
                     st = None
                 tracker.mark_failed(
@@ -1687,11 +1592,13 @@ class UploadManager:
                 )
                 logger.error(
                     "[ReAct] Permanent failure: %s (%s: %s)",
-                    path_in_repo_r, category, err,
+                    path_in_repo_r,
+                    category,
+                    err,
                 )
         retryable = remaining
 
-        round_configs = [
+        round_configs: list[dict[str, Any]] = [
             {
                 "name": "Round 1 (parallel)",
                 "parallel": True,
@@ -1722,16 +1629,15 @@ class UploadManager:
             round_name = cfg["name"]
             logger.info(
                 "[ReAct] %s: retrying %d file(s) ...",
-                round_name, len(retryable),
+                round_name,
+                len(retryable),
             )
 
             round_successes: list[dict] = []
             round_failures: list[tuple] = []
 
             if cfg["parallel"] and len(retryable) > 1:
-                with ThreadPoolExecutor(
-                    max_workers=cfg["workers"]
-                ) as executor:
+                with ThreadPoolExecutor(max_workers=cfg["workers"]) as executor:
                     future_map: dict = {}
                     for (path_in_repo_r, file_path_r), _err in retryable:
                         future = executor.submit(
@@ -1750,27 +1656,20 @@ class UploadManager:
                             result = future.result()
                             round_successes.append(result)
                         except Exception as e:
-                            round_failures.append(
-                                ((path_in_repo_r, file_path_r), e)
-                            )
+                            round_failures.append(((path_in_repo_r, file_path_r), e))
             else:
-                for i, ((path_in_repo_r, file_path_r), _err) in enumerate(
-                    retryable
-                ):
+                for i, ((path_in_repo_r, file_path_r), _err) in enumerate(retryable):
                     if cfg["delay"] > 0 and i > 0:
                         delay = (
-                            cfg["delay"]
-                            * (
-                                2
-                                ** min(i, UPLOAD_REACT_BACKOFF_MAX_EXPONENT)
-                            )
+                            cfg["delay"] * (2 ** min(i, UPLOAD_REACT_BACKOFF_MAX_EXPONENT))
                             if round_idx == 1
                             else cfg["delay"]
                         )
                         delay = min(delay, UPLOAD_REACT_MAX_DELAY)
                         logger.info(
                             "[ReAct] Waiting %ds before retrying %s ...",
-                            delay, path_in_repo_r,
+                            delay,
+                            path_in_repo_r,
                         )
                         time.sleep(delay)
                     try:
@@ -1786,17 +1685,15 @@ class UploadManager:
                     except Exception as e:
                         logger.error(
                             "[ReAct] %s: failed %s - %s",
-                            round_name, path_in_repo_r, e,
+                            round_name,
+                            path_in_repo_r,
+                            e,
                         )
-                        round_failures.append(
-                            ((path_in_repo_r, file_path_r), e)
-                        )
+                        round_failures.append(((path_in_repo_r, file_path_r), e))
 
             all_successes.extend(round_successes)
 
-            batch_size = min(
-                cfg["batch_size"], max(1, len(round_successes))
-            )
+            batch_size = min(cfg["batch_size"], max(1, len(round_successes)))
             for batch_start in range(0, len(round_successes), batch_size):
                 batch = round_successes[batch_start : batch_start + batch_size]
                 self._track_uploaded_batch(tracker, batch)
@@ -1816,12 +1713,11 @@ class UploadManager:
                     self._track_committed_batch(tracker, batch)
                     logger.info(
                         "[ReAct] %s: committed %d file(s).",
-                        round_name, len(batch),
+                        round_name,
+                        len(batch),
                     )
                 except Exception as e:
-                    logger.error(
-                        "[ReAct] %s commit failed: %s", round_name, e
-                    )
+                    logger.error("[ReAct] %s commit failed: %s", round_name, e)
                     category = classify_error(e)
                     if not _ErrorCategory.is_retryable(category):
                         for r in batch:
@@ -1833,24 +1729,16 @@ class UploadManager:
                             )
                     else:
                         for r in batch:
-                            round_failures.append(
-                                ((r["file_path_in_repo"], r["file_path"]), e)
-                            )
+                            round_failures.append(((r["file_path_in_repo"], r["file_path"]), e))
 
             new_retryable = []
             for item_err in round_failures:
                 (path_in_repo_r, file_path_r), err = item_err
-                retry_counts[path_in_repo_r] = (
-                    retry_counts.get(path_in_repo_r, 0) + 1
-                )
+                retry_counts[path_in_repo_r] = retry_counts.get(path_in_repo_r, 0) + 1
                 if retry_counts[path_in_repo_r] >= 3:
                     permanent_failures.append(item_err)
                     try:
-                        st = (
-                            os.stat(file_path_r)
-                            if isinstance(file_path_r, (str, os.PathLike))
-                            else None
-                        )
+                        st = os.stat(file_path_r) if isinstance(file_path_r, (str, os.PathLike)) else None
                     except OSError:
                         st = None
                     tracker.mark_failed(
@@ -1859,9 +1747,7 @@ class UploadManager:
                         st.st_size if st else 0,
                         error_type="max_retries_exceeded",
                     )
-                    logger.error(
-                        "[ReAct] Max retries exceeded for %s", path_in_repo_r
-                    )
+                    logger.error("[ReAct] Max retries exceeded for %s", path_in_repo_r)
                     continue
                 category = classify_error(err)
                 if _ErrorCategory.is_retryable(category):
@@ -1869,11 +1755,7 @@ class UploadManager:
                 else:
                     permanent_failures.append(item_err)
                     try:
-                        st = (
-                            os.stat(file_path_r)
-                            if isinstance(file_path_r, (str, os.PathLike))
-                            else None
-                        )
+                        st = os.stat(file_path_r) if isinstance(file_path_r, (str, os.PathLike)) else None
                     except OSError:
                         st = None
                     tracker.mark_failed(
@@ -1884,15 +1766,17 @@ class UploadManager:
                     )
                     logger.error(
                         "[ReAct] Permanent failure: %s (%s)",
-                        path_in_repo_r, category,
+                        path_in_repo_r,
+                        category,
                     )
 
             progress = len(retryable) - len(new_retryable)
             if progress > 0:
                 logger.info(
-                    "[ReAct] %s: made progress — %d file(s) resolved, "
-                    "%d remaining.",
-                    round_name, progress, len(new_retryable),
+                    "[ReAct] %s: made progress — %d file(s) resolved, %d remaining.",
+                    round_name,
+                    progress,
+                    len(new_retryable),
                 )
             elif new_retryable:
                 logger.warning(
@@ -1933,7 +1817,8 @@ class UploadManager:
                 break
             logger.info(
                 "Retry round %d/%d: re-uploading %d failed file(s) ...",
-                retry_round + 1, UPLOAD_FAILED_FILE_MAX_RETRIES,
+                retry_round + 1,
+                UPLOAD_FAILED_FILE_MAX_RETRIES,
                 len(total_failed_files),
             )
             retry_failures: list[tuple] = []
@@ -1951,39 +1836,32 @@ class UploadManager:
                     retry_successes.append(result)
                 except Exception as e:
                     logger.error("  Retry failed: %s - %s", path_in_repo_r, e)
-                    retry_failures.append(
-                        ((path_in_repo_r, file_path_r), e)
-                    )
+                    retry_failures.append(((path_in_repo_r, file_path_r), e))
             if retry_successes:
                 self._track_uploaded_batch(tracker, retry_successes)
-                operations = self._build_batch_operations(
-                    retry_successes, repo_type
-                )
+                operations = self._build_batch_operations(retry_successes, repo_type)
                 if operations:
                     try:
                         commit_info = self._commit_with_retry(
                             repo_id=repo_id,
                             repo_type=repo_type,
                             operations=operations,
-                            commit_message=(
-                                f"{commit_message} "
-                                f"(retry round {retry_round + 1})"
-                            ),
+                            commit_message=(f"{commit_message} (retry round {retry_round + 1})"),
                             revision=revision,
                         )
                         commit_infos.append(commit_info)
                         all_results.extend(retry_successes)
-                        self._track_committed_batch(
-                            tracker, retry_successes
-                        )
+                        self._track_committed_batch(tracker, retry_successes)
                         logger.info(
                             "  Retry round %d: committed %d file(s).",
-                            retry_round + 1, len(retry_successes),
+                            retry_round + 1,
+                            len(retry_successes),
                         )
                     except Exception as e:
                         logger.error(
                             "  Retry round %d commit failed: %s",
-                            retry_round + 1, e,
+                            retry_round + 1,
+                            e,
                         )
                         category = classify_error(e)
                         if not _ErrorCategory.is_retryable(category):

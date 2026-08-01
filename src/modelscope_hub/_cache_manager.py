@@ -12,7 +12,8 @@ from pathlib import Path
 from .config import get_default_config
 from .constants import RepoType
 from .errors import CacheError
-from .types import CacheInfo, CachedRepoInfo
+from .types import CachedRepoInfo, CacheInfo, CacheVerification, VerificationMismatch
+from .utils.file_utils import compute_hash
 from .utils.logger import get_logger
 
 logger = get_logger("cache")
@@ -76,15 +77,17 @@ def scan_cache(cache_dir: Path | None = None) -> CacheInfo:
             # Decode repo_id from directory name (owner--name → owner/name)
             repo_id = repo_dir.name.replace("--", "/")
 
-            repos.append(CachedRepoInfo(
-                repo_id=repo_id,
-                repo_type=repo_type,
-                revision=revision,
-                size_on_disk=size,
-                nb_files=nb_files,
-                last_accessed=last_accessed_ts if last_accessed_ts > 0 else None,
-                local_path=str(repo_dir),
-            ))
+            repos.append(
+                CachedRepoInfo(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    revision=revision,
+                    size_on_disk=size,
+                    nb_files=nb_files,
+                    last_accessed=last_accessed_ts if last_accessed_ts > 0 else None,
+                    local_path=str(repo_dir),
+                )
+            )
 
     # Scan flat layout (compat): {root}/{owner}/{name}/
     # and legacy layout: {root}/hub/{owner}/{name}/
@@ -110,15 +113,17 @@ def scan_cache(cache_dir: Path | None = None) -> CacheInfo:
                 nb_files = sum(1 for f in name_dir.rglob("*") if f.is_file())
                 repo_id = f"{owner_dir.name}/{name_dir.name}"
 
-                repos.append(CachedRepoInfo(
-                    repo_id=repo_id,
-                    repo_type=RepoType.MODEL,  # assume model for flat layout
-                    revision=None,
-                    size_on_disk=size,
-                    nb_files=nb_files,
-                    last_accessed=None,
-                    local_path=str(name_dir),
-                ))
+                repos.append(
+                    CachedRepoInfo(
+                        repo_id=repo_id,
+                        repo_type=RepoType.MODEL,  # assume model for flat layout
+                        revision=None,
+                        size_on_disk=size,
+                        nb_files=nb_files,
+                        last_accessed=None,
+                        local_path=str(name_dir),
+                    )
+                )
 
     return CacheInfo(
         repos=repos,
@@ -210,9 +215,98 @@ def clear_cache(
     return freed
 
 
+def verify_cache(
+    repo_id: str,
+    repo_type: str,
+    expected_by_path: dict[str, str | None],
+    *,
+    revision: str | None = None,
+    cache_dir: str | Path | None = None,
+    local_dir: str | Path | None = None,
+) -> CacheVerification:
+    """Compare a cached snapshot or local directory with remote SHA-256 values."""
+    root, resolved_revision = _resolve_verification_root(
+        repo_id,
+        repo_type,
+        revision=revision,
+        cache_dir=cache_dir,
+        local_dir=local_dir,
+    )
+    local_by_path = {
+        relative.as_posix(): path
+        for path in root.rglob("*")
+        for relative in (path.relative_to(root),)
+        if path.is_file() and not any(part.startswith(".") for part in relative.parts)
+    }
+    remote_paths = set(expected_by_path)
+    local_paths = set(local_by_path)
+    mismatches: list[VerificationMismatch] = []
+    unverified: list[str] = []
+    checked = 0
+
+    for rel_path in sorted(remote_paths & local_paths):
+        expected = expected_by_path[rel_path]
+        if not expected:
+            unverified.append(rel_path)
+            continue
+        checked += 1
+        actual = compute_hash(local_by_path[rel_path], "sha256")
+        if actual.lower() != expected.lower():
+            mismatches.append(VerificationMismatch(rel_path, expected.lower(), actual.lower()))
+
+    return CacheVerification(
+        revision=resolved_revision,
+        verified_path=str(root),
+        checked_count=checked,
+        mismatches=mismatches,
+        missing_paths=sorted(remote_paths - local_paths),
+        extra_paths=sorted(local_paths - remote_paths),
+        unverified_paths=unverified,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _resolve_verification_root(
+    repo_id: str,
+    repo_type: str,
+    *,
+    revision: str | None,
+    cache_dir: str | Path | None,
+    local_dir: str | Path | None,
+) -> tuple[Path, str]:
+    if local_dir is not None:
+        root = Path(local_dir).expanduser().resolve()
+        if not root.is_dir():
+            raise CacheError(f"Local directory does not exist: {root}")
+        return root, revision or "master"
+
+    cache_root = Path(cache_dir or get_default_config().cache_dir).expanduser().resolve()
+    segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+    repo_root = cache_root / segment / repo_id.replace("/", "--")
+    snapshots = repo_root / "snapshots"
+    if not snapshots.is_dir():
+        raise CacheError(f"Repository is not present in cache: {repo_root}")
+
+    if revision:
+        snapshot = snapshots / revision
+        if not snapshot.is_dir():
+            raise CacheError(f"Revision '{revision}' is not present in cache: {snapshot}")
+        return snapshot, revision
+
+    for default_name in ("master", "main"):
+        default_snapshot = snapshots / default_name
+        if default_snapshot.is_dir():
+            return default_snapshot, default_name
+    candidates = sorted(path for path in snapshots.iterdir() if path.is_dir())
+    if not candidates:
+        raise CacheError(f"No cached revisions found in: {snapshots}")
+    if len(candidates) == 1:
+        return candidates[0], candidates[0].name
+    raise CacheError("Cached revision is ambiguous; pass --revision explicitly")
+
+
 def _resolve_cache_targets(root: Path, repo_id: str, repo_type: str) -> list[Path]:
     """Resolve all possible cache locations for a repo across layout formats.
 
@@ -225,9 +319,9 @@ def _resolve_cache_targets(root: Path, repo_id: str, repo_type: str) -> list[Pat
     segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
 
     candidates = [
-        root / segment / safe_id,    # standard: {cache}/models/owner--name/
-        root / repo_id,              # flat (compat): {cache}/owner/name/
-        root / "hub" / repo_id,      # legacy: {cache}/hub/owner/name/
+        root / segment / safe_id,  # standard: {cache}/models/owner--name/
+        root / repo_id,  # flat (compat): {cache}/owner/name/
+        root / "hub" / repo_id,  # legacy: {cache}/hub/owner/name/
     ]
     return [p for p in candidates if p.is_dir()]
 
