@@ -33,6 +33,11 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.2.0** (2026-08-01)
+- **Breaking**: `HubApi.login()` now raises `NetworkError` / `ServerError` / `RequestTimeoutError` for non-authentication failures instead of always raising `AuthenticationError` — widen `except AuthenticationError` to `HubError` if you catch *any* login failure
+- **Fix**: network, timeout and 5xx errors during login are no longer misreported as an invalid token; a failed login no longer deletes stored credentials; bare and upper-case endpoints are accepted (e.g. `--endpoint modelscope.ai`)
+- **Enhancement**: a rejected login probes the peer ModelScope site and suggests `--endpoint` when the token is valid there; `--verbose` prints the full error cause chain
+
 **v0.1.9** (2026-07-31)
 - **Fix**: two stale unit tests that failed in downstream distro sandboxes ([#46](https://github.com/modelscope/modelscope_hub/issues/46), NixOS): align the `mcp deploy` call-shape assertion and the `parse_timestamp` timezone-normalization contract
 - **Feature**: `ms-hub mcp deploy` prints the operational URL after deployment; new `--auth-check` and repeatable `--env KEY=VALUE` options; `--transport-type` now validates against `sse`/`streamable_http`
