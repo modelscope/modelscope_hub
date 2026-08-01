@@ -38,6 +38,14 @@ ENV_ENDPOINT = "MODELSCOPE_ENDPOINT"
 ENV_TOKEN = "MODELSCOPE_API_TOKEN"
 ENV_HOME = "MODELSCOPE_HOME"
 
+# Files that together constitute a persisted login. ``session`` is deliberately
+# excluded: it is an anonymous SDK install identifier, not a credential.
+_CREDENTIAL_FILE_NAMES: tuple[str, ...] = (
+    COOKIES_FILE_NAME,
+    GIT_TOKEN_FILE_NAME,
+    USER_INFO_FILE_NAME,
+)
+
 
 def _expand(path: str | os.PathLike[str]) -> Path:
     return Path(path).expanduser().resolve()
@@ -85,10 +93,7 @@ class HubConfig:
                 self._endpoint_overridden = True
             else:
                 self.endpoint = DEFAULT_ENDPOINT
-        # Ensure endpoint always has a scheme
-        if self.endpoint and not self.endpoint.startswith(("http://", "https://")):
-            self.endpoint = f"https://{self.endpoint}"
-        self.endpoint = (self.endpoint or DEFAULT_ENDPOINT).rstrip("/")
+        self.endpoint = self.normalize_endpoint(self.endpoint)
         # Token precedence: explicit arg > MODELSCOPE_API_TOKEN env var >
         # persisted credential. An explicitly provided value wins even when
         # empty ("" means "use no token"), so an explicit override never
@@ -100,6 +105,25 @@ class HubConfig:
             self._token_overridden = True
         else:
             self.token = self.load_token()
+
+    @staticmethod
+    def normalize_endpoint(endpoint: str | None) -> str:
+        """Return *endpoint* with a scheme guaranteed and no trailing slash.
+
+        Bare domains such as ``modelscope.ai`` are common input, especially from
+        the CLI. Without a scheme every request built from them fails deep in
+        the transport layer instead of surfacing a usable error, so the
+        normalisation lives here and is reused by every entry point that
+        accepts an endpoint.
+
+        Scheme detection is case-insensitive because URI schemes are, so an
+        input like ``HTTPS://host`` is recognised instead of being prefixed a
+        second time.
+        """
+        value = (endpoint or "").strip() or DEFAULT_ENDPOINT
+        if not value.lower().startswith(("http://", "https://")):
+            value = f"https://{value}"
+        return value.rstrip("/")
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -186,14 +210,19 @@ class HubConfig:
         return None
 
     def clear_token(self) -> None:
-        """Remove persisted credentials (deletes ``credentials/cookies``)."""
+        """Remove every persisted credential artefact.
+
+        All login artefacts are dropped together. Removing only the session
+        cookie would leave the git token and the cached identity behind, a
+        half-logged-out state that later reads can still pick up.
+        """
         self.token = None
         self._logged_out = True
-        path = self.credentials_dir / COOKIES_FILE_NAME
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for name in _CREDENTIAL_FILE_NAMES:
+            try:
+                (self.credentials_dir / name).unlink(missing_ok=True)
+            except OSError:
+                pass
 
     # ------------------------------------------------------------------
     # Credentials persistence (compat with old modelscope SDK)

@@ -394,6 +394,40 @@ _STATUS_MAP: dict[int, type[APIError]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Server business-code -> exception mapping
+#
+# The HTTP status is not always faithful to the failure semantics: the legacy
+# login endpoint answers 400 while meaning "authentication failed". Where the
+# server publishes a business code, trust it over the status code. Register new
+# codes in this table (and in the ModelScope error-code spec) rather than
+# branching at the call site.
+# ---------------------------------------------------------------------------
+_BUSINESS_CODE_MAP: dict[int, type[APIError]] = {
+    # -> E3001, served with HTTP 400 by POST /api/v1/login on both sites
+    10010103009: AuthenticationError,  # AccessToken 无效或过期
+    # -> E3026
+    10020101001: AlreadyExistsError,  # 国内站 - 数据集已存在
+    10010101001: AlreadyExistsError,  # 国内站 - 模型已存在
+    10010202004: AlreadyExistsError,  # 国际站 - 名称已被使用
+}
+
+
+def _business_code(body: Any) -> int | None:
+    """Return the numeric business code carried by a response body, if any."""
+    if not isinstance(body, dict):
+        return None
+    raw = body.get("Code")
+    if raw is None:
+        raw = body.get("code")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 _CN_TO_EN: dict[str, str] = {
     "该名称已被注册使用，请重新命名": "Repository name already exists. Please choose a different name.",
     "用户未登录": "User not logged in.",
@@ -479,21 +513,20 @@ def raise_for_status(response: Response) -> None:
     else:
         exc_cls = _STATUS_MAP.get(status, APIError)
 
-    # Detect "already exists" errors before falling back to InvalidParameter
-    if exc_cls is InvalidParameter and isinstance(body, dict):
-        code = body.get("Code") or body.get("code")
+    # A published business code describes a client-side failure more faithfully
+    # than the HTTP status, so it wins for 4xx. It deliberately does not apply to
+    # 5xx: a server outage must stay retryable even if the body happens to carry
+    # a known code, and reclassifying it would silently drop that retryability.
+    business_cls: type[APIError] | None = None
+    if status < 500:
+        code = _business_code(body)
+        business_cls = _BUSINESS_CODE_MAP.get(code) if code is not None else None
+    if business_cls is not None:
+        exc_cls = business_cls
+    elif exc_cls is InvalidParameter and isinstance(body, dict):
+        # Older servers signal "already exists" through the message only.
         msg_text = (body.get("Message") or body.get("message") or body.get("msg") or body.get("Msg") or "").lower()
-        is_exists = False
-        if code is not None:
-            try:
-                if int(code) in _ALREADY_EXISTS_CODES:
-                    is_exists = True
-            except (TypeError, ValueError):
-                pass
-        if not is_exists:
-            if any(kw in msg_text for kw in _ALREADY_EXISTS_KEYWORDS):
-                is_exists = True
-        if is_exists:
+        if any(kw in msg_text for kw in _ALREADY_EXISTS_KEYWORDS):
             exc_cls = AlreadyExistsError
 
     kwargs: dict[str, Any] = dict(
@@ -523,11 +556,12 @@ def raise_for_status(response: Response) -> None:
 # ---------------------------------------------------------------------------
 # Repo-exists detection (shared by cli/repo.py and compat/hub_api.py)
 # ---------------------------------------------------------------------------
-_ALREADY_EXISTS_CODES: set[int] = {
-    10020101001,  # 国内站 - 数据集已存在
-    10010101001,  # 国内站 - 模型已存在
-    10010202004,  # 国际站 - 名称已被使用
-}
+# Derived from the business-code table so the two never drift apart. Retained
+# as a module-level name because :func:`is_repo_exists_error` still consults it
+# when handling exceptions that pre-date the structured hierarchy.
+_ALREADY_EXISTS_CODES: frozenset[int] = frozenset(
+    code for code, exc in _BUSINESS_CODE_MAP.items() if exc is AlreadyExistsError
+)
 
 _ALREADY_EXISTS_KEYWORDS: frozenset[str] = frozenset(
     {

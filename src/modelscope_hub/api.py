@@ -156,7 +156,7 @@ class HubApi:
             base._endpoint_overridden = was_overridden
         self._config = base
         if endpoint is not None:
-            self._config.endpoint = endpoint.rstrip("/")
+            self._config.endpoint = HubConfig.normalize_endpoint(endpoint)
             self._config._endpoint_overridden = True
         if token is not None:
             self._config.token = token
@@ -188,7 +188,9 @@ class HubApi:
                 endpoint=self._config.endpoint or DEFAULT_ENDPOINT,
                 user_agent=build_user_agent(self._config.get_session_id()),
             )
-        elif self._legacy.token != self._config.token and self._config.token:
+        elif self._legacy.token != self._config.token:
+            # Clears propagate as well as changes: a cached client left holding a
+            # revoked token would keep authenticating with it.
             self._legacy.token = self._config.token
         return self._legacy
 
@@ -483,8 +485,19 @@ class HubApi:
         InvalidParameter
             When ``token`` is empty or whitespace-only.
         AuthenticationError
-            When the server rejects the token. The bad token is cleared
-            from local storage before re-raising.
+            When the server rejects the token. The server's own explanation is
+            preserved, and an endpoint hint is appended when the token turns
+            out to be valid on the peer ModelScope site.
+        HubError
+            Transport, timeout and server-side failures propagate unchanged --
+            they are never reported as a rejected token.
+
+        Notes
+        -----
+        A failed attempt leaves persisted credentials untouched. Until the
+        server has accepted the new token, the stored credential is still the
+        caller's only working one, so revoking it on failure would turn a
+        mistyped token into an unintended logout.
 
         Examples
         --------
@@ -497,6 +510,8 @@ class HubApi:
             raise InvalidParameter("token must be a non-empty string")
 
         token = token.strip()
+        previous_token = self._config.token
+        previous_logged_out = self._config._logged_out
         self._config.token = token
         self._config._logged_out = False
         self._openapi = None
@@ -505,12 +520,12 @@ class HubApi:
 
         try:
             data, cookies = self.legacy.login(token)
-        except (AuthenticationError, HubError) as exc:
-            self._config.clear_token()
-            raise AuthenticationError(
-                "Login failed: the provided token was rejected by the server.",
-                status_code=getattr(exc, "status_code", None),
-            ) from exc
+        except HubError as exc:
+            self._restore_credential_state(previous_token, previous_logged_out)
+            explained = self._explain_login_failure(token, exc)
+            if explained is exc:
+                raise
+            raise explained from exc
 
         git_token = data.get("AccessToken", "")
         username = data.get("Username", "")
@@ -523,6 +538,91 @@ class HubApi:
             self._config.save_user_info(username, email or "")
 
         return self.whoami()
+
+    def _restore_credential_state(self, token: str | None, logged_out: bool) -> None:
+        """Roll the in-memory credential back to its pre-login value.
+
+        Persisted credentials are deliberately left alone; only this instance's
+        transient state is rewound, so a failed attempt leaves the object
+        exactly as it was found instead of poisoning it with a rejected token.
+        """
+        self._config.token = token
+        self._config._logged_out = logged_out
+        self._openapi = None
+        if self._legacy is not None:
+            self._legacy.token = token
+
+    def _explain_login_failure(self, token: str, exc: HubError) -> HubError:
+        """Return the exception to surface for a failed login attempt.
+
+        Only authentication failures are re-worded. Network, timeout and
+        server-side errors are handed back untouched, because presenting them
+        as a rejected token would send the caller after the wrong remedy.
+
+        The two ModelScope sites keep separate account systems and answer an
+        unknown token with the same business code, so the server cannot tell
+        "invalid token" apart from "token issued by the other site". Only the
+        client knows which site it addressed, which is why that disambiguation
+        has to happen here.
+        """
+        if not isinstance(exc, AuthenticationError):
+            return exc
+        peer = self._peer_site_endpoint()
+        if peer is None or not self._token_valid_on(token, peer):
+            return exc
+        return AuthenticationError(
+            f"{exc.message} This token is valid on {peer} instead; retry with "
+            f"--endpoint {peer} (or set MODELSCOPE_ENDPOINT={peer}).",
+            status_code=exc.status_code,
+            request_id=exc.request_id,
+            response_body=exc.response_body,
+            url=exc.url,
+            method=exc.method,
+        )
+
+    def _peer_site_endpoint(self) -> str | None:
+        """Return the sibling ModelScope site, or ``None`` when not applicable.
+
+        An explicitly configured endpoint is always respected, mirroring
+        :meth:`resolve_endpoint_for_read`: when the caller has pinned a site we
+        do not second-guess it.
+        """
+        if self._config._endpoint_overridden:
+            return None
+        from .constants import DEFAULT_INTL_ENDPOINT
+
+        def site_key(url: str) -> str:
+            host = (urlparse(url).hostname or "").lower()
+            return host[4:] if host.startswith("www.") else host
+
+        current = site_key(self._config.endpoint or DEFAULT_ENDPOINT)
+        for candidate in (DEFAULT_ENDPOINT, DEFAULT_INTL_ENDPOINT):
+            if site_key(candidate) != current:
+                return candidate
+        return None
+
+    @staticmethod
+    def _token_valid_on(token: str, endpoint: str) -> bool:
+        """Best-effort check of whether *token* authenticates against *endpoint*.
+
+        Runs on the failure path only and is strictly advisory: any error means
+        "cannot confirm", so a probe outage degrades to the plain server message
+        rather than producing a misleading hint. Retries are disabled to keep
+        the failure path responsive.
+        """
+        from .constants import API_CONNECT_TIMEOUT
+
+        probe = LegacyClient(
+            token=None,
+            endpoint=endpoint,
+            timeout=API_CONNECT_TIMEOUT,
+            max_retries=0,
+        )
+        try:
+            probe.login(token)
+        except Exception:  # advisory only -- never mask the original failure
+            return False
+        return True
 
     def logout(self) -> None:
         """Clear the locally persisted token.
