@@ -11,11 +11,20 @@ Public API
   (download/commit/LFS/list/create/delete).
 - :class:`RemoteFileInfo` -- metadata for a single remote file.
 - :func:`is_lfs_file` -- decide whether a file must use the LFS upload path.
+- ``agent_visibility_label`` / ``agent_last_modified`` / ``agent_downloads`` /
+  ``agent_logo_url`` -- read renamed agent metadata fields from an API item,
+  tolerating both JSON spellings (snake_case and PascalCase) and legacy keys.
 """
-from ._api import AgentApi, RemoteFileInfo, is_lfs_file
+from ._api import (AgentApi, RemoteFileInfo, agent_downloads,
+                   agent_last_modified, agent_logo_url,
+                   agent_visibility_label, is_lfs_file)
 
 __all__ = [
     "AgentApi",
     "RemoteFileInfo",
     "is_lfs_file",
+    "agent_visibility_label",
+    "agent_last_modified",
+    "agent_downloads",
+    "agent_logo_url",
 ]

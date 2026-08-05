@@ -14,7 +14,8 @@ import sys
 from argparse import Action, RawDescriptionHelpFormatter
 from pathlib import Path
 
-from ..agent import AgentApi, is_lfs_file
+from ..agent import (AgentApi, agent_last_modified, agent_visibility_label,
+                     is_lfs_file)
 from ..constants import Visibility
 from ..errors import APIError
 from .base import CLICommand
@@ -88,8 +89,8 @@ def _cmd_list(owner, page_number, page_size, *, endpoint, token) -> int:
         name = item.get("Name") or item.get("name") or ""
         repo_id = f"{owner_name}/{name}" if owner_name else name
         fw = item.get("Framework") or item.get("framework") or "-"
-        vis = item.get("Visibility") or item.get("visibility") or "-"
-        updated = item.get("LastUpdatedDate") or item.get("last_updated_date") or "-"
+        vis = agent_visibility_label(item)
+        updated = agent_last_modified(item)
         if isinstance(updated, str) and "T" in updated:
             updated = updated.split("T")[0]
         rows.append((repo_id, fw, vis, updated))
