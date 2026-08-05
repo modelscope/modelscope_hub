@@ -8,6 +8,7 @@ persisted by ``ms login``. Only a completely unset env var falls back.
 Regression test for the bug where ``MODELSCOPE_API_TOKEN="" ms-hub agent
 upload ...`` uploaded successfully by silently reusing the stored credential.
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch

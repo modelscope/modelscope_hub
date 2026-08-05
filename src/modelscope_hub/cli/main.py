@@ -19,13 +19,13 @@ import importlib.metadata
 import logging
 import sys
 from argparse import SUPPRESS
-from typing import Sequence
+from collections.abc import Sequence
 
 from .. import __version__
 from ..constants import MODELSCOPE_ASCII
-from ..errors import HubError, InvalidParameter, NetworkError, NotSupportedError
-from .base import CLICommand, add_repo_type_arg, error, info, make_api, success
+from ..errors import HubError, InvalidParameter, NotSupportedError
 from .agent import AgentCommand
+from .base import CLICommand, error, info
 from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
 from .download import DownloadCommand
@@ -86,9 +86,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="API endpoint (overrides MODELSCOPE_ENDPOINT).",
     )
     parser.add_argument(
-        "-v", "--verbose",
+        "-v",
+        "--verbose",
         action="store_true",
-        help="Enable verbose (DEBUG) logging.",
+        help="Enable DEBUG logging and print the full error cause chain.",
     )
 
     subparsers = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -125,7 +126,6 @@ def _register_scan_cache_alias(subparsers) -> None:
 
 def _register_clear_cache_alias(subparsers) -> None:
     """``ms-hub clear-cache`` → alias for ``ms-hub cache clear``."""
-    from ..constants import RepoType
 
     p = subparsers.add_parser("clear-cache", help="[Alias] Remove cached files.")
     group = p.add_mutually_exclusive_group()
@@ -134,7 +134,6 @@ def _register_clear_cache_alias(subparsers) -> None:
     p.add_argument("--cache-dir", dest="cache_dir", default=None, help="Override cache directory.")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
     p.set_defaults(_command=_ClearCacheAlias)
-
 
 
 class _ScanCacheAlias(CLICommand):
@@ -178,10 +177,8 @@ class _ClearCacheAlias(CLICommand):
 # ---------------------------------------------------------------------------
 def _discover_plugins(subparsers) -> None:
     """Discover CLI plugins registered via entry_points."""
-    try:
-        eps = importlib.metadata.entry_points(group=_PLUGIN_GROUP)
-    except TypeError:
-        eps = importlib.metadata.entry_points().get(_PLUGIN_GROUP, [])
+    # ``entry_points(group=...)`` is available on all supported Pythons (3.10+).
+    eps = importlib.metadata.entry_points(group=_PLUGIN_GROUP)
 
     for ep in eps:
         try:
@@ -191,9 +188,46 @@ def _discover_plugins(subparsers) -> None:
             elif hasattr(cmd_cls, "define_args"):
                 cmd_cls.define_args(subparsers)
         except Exception as exc:
-            logging.getLogger(__name__).debug(
-                "Failed to load CLI plugin %r: %s", ep.name, exc
-            )
+            logging.getLogger(__name__).debug("Failed to load CLI plugin %r: %s", ep.name, exc)
+
+
+# ---------------------------------------------------------------------------
+# Error reporting
+# ---------------------------------------------------------------------------
+def _next_cause(exc: BaseException) -> BaseException | None:
+    """Return what *exc* was raised from, honouring ``raise ... from None``."""
+    if exc.__cause__ is not None:
+        return exc.__cause__
+    if exc.__suppress_context__:
+        return None
+    return exc.__context__
+
+
+def _report_hub_error(exc: HubError, *, verbose: bool, max_depth: int = 5) -> None:
+    """Print a structured report for an SDK error.
+
+    ``str(exc)`` already carries the error code, HTTP status, request id and --
+    for API errors -- the request/response detail. Verbose mode additionally
+    unwinds the cause chain: wrapping an exception is convenient for callers but
+    otherwise hides the originating failure from whoever has to diagnose it.
+
+    The walk is bounded by *max_depth* and skips exceptions already visited, so
+    a self-referential chain cannot stall the error path.
+    """
+    error(str(exc))
+    if exc.suggestion and exc.error_code != "E9001":
+        info(f"Suggestion: {exc.suggestion}")
+    if not verbose:
+        return
+
+    seen = {id(exc)}
+    cause = _next_cause(exc)
+    depth = 1
+    while cause is not None and id(cause) not in seen and depth <= max_depth:
+        info(f"{'  ' * depth}Caused by: {cause.__class__.__name__}: {cause}")
+        seen.add(id(cause))
+        cause = _next_cause(cause)
+        depth += 1
 
 
 # ---------------------------------------------------------------------------
@@ -205,8 +239,9 @@ def run_cmd(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    verbose = bool(getattr(args, "verbose", False))
     logging.basicConfig(
-        level=logging.DEBUG if getattr(args, "verbose", False) else logging.INFO,
+        level=logging.DEBUG if verbose else logging.INFO,
         format="%(levelname)s %(name)s: %(message)s",
     )
 
@@ -223,14 +258,10 @@ def run_cmd(argv: Sequence[str] | None = None) -> int:
     except SystemExit as exc:  # honour explicit SystemExit from subcommands
         return int(exc.code) if isinstance(exc.code, int) else (0 if exc.code is None else 1)
     except (InvalidParameter, NotSupportedError) as exc:
-        error(str(exc))
-        if exc.suggestion:
-            info(f"Suggestion: {exc.suggestion}")
+        _report_hub_error(exc, verbose=verbose)
         return 2
     except HubError as exc:
-        error(str(exc))
-        if exc.suggestion and exc.error_code != "E9001":
-            info(f"Suggestion: {exc.suggestion}")
+        _report_hub_error(exc, verbose=verbose)
         return 1
     except ValueError as exc:
         error(str(exc))
@@ -240,7 +271,7 @@ def run_cmd(argv: Sequence[str] | None = None) -> int:
         return 2
     except Exception as exc:  # pragma: no cover - unexpected
         error(f"Unexpected error: {exc.__class__.__name__}: {exc}")
-        if getattr(args, "verbose", False):
+        if verbose:
             raise
         return 1
 

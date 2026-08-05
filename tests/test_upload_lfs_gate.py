@@ -95,16 +95,18 @@ def test_upload_folder_cached_normal_hash_skips_batch_blob_validation(tmp_path: 
     cache_key = f"README.md|{st.st_mtime}|{st.st_size}"
     cache_path = tmp_path / ".ms_upload_cache"
     cache_path.write_text(
-        json.dumps({
-            "version": 3,
-            "repo_id": "owner/repo",
-            "files": {
-                cache_key: {
-                    "hash": hashlib.sha256(content).hexdigest(),
-                    "size": st.st_size,
+        json.dumps(
+            {
+                "version": 3,
+                "repo_id": "owner/repo",
+                "files": {
+                    cache_key: {
+                        "hash": hashlib.sha256(content).hexdigest(),
+                        "size": st.st_size,
+                    },
                 },
-            },
-        }),
+            }
+        ),
         encoding="utf-8",
     )
 

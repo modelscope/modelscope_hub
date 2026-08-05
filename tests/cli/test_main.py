@@ -1,4 +1,5 @@
 """Tests for CLI entry point, global parameters, exception handling, and version."""
+
 from __future__ import annotations
 
 import logging
@@ -6,8 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from modelscope_hub import __version__
-from modelscope_hub.cli.main import run_cmd
+from modelscope_hub.cli.main import _report_hub_error, run_cmd
 from modelscope_hub.errors import HubError, InvalidParameter, NetworkError, NotSupportedError
 
 from .conftest import run_cli
@@ -70,12 +70,95 @@ class TestGlobalParameterParsing:
         assert args.verbose is False
 
     def test_global_flags_before_subcommand(self, parser):
-        args = parser.parse_args([
-            "--token", "tok", "--endpoint", "https://x.cn", "-v", "whoami",
-        ])
+        args = parser.parse_args(
+            [
+                "--token",
+                "tok",
+                "--endpoint",
+                "https://x.cn",
+                "-v",
+                "whoami",
+            ]
+        )
         assert args.token == "tok"
         assert args.endpoint == "https://x.cn"
         assert args.verbose is True
+
+
+# ---------------------------------------------------------------------------
+# Error cause reporting (pure unit -- no API, so it runs in every mode)
+# ---------------------------------------------------------------------------
+class TestErrorCauseReporting:
+    """``--verbose`` must expose the failure that a wrapper exception hides.
+
+    Without this, a wrapped SDK error showed only the outermost message and the
+    originating cause was unreachable from the CLI in any mode.
+    """
+
+    @staticmethod
+    def _wrapped_error() -> HubError:
+        """Build a three-level chain the way the SDK layers do."""
+        try:
+            try:
+                try:
+                    raise ValueError("socket closed")
+                except ValueError as root:
+                    raise NetworkError("connection refused") from root
+            except NetworkError as mid:
+                raise HubError("outer failure") from mid
+        except HubError as exc:
+            return exc
+
+    def test_cause_chain_hidden_without_verbose(self, capsys):
+        _report_hub_error(self._wrapped_error(), verbose=False)
+        captured = capsys.readouterr()
+        assert "outer failure" in captured.err
+        assert "Caused by" not in captured.out
+
+    def test_cause_chain_shown_with_verbose(self, capsys):
+        _report_hub_error(self._wrapped_error(), verbose=True)
+        out = capsys.readouterr().out
+        # SDK errors render their own error code, so match on class + message.
+        assert "Caused by: NetworkError:" in out
+        assert "connection refused" in out
+        assert "Caused by: ValueError: socket closed" in out
+
+    def test_suppressed_context_is_respected(self, capsys):
+        """``raise ... from None`` deliberately hides the context."""
+        try:
+            try:
+                raise ValueError("hidden detail")
+            except ValueError:
+                raise HubError("clean failure") from None
+        except HubError as exc:
+            _report_hub_error(exc, verbose=True)
+        captured = capsys.readouterr()
+        assert "clean failure" in captured.err
+        assert "Caused by" not in captured.out
+
+    def test_self_referential_chain_terminates(self, capsys):
+        """A cyclic chain must not stall the error path."""
+        exc = HubError("looping failure")
+        exc.__cause__ = exc
+
+        _report_hub_error(exc, verbose=True)
+
+        assert "looping failure" in capsys.readouterr().err
+
+    def test_chain_depth_is_bounded(self, capsys):
+        """Only the first *max_depth* causes are rendered."""
+        exc = HubError("level-0")
+        current: BaseException = exc
+        for level in range(1, 8):
+            nested = ValueError(f"level-{level}")
+            current.__cause__ = nested
+            current = nested
+
+        _report_hub_error(exc, verbose=True, max_depth=3)
+
+        out = capsys.readouterr().out
+        assert out.count("Caused by") == 3
+        assert "level-4" not in out
 
 
 # ---------------------------------------------------------------------------
@@ -104,9 +187,7 @@ class TestExceptionHandlingUnit:
 
     def test_not_supported_error_exits_2(self):
         with patch("modelscope_hub.cli.login.make_api") as mock_make:
-            mock_make.return_value.whoami.side_effect = NotSupportedError(
-                "not supported", suggestion="use Y"
-            )
+            mock_make.return_value.whoami.side_effect = NotSupportedError("not supported", suggestion="use Y")
             code, out, err = run_cli(["whoami"], token="fake")
         assert code == 2
         assert "not supported" in err

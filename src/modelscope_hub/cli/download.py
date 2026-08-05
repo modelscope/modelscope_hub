@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import sys
-from argparse import Action
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from ..api import HubApi
 from ..constants import RepoType
-from .base import CLICommand, add_repo_type_arg, info, make_api, success, warn
+from .base import CLICommand, SubParsers, add_repo_type_arg, info, make_api, success, warn
 from .compat import (
     PatternAction,
     add_legacy_download_args,
@@ -35,7 +34,7 @@ class DownloadCommand(CLICommand):
     """Download files or whole repositories from ModelScope Hub."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser(
             "download",
             help="Download a file or full snapshot of a repository.",
@@ -59,8 +58,9 @@ class DownloadCommand(CLICommand):
         )
         p.add_argument("--revision", default=None, help="Branch / tag / commit (default: master).")
         p.add_argument("--cache-dir", dest="cache_dir", default=None, help="Override cache directory.")
-        p.add_argument("--local-dir", dest="local_dir", default=None,
-                       help="Download directly to this directory (bypasses cache).")
+        p.add_argument(
+            "--local-dir", dest="local_dir", default=None, help="Download directly to this directory (bypasses cache)."
+        )
         p.add_argument(
             "--max-workers",
             dest="max_workers",
@@ -151,7 +151,8 @@ class DownloadCommand(CLICommand):
         api = make_api(self.args)
         try:
             resolved = api.resolve_endpoint_for_read(
-                self.args.repo_id, repo_type=self.args.repo_type,
+                self.args.repo_id,
+                repo_type=self.args.repo_type,
             )
             return HubApi(token=token, endpoint=resolved)
         except Exception:
@@ -164,13 +165,8 @@ class DownloadCommand(CLICommand):
         collection_id = self.args.repo_id
 
         data = api.legacy.get_collection(collection_id)
-        elements = data.get("CollectionElements", {}).get(
-            "CollectionElementVoList", []
-        )
-        valid = [
-            e for e in elements
-            if e.get("ElementPath") and e.get("ElementName")
-        ]
+        elements = data.get("CollectionElements", {}).get("CollectionElementVoList", [])
+        valid = [e for e in elements if e.get("ElementPath") and e.get("ElementName")]
         if not valid:
             warn(f"No valid skill elements found in collection: {collection_id}")
             return
@@ -203,10 +199,7 @@ class DownloadCommand(CLICommand):
                     succeeded.append((sid, path))
                     success(f"skill {sid} → {path}")
 
-        info(
-            f"Download complete: {len(succeeded)} succeeded, "
-            f"{len(failed)} failed"
-        )
+        info(f"Download complete: {len(succeeded)} succeeded, {len(failed)} failed")
         if failed:
             for sid, err in failed:
                 warn(f"  {sid}: {err}")

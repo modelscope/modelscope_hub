@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import sys
-from argparse import Action
 
 from ..constants import RepoType
 from ..utils.format import format_size
-from .base import CLICommand, error, info, make_api, render_table, success, warn
+from .base import CLICommand, SubParsers, error, info, make_api, render_table, success, warn
 
 
 class CacheCommand(CLICommand):
     """Top-level dispatcher for the ``cache`` subcommands."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         parser = subparsers.add_parser("cache", help="Inspect or clear the local cache.")
         sub = parser.add_subparsers(dest="cache_action", metavar="ACTION")
         sub.required = True
@@ -39,7 +38,7 @@ def _human_size(num: int) -> str:
 
 class _CacheScan(CLICommand):
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("scan", help="Show cached repositories and disk usage.")
         p.add_argument("--cache-dir", dest="cache_dir", default=None)
         p.set_defaults(_command=CacheCommand, _cache_leaf=_CacheScan)
@@ -73,7 +72,7 @@ class _CacheScan(CLICommand):
 
 class _CacheClear(CLICommand):
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("clear", help="Remove cached files.")
         p.add_argument("--cache-dir", dest="cache_dir", default=None)
         p.add_argument(
@@ -119,7 +118,7 @@ def _format_paths(paths: list[str], limit: int = 10) -> str:
 
 class _CacheVerify(CLICommand):
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("verify", help="Verify local files against Hub SHA-256 checksums.")
         p.add_argument("repo_id", help="Repository id in owner/name form.")
         p.add_argument(

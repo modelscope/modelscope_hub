@@ -1,0 +1,16 @@
+# Local pre-commit hooks. Optional but recommended: CI (citest.yaml) enforces
+# the same checks as a hard gate, this just gives faster feedback.
+#
+# Setup:
+#   pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.11
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^(src|tests)/
+      - id: ruff-format
+        files: ^(src|tests)/
+# mypy is intentionally left to CI: a full run over src/ takes too long for a
+# commit hook and needs the package's own dependencies installed.

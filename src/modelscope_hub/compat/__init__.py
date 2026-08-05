@@ -22,14 +22,14 @@ from .constants import (
     FILE_HASH,
     MODELSCOPE_DOMAIN,
     MODELSCOPE_PREFER_AI_SITE,
-    ModelVisibility_INTERNAL,
-    ModelVisibility_PRIVATE,
-    ModelVisibility_PUBLIC,
     REPO_TYPE_DATASET,
     REPO_TYPE_MODEL,
     REPO_TYPE_STUDIO,
     REPO_TYPE_SUPPORT,
     TEMPORARY_FOLDER_NAME,
+    ModelVisibility_INTERNAL,
+    ModelVisibility_PRIVATE,
+    ModelVisibility_PUBLIC,
 )
 from .file_download import dataset_file_download, model_file_download
 from .hub_api import LegacyHubApi

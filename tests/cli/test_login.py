@@ -5,6 +5,7 @@ Includes:
 - Execution tests: mock HubApi for login/whoami logic
 - Remote tests: real API (existing)
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -44,9 +45,15 @@ class TestWhoamiParser:
         assert hasattr(args, "_command")
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "whoami", "--token", "my-tok", "--endpoint", "https://x.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "whoami",
+                "--token",
+                "my-tok",
+                "--endpoint",
+                "https://x.cn",
+            ]
+        )
         assert args.subcmd_token == "my-tok"
         assert args.subcmd_endpoint == "https://x.cn"
 
@@ -123,9 +130,15 @@ class TestLoginExecute:
             assert exc_info.value.code == 130
 
     def test_login_subcmd_endpoint_merged(self, parser, mock_api, capsys):
-        args = parser.parse_args([
-            "login", "--token", "tok", "--endpoint", "https://custom.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "login",
+                "--token",
+                "tok",
+                "--endpoint",
+                "https://custom.cn",
+            ]
+        )
         with patch("modelscope_hub.cli.login.make_api", return_value=mock_api):
             LoginCommand(args).execute()
         assert args.endpoint == "https://custom.cn"

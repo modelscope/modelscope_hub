@@ -5,6 +5,7 @@ Includes:
 - Execution tests: mock HubApi for MCP server operations
 - Remote tests: real API (existing)
 """
+
 from __future__ import annotations
 
 from unittest.mock import patch
@@ -28,9 +29,16 @@ class TestMcpListParser:
         assert hasattr(args, "_mcp_leaf")
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "mcp", "list", "--token", "tk", "--endpoint", "https://x.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "mcp",
+                "list",
+                "--token",
+                "tk",
+                "--endpoint",
+                "https://x.cn",
+            ]
+        )
         assert args.subcmd_token == "tk"
         assert args.subcmd_endpoint == "https://x.cn"
 
@@ -56,12 +64,18 @@ class TestMcpListParser:
         assert args.page_size == 20
 
     def test_all_options(self, parser):
-        args = parser.parse_args([
-            "mcp", "list",
-            "--search", "test",
-            "--page", "2",
-            "--page-size", "50",
-        ])
+        args = parser.parse_args(
+            [
+                "mcp",
+                "list",
+                "--search",
+                "test",
+                "--page",
+                "2",
+                "--page-size",
+                "50",
+            ]
+        )
         assert args.search == "test"
         assert args.page_number == 2
         assert args.page_size == 50
@@ -79,9 +93,17 @@ class TestMcpInfoParser:
             parser.parse_args(["mcp", "info"])
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "mcp", "info", "org/srv", "--token", "tk", "--endpoint", "https://x.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "mcp",
+                "info",
+                "org/srv",
+                "--token",
+                "tk",
+                "--endpoint",
+                "https://x.cn",
+            ]
+        )
         assert args.subcmd_token == "tk"
         assert args.subcmd_endpoint == "https://x.cn"
 
@@ -98,9 +120,17 @@ class TestMcpDeployParser:
             parser.parse_args(["mcp", "deploy"])
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "mcp", "deploy", "org/srv", "--token", "tk", "--endpoint", "https://x.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "mcp",
+                "deploy",
+                "org/srv",
+                "--token",
+                "tk",
+                "--endpoint",
+                "https://x.cn",
+            ]
+        )
         assert args.subcmd_token == "tk"
 
 
@@ -116,9 +146,17 @@ class TestMcpUndeployParser:
             parser.parse_args(["mcp", "undeploy"])
 
     def test_subcmd_token_endpoint(self, parser):
-        args = parser.parse_args([
-            "mcp", "undeploy", "org/srv", "--token", "tk", "--endpoint", "https://x.cn",
-        ])
+        args = parser.parse_args(
+            [
+                "mcp",
+                "undeploy",
+                "org/srv",
+                "--token",
+                "tk",
+                "--endpoint",
+                "https://x.cn",
+            ]
+        )
         assert args.subcmd_token == "tk"
 
 
@@ -132,14 +170,19 @@ class TestMcpListExecute:
         with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
             _McpList(args).execute()
         mock_api.list_mcp_servers.assert_called_once_with(
-            search=None, page_number=1, page_size=20,
+            search=None,
+            page_number=1,
+            page_size=20,
         )
         out = capsys.readouterr().out
         assert "weather" in out
 
     def test_list_empty(self, parser, mock_api, capsys):
         mock_api.list_mcp_servers.return_value = PagedResult(
-            items=[], total_count=0, page_number=1, page_size=20,
+            items=[],
+            total_count=0,
+            page_number=1,
+            page_size=20,
         )
         args = parser.parse_args(["mcp", "list"])
         with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
@@ -179,9 +222,60 @@ class TestMcpDeployExecute:
         args = parser.parse_args(["mcp", "deploy", "org/weather-mcp"])
         with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
             _McpDeploy(args).execute()
-        mock_api.deploy_mcp_server.assert_called_once_with("org/weather-mcp")
+        # No CLI options -> the payload is left to the API layer defaults.
+        mock_api.deploy_mcp_server.assert_called_once_with("org/weather-mcp", payload=None)
         out = capsys.readouterr().out
         assert "Deploy requested" in out
+
+    def test_deploy_with_options(self, parser, mock_api, capsys):
+        args = parser.parse_args(
+            [
+                "mcp",
+                "deploy",
+                "org/weather-mcp",
+                "--transport-type",
+                "streamable_http",
+                "--expiration-minutes",
+                "60",
+                "--auth-check",
+                "--env",
+                "API_KEY=abc",
+                "--env",
+                "REGION=cn",
+            ]
+        )
+        with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
+            _McpDeploy(args).execute()
+        mock_api.deploy_mcp_server.assert_called_once_with(
+            "org/weather-mcp",
+            payload={
+                "transport_type": "streamable_http",
+                "expiration_minutes": 60,
+                "auth_check": True,
+                "env_info": {"API_KEY": "abc", "REGION": "cn"},
+            },
+        )
+        out = capsys.readouterr().out
+        assert "Deploy requested" in out
+
+    def test_deploy_rejects_invalid_transport(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["mcp", "deploy", "org/weather-mcp", "--transport-type", "bogus"])
+
+    def test_deploy_prints_operational_url(self, parser, mock_api, capsys):
+        mock_api.deploy_mcp_server.return_value = {
+            "id": "platform-pool",
+            "url": "https://mcp.api-inference.modelscope.net/xxxx/mcp",
+            "transport_type": "sse",
+            "expiration": "2025-10-01 21:00:00",
+            "auth_required": False,
+        }
+        args = parser.parse_args(["mcp", "deploy", "org/weather-mcp"])
+        with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
+            _McpDeploy(args).execute()
+        out = capsys.readouterr().out
+        assert "https://mcp.api-inference.modelscope.net/xxxx/mcp" in out
+        assert "expires: 2025-10-01 21:00:00" in out
 
 
 @pytest.mark.mock_only
@@ -209,7 +303,7 @@ class TestMcpOperations:
             token=test_token,
             endpoint=test_endpoint,
         )
-        print(f"\n** [mcp list]")
+        print("\n** [mcp list]")
         print(f"** exit_code={exit_code}, out={out[:300]!r}, err={err!r}")
         assert exit_code == 0
         assert "mcp" in out.lower() or "no MCP servers found" in out or "id" in out.lower()
@@ -221,6 +315,6 @@ class TestMcpOperations:
             token=test_token,
             endpoint=test_endpoint,
         )
-        print(f"\n** [mcp list --search test]")
+        print("\n** [mcp list --search test]")
         print(f"** exit_code={exit_code}, out={out[:300]!r}, err={err!r}")
         assert exit_code == 0

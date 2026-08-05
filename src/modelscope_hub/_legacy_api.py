@@ -15,7 +15,7 @@ needed for API calls.
 from __future__ import annotations
 
 import uuid
-from typing import Any, BinaryIO, IO, Union
+from typing import IO, Any, BinaryIO
 from urllib.parse import quote_plus, urlparse
 
 import requests
@@ -26,10 +26,10 @@ from .constants import (
     API_MAX_RETRIES,
     API_TIMEOUT,
     LEGACY_API_PREFIX,
-    RepoType,
     UPLOAD_BLOB_CONNECT_TIMEOUT,
     UPLOAD_BLOB_READ_TIMEOUT,
     UPLOAD_RETRY_ALLOWED_METHODS,
+    RepoType,
 )
 from .errors import InvalidParameter, NetworkError, RequestTimeoutError, ServerError, raise_for_status
 from .utils.logger import get_logger
@@ -208,7 +208,7 @@ class LegacyClient:
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------
-    def login(self, access_token: str) -> tuple[dict, "requests.cookies.RequestsCookieJar"]:
+    def login(self, access_token: str) -> tuple[dict, requests.cookies.RequestsCookieJar]:
         """Authenticate via access token and return (user_data, cookies).
 
         POST /api/v1/login
@@ -332,7 +332,7 @@ class LegacyClient:
             return data
         # Sometimes wrapped: {"Data": {"Files": [...]}}
         if isinstance(data, dict):
-            return data.get("Files", data.get("files", []))
+            return data.get("Files") or data.get("files") or []
         return []
 
     def list_dataset_files_paginated(
@@ -368,7 +368,7 @@ class LegacyClient:
             if isinstance(data, list):
                 files = data
             elif isinstance(data, dict):
-                files = data.get("Files", data.get("files", []))
+                files = data.get("Files") or data.get("files") or []
             else:
                 files = []
 
@@ -415,7 +415,9 @@ class LegacyClient:
         if end_time is not None:
             params["EndTime"] = end_time
         resp = self._request(
-            "GET", f"{segment}/{repo_id}/revisions", params=params or None,
+            "GET",
+            f"{segment}/{repo_id}/revisions",
+            params=params or None,
         )
         data = self._json_data(resp)
         if isinstance(data, dict):
@@ -547,7 +549,7 @@ class LegacyClient:
     def upload_blob(
         self,
         upload_url: str,
-        data: Union[str, bytes, BinaryIO, IO[bytes]],
+        data: str | bytes | BinaryIO | IO[bytes] | Any,
         size: int,
         *,
         headers: dict[str, str] | None = None,
@@ -594,6 +596,7 @@ class LegacyClient:
             return {}
         if isinstance(body, dict) and body.get("Code") not in (200, "200", None):
             from .errors import APIError
+
             raise APIError(
                 body.get("Message") or body.get("message") or f"Blob upload failed (Code={body.get('Code')})",
                 status_code=resp.status_code,

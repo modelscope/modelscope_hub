@@ -24,10 +24,9 @@ import fnmatch
 import hashlib
 import io
 import os
-import time
 import re
 import threading
-
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -46,9 +45,9 @@ from .constants import (
     DOWNLOAD_RETRY_TIMES,
     DOWNLOAD_TIMEOUT,
     ENV_FILE_LOCK,
+    ENV_INTER_CLOUD_REGIONS,
     ENV_INTRA_CLOUD_ACCELERATION,
     ENV_INTRA_CLOUD_REGION,
-    ENV_INTER_CLOUD_REGIONS,
 )
 from .errors import (
     CacheNotFound,
@@ -62,8 +61,8 @@ from .utils.file_utils import compute_hash, ensure_dir
 from .utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from .config import HubConfig
     from ._legacy_api import LegacyClient
+    from .config import HubConfig
 
 logger = get_logger("download")
 
@@ -148,7 +147,8 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
                 if age >= _STALE_LOCK_SECONDS:
                     logger.warning(
                         "Removing possibly stale SoftFileLock (age=%.0fs): %s",
-                        age, lock_path,
+                        age,
+                        lock_path,
                     )
                     try:
                         lock_path.unlink(missing_ok=True)
@@ -174,7 +174,8 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
             if exc.errno in (errno.ESTALE, errno.ENOENT, getattr(errno, "EREMOTEIO", -1)):
                 logger.warning(
                     "OSError (errno=%d) on %s, falling back to SoftFileLock.",
-                    exc.errno, lock_path,
+                    exc.errno,
+                    lock_path,
                 )
                 lock = SoftFileLock(str(lock_path), timeout=default_interval)
                 is_soft = True
@@ -198,6 +199,7 @@ def _optional_file_lock(lock_path: Path | None, *, enabled: bool = True):
 def _file_lock_enabled() -> bool:
     """Check whether file locking is enabled via environment."""
     from .constants import _env_bool
+
     return _env_bool(ENV_FILE_LOCK, True)
 
 
@@ -250,8 +252,11 @@ def _download_part_with_retry(params: tuple) -> None:
             get_headers["Range"] = f"bytes={download_start}-{end}"
             with open(part_file_name, "ab+") as f:
                 r = requests.get(
-                    url, stream=True, headers=get_headers,
-                    cookies=cookies, timeout=DOWNLOAD_TIMEOUT,
+                    url,
+                    stream=True,
+                    headers=get_headers,
+                    cookies=cookies,
+                    timeout=DOWNLOAD_TIMEOUT,
                 )
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=DOWNLOAD_CHUNK_SIZE):
@@ -326,7 +331,7 @@ class DownloadManager:
     Dependencies are injected via constructor to keep this class testable.
     """
 
-    def __init__(self, legacy_client: "LegacyClient", config: "HubConfig") -> None:
+    def __init__(self, legacy_client: LegacyClient, config: HubConfig) -> None:
         self._client = legacy_client
         self._config = config
         self._cached_region: str | None = None
@@ -380,9 +385,7 @@ class DownloadManager:
     # OSS internal endpoint hostname pattern:
     #   <prefix>.oss<region>-internal.aliyuncs.com
     # e.g. modelhub-cn-hangzhou.oss-cn-hangzhou-internal.aliyuncs.com
-    _OSS_INTERNAL_RE = re.compile(
-        r".*\.oss.*-internal\.aliyuncs\.com$"
-    )
+    _OSS_INTERNAL_RE = re.compile(r".*\.oss.*-internal\.aliyuncs\.com$")
 
     @staticmethod
     def _is_oss_internal_url(url: str) -> bool:
@@ -407,8 +410,11 @@ class DownloadManager:
         """Send a HEAD request without following redirects to get the 302 Location."""
         try:
             r = requests.head(
-                url, headers=headers, cookies=cookies,
-                allow_redirects=False, timeout=timeout,
+                url,
+                headers=headers,
+                cookies=cookies,
+                allow_redirects=False,
+                timeout=timeout,
             )
             if r.status_code in (301, 302, 303, 307, 308):
                 return r.headers.get("Location", "")
@@ -419,6 +425,7 @@ class DownloadManager:
     def _get_inter_cloud_regions(self) -> list[str]:
         """Read the inter-cloud peer region list from the environment."""
         from .constants import _env
+
         raw = _env(ENV_INTER_CLOUD_REGIONS, "INTER_CLOUD_ACCELERATION_REGIONS") or ""
         return [r.strip().lower() for r in raw.split(",") if r.strip()]
 
@@ -586,7 +593,11 @@ class DownloadManager:
 
             for attempt in range(DOWNLOAD_HASH_RETRY_TIMES):
                 self._download_with_resume(
-                    repo_id, repo_type, file_path, revision, target,
+                    repo_id,
+                    repo_type,
+                    file_path,
+                    revision,
+                    target,
                     file_size=file_size,
                     user_agent=user_agent,
                     progress_callbacks=progress_callbacks,
@@ -602,7 +613,9 @@ class DownloadManager:
                     if attempt < DOWNLOAD_HASH_RETRY_TIMES - 1:
                         logger.warning(
                             "Hash validation failed for %s, retrying (%d/%d)",
-                            file_path, attempt + 1, DOWNLOAD_HASH_RETRY_TIMES,
+                            file_path,
+                            attempt + 1,
+                            DOWNLOAD_HASH_RETRY_TIMES,
                         )
                         target.unlink(missing_ok=True)
                     else:
@@ -663,7 +676,8 @@ class DownloadManager:
             legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
             if legacy is not None:
                 logger.info(
-                    "Found legacy cache at %s, reusing.", legacy,
+                    "Found legacy cache at %s, reusing.",
+                    legacy,
                 )
                 output_dir = legacy
                 local_dir = legacy
@@ -673,9 +687,7 @@ class DownloadManager:
 
         if local_files_only:
             if any(output_dir.iterdir()):
-                logger.warning(
-                    "Cannot confirm the cached file is for revision: %s", revision
-                )
+                logger.warning("Cannot confirm the cached file is for revision: %s", revision)
                 return output_dir
             raise CacheNotFound(
                 "Cannot find the requested files in the cached path and outgoing"
@@ -913,11 +925,7 @@ class DownloadManager:
         progress_callbacks: list[type[ProgressCallback]] | None = None,
     ) -> Path:
         """Download a file with HTTP Range resume support and retry."""
-        use_parallel = (
-            file_size is not None
-            and file_size > DOWNLOAD_PARALLEL_THRESHOLD
-            and DOWNLOAD_PARALLELS > 1
-        )
+        use_parallel = file_size is not None and file_size > DOWNLOAD_PARALLEL_THRESHOLD and DOWNLOAD_PARALLELS > 1
 
         download_headers = self._build_download_headers(user_agent)
 
@@ -936,20 +944,26 @@ class DownloadManager:
                     # other threads wait instead of issuing redundant HEAD reqs.
                     try:
                         probe_url = self._client.get_download_url(
-                            repo_id, repo_type, file_path, revision,
+                            repo_id,
+                            repo_type,
+                            file_path,
+                            revision,
                         )
                         cookies = None
                         if self._client.token:
                             cookies = {"m_session_id": self._client.token}
                         download_headers, source = self._resolve_inter_region_headers(
-                            probe_url, download_headers, cookies,
+                            probe_url,
+                            download_headers,
+                            cookies,
                             peer_regions=peer_regions,
                         )
                         resolved_region = download_headers.get("x-aliyun-region-id")
                         self._inter_region_cache[cache_key] = (resolved_region, source)
                     except Exception as exc:
                         logger.warning(
-                            "Failed to resolve inter-region acceleration: %s. Falling back to default.", exc,
+                            "Failed to resolve inter-region acceleration: %s. Falling back to default.",
+                            exc,
                         )
                         self._inter_region_cache[cache_key] = (None, "default")
                         cached = (None, "default")
@@ -962,12 +976,18 @@ class DownloadManager:
                 if resolved_region is not None:
                     download_headers["x-aliyun-region-id"] = resolved_region
                 source_prefix = {
-                    "local": "\u26a1 ", "peer": "\u21c4 ", "default": "  ",
+                    "local": "\u26a1 ",
+                    "peer": "\u21c4 ",
+                    "default": "  ",
                 }[source]
 
         if use_parallel:
+            assert file_size is not None  # guaranteed by use_parallel above
             url = self._client.get_download_url(
-                repo_id, repo_type, file_path, revision,
+                repo_id,
+                repo_type,
+                file_path,
+                revision,
             )
             cookies = None
             if self._client.token:
@@ -1075,7 +1095,6 @@ class DownloadManager:
         actual = compute_hash(file_path, "sha256")
         if actual != expected_sha256:
             raise FileIntegrityError(
-                f"Hash mismatch for {file_path.name}: "
-                f"expected {expected_sha256[:16]}..., got {actual[:16]}..."
+                f"Hash mismatch for {file_path.name}: expected {expected_sha256[:16]}..., got {actual[:16]}..."
             )
         return True

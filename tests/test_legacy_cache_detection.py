@@ -4,6 +4,7 @@ These are network-free tests for ``DownloadManager._find_legacy_repo_dir``,
 which lets ``download_repo`` / ``download_file`` reuse an existing old-SDK
 cache instead of re-downloading into the new layout.
 """
+
 from __future__ import annotations
 
 from modelscope_hub.api import HubApi
@@ -46,13 +47,11 @@ class TestFindLegacyRepoDir:
 
     def test_clean_cache_returns_none(self, tmp_path):
         dm = _make_download_manager()
-        assert dm._find_legacy_repo_dir(
-            "Qwen/Qwen3.5-4B", "model", tmp_path) is None
+        assert dm._find_legacy_repo_dir("Qwen/Qwen3.5-4B", "model", tmp_path) is None
 
     def test_empty_legacy_dir_returns_none(self, tmp_path):
         legacy = tmp_path / "models" / "Qwen" / "Qwen3___5-4B"
         legacy.mkdir(parents=True)  # exists but empty
 
         dm = _make_download_manager()
-        assert dm._find_legacy_repo_dir(
-            "Qwen/Qwen3.5-4B", "model", tmp_path) is None
+        assert dm._find_legacy_repo_dir("Qwen/Qwen3.5-4B", "model", tmp_path) is None

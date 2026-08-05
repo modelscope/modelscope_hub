@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse, urlunparse
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from requests import Response
@@ -28,16 +28,36 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 # Credential redaction helpers
 # ---------------------------------------------------------------------------
 _SENSITIVE_KEYWORDS: tuple[str, ...] = (
-    "token", "secret", "password", "cookie", "authorization",
-    "credential", "session", "api_key", "apikey",
+    "token",
+    "secret",
+    "password",
+    "cookie",
+    "authorization",
+    "credential",
+    "session",
+    "api_key",
+    "apikey",
 )
-_SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset({
-    "token", "access_token", "auth_token", "api_key", "apikey",
-    "cookie", "m_session_id", "session",
-    "secret", "password", "key", "authorization", "credentials",
-})
+_SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset(
+    {
+        "token",
+        "access_token",
+        "auth_token",
+        "api_key",
+        "apikey",
+        "cookie",
+        "m_session_id",
+        "session",
+        "secret",
+        "password",
+        "key",
+        "authorization",
+        "credentials",
+    }
+)
 _SENSITIVE_BODY_KEYS: re.Pattern[str] = re.compile(
-    "|".join(_SENSITIVE_KEYWORDS), re.IGNORECASE,
+    "|".join(_SENSITIVE_KEYWORDS),
+    re.IGNORECASE,
 )
 _REDACTED = "***"
 
@@ -64,10 +84,7 @@ def _redact_url(url: str) -> str:
 def _redact_body(body: Any) -> Any:
     """Deep-redact sensitive keys in a response body structure."""
     if isinstance(body, dict):
-        return {
-            k: _REDACTED if _SENSITIVE_BODY_KEYS.search(k) else _redact_body(v)
-            for k, v in body.items()
-        }
+        return {k: _REDACTED if _SENSITIVE_BODY_KEYS.search(k) else _redact_body(v) for k, v in body.items()}
     if isinstance(body, list):
         return [_redact_body(item) for item in body]
     return body
@@ -306,9 +323,7 @@ class StorageError(HubError):
 
     error_code = "E1003"
     retryable = True
-    suggestion = (
-        "File upload/download failed (storage service error). Please retry later."
-    )
+    suggestion = "File upload/download failed (storage service error). Please retry later."
 
 
 class FileIntegrityError(HubError):
@@ -379,6 +394,40 @@ _STATUS_MAP: dict[int, type[APIError]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Server business-code -> exception mapping
+#
+# The HTTP status is not always faithful to the failure semantics: the legacy
+# login endpoint answers 400 while meaning "authentication failed". Where the
+# server publishes a business code, trust it over the status code. Register new
+# codes in this table (and in the ModelScope error-code spec) rather than
+# branching at the call site.
+# ---------------------------------------------------------------------------
+_BUSINESS_CODE_MAP: dict[int, type[APIError]] = {
+    # -> E3001, served with HTTP 400 by POST /api/v1/login on both sites
+    10010103009: AuthenticationError,  # AccessToken 无效或过期
+    # -> E3026
+    10020101001: AlreadyExistsError,  # 国内站 - 数据集已存在
+    10010101001: AlreadyExistsError,  # 国内站 - 模型已存在
+    10010202004: AlreadyExistsError,  # 国际站 - 名称已被使用
+}
+
+
+def _business_code(body: Any) -> int | None:
+    """Return the numeric business code carried by a response body, if any."""
+    if not isinstance(body, dict):
+        return None
+    raw = body.get("Code")
+    if raw is None:
+        raw = body.get("code")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
 _CN_TO_EN: dict[str, str] = {
     "该名称已被注册使用，请重新命名": "Repository name already exists. Please choose a different name.",
     "用户未登录": "User not logged in.",
@@ -388,8 +437,10 @@ _CN_TO_EN: dict[str, str] = {
     "模型不存在": "Model does not exist.",
     "数据集不存在": "Dataset does not exist.",
     "创建空间失败": "Failed to create studio.",
-    "the current token no longer supports deletion operations. Please go to the site page : https://www.modelscope.cn to delete":
-        "Deletion is restricted to web console. Visit https://modelscope.cn to delete.",
+    "the current token no longer supports deletion operations. "
+    "Please go to the site page : https://www.modelscope.cn to delete": (
+        "Deletion is restricted to web console. Visit https://modelscope.cn to delete."
+    ),
 }
 
 
@@ -403,7 +454,7 @@ def _translate_message(msg: str) -> str:
     return msg
 
 
-def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]:
+def _extract_payload(response: Response) -> tuple[str, str | None, Any | None]:
     """Best-effort extraction of (message, request_id, body) from a response."""
     request_id = response.headers.get("x-request-id") or response.headers.get("X-Request-Id")
     body: Any | None = None
@@ -429,14 +480,11 @@ def _extract_payload(response: "Response") -> tuple[str, str | None, Any | None]
             if isinstance(value, str) and value.strip():
                 message = value.strip()
                 break
-        request_id = (
-            body.get("request_id") or body.get("requestId")
-            or body.get("RequestId") or request_id
-        )
+        request_id = body.get("request_id") or body.get("requestId") or body.get("RequestId") or request_id
     return _translate_message(message), request_id, body
 
 
-def raise_for_status(response: "Response") -> None:
+def raise_for_status(response: Response) -> None:
     """Inspect ``response`` and raise the most specific exception on failure.
 
     Parameters
@@ -465,22 +513,20 @@ def raise_for_status(response: "Response") -> None:
     else:
         exc_cls = _STATUS_MAP.get(status, APIError)
 
-    # Detect "already exists" errors before falling back to InvalidParameter
-    if exc_cls is InvalidParameter and isinstance(body, dict):
-        code = body.get("Code") or body.get("code")
-        msg_text = (body.get("Message") or body.get("message")
-                    or body.get("msg") or body.get("Msg") or "").lower()
-        is_exists = False
-        if code is not None:
-            try:
-                if int(code) in _ALREADY_EXISTS_CODES:
-                    is_exists = True
-            except (TypeError, ValueError):
-                pass
-        if not is_exists:
-            if any(kw in msg_text for kw in _ALREADY_EXISTS_KEYWORDS):
-                is_exists = True
-        if is_exists:
+    # A published business code describes a client-side failure more faithfully
+    # than the HTTP status, so it wins for 4xx. It deliberately does not apply to
+    # 5xx: a server outage must stay retryable even if the body happens to carry
+    # a known code, and reclassifying it would silently drop that retryability.
+    business_cls: type[APIError] | None = None
+    if status < 500:
+        code = _business_code(body)
+        business_cls = _BUSINESS_CODE_MAP.get(code) if code is not None else None
+    if business_cls is not None:
+        exc_cls = business_cls
+    elif exc_cls is InvalidParameter and isinstance(body, dict):
+        # Older servers signal "already exists" through the message only.
+        msg_text = (body.get("Message") or body.get("message") or body.get("msg") or body.get("Msg") or "").lower()
+        if any(kw in msg_text for kw in _ALREADY_EXISTS_KEYWORDS):
             exc_cls = AlreadyExistsError
 
     kwargs: dict[str, Any] = dict(
@@ -510,21 +556,24 @@ def raise_for_status(response: "Response") -> None:
 # ---------------------------------------------------------------------------
 # Repo-exists detection (shared by cli/repo.py and compat/hub_api.py)
 # ---------------------------------------------------------------------------
-_ALREADY_EXISTS_CODES: set[int] = {
-    10020101001,   # 国内站 - 数据集已存在
-    10010101001,   # 国内站 - 模型已存在
-    10010202004,   # 国际站 - 名称已被使用
-}
+# Derived from the business-code table so the two never drift apart. Retained
+# as a module-level name because :func:`is_repo_exists_error` still consults it
+# when handling exceptions that pre-date the structured hierarchy.
+_ALREADY_EXISTS_CODES: frozenset[int] = frozenset(
+    code for code, exc in _BUSINESS_CODE_MAP.items() if exc is AlreadyExistsError
+)
 
-_ALREADY_EXISTS_KEYWORDS: frozenset[str] = frozenset({
-    "exist",
-    "already",
-    "can not be used",
-    "not available",
-    "已被注册",
-    "已存在",
-    "名称不可用",
-})
+_ALREADY_EXISTS_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "exist",
+        "already",
+        "can not be used",
+        "not available",
+        "已被注册",
+        "已存在",
+        "名称不可用",
+    }
+)
 
 
 def is_repo_exists_error(exc: BaseException) -> bool:
@@ -545,7 +594,7 @@ def is_repo_exists_error(exc: BaseException) -> bool:
     if isinstance(body, dict):
         code = body.get("Code") or body.get("code")
         try:
-            if int(code) in _ALREADY_EXISTS_CODES:
+            if code is not None and int(code) in _ALREADY_EXISTS_CODES:
                 return True
         except (TypeError, ValueError):
             pass

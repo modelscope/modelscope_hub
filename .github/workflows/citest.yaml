@@ -1,0 +1,79 @@
+name: citest
+
+on:
+  push:
+    branches:
+      - main
+      - "release/**"
+    paths-ignore:
+      - "docs/**"
+      - "temp/**"
+      - "README.md"
+      - "LICENSE"
+      - ".github/workflows/publish.yaml"
+
+  pull_request:
+    paths-ignore:
+      - "docs/**"
+      - "temp/**"
+      - "README.md"
+      - "LICENSE"
+      - ".github/workflows/publish.yaml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    # Mock mode: no credentials, no network calls to the Hub. This mirrors
+    # distro build sandboxes (NixOS/FreeBSD) so a green run here means the
+    # test suite also passes when downstream packagers run it.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 = oldest supported, 3.14 = used by NixOS packaging.
+        python-version: ["3.10", "3.12", "3.14"]
+    env:
+      MODELSCOPE_RUN_REMOTE_TESTS: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Run unit tests (mock mode)
+        run: pytest tests/ --ignore=tests/integration -q
+
+  lint:
+    # Hard gate: the ruff/mypy backlog was cleared, keep it at zero.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install package with dev dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff check
+        run: ruff check src/ tests/
+
+      - name: Ruff format check
+        run: ruff format --check src/ tests/
+
+      - name: Mypy
+        run: mypy src/modelscope_hub/

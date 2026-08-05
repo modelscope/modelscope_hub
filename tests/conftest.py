@@ -1,4 +1,5 @@
 """Global test configuration and fixtures."""
+
 from __future__ import annotations
 
 import os
@@ -54,7 +55,9 @@ def is_remote_enabled() -> bool:
 # ---------------------------------------------------------------------------
 def pytest_configure(config):
     config.addinivalue_line("markers", "remote: tests requiring remote API access")
-    config.addinivalue_line("markers", "mock_only: tests using mock API (only run when MODELSCOPE_RUN_REMOTE_TESTS=false)")
+    config.addinivalue_line(
+        "markers", "mock_only: tests using mock API (only run when MODELSCOPE_RUN_REMOTE_TESTS=false)"
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -67,9 +70,7 @@ def pytest_collection_modifyitems(config, items):
 
     if remote_enabled:
         # Skip mock-only tests when real API is available
-        skip_mock = pytest.mark.skip(
-            reason="Mock-only tests skipped (remote mode active)"
-        )
+        skip_mock = pytest.mark.skip(reason="Mock-only tests skipped (remote mode active)")
         for item in items:
             if "mock_only" in item.keywords:
                 item.add_marker(skip_mock)

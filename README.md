@@ -33,10 +33,24 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.2.0** (2026-08-01)
+- **Breaking**: `HubApi.login()` now raises `NetworkError` / `ServerError` / `RequestTimeoutError` for non-authentication failures instead of always raising `AuthenticationError` — widen `except AuthenticationError` to `HubError` if you catch *any* login failure
+- **Fix**: network, timeout and 5xx errors during login are no longer misreported as an invalid token; a failed login no longer deletes stored credentials; bare and upper-case endpoints are accepted (e.g. `--endpoint modelscope.ai`)
+- **Enhancement**: a rejected login probes the peer ModelScope site and suggests `--endpoint` when the token is valid there; `--verbose` prints the full error cause chain
+
+**v0.1.9** (2026-07-31)
+- **Fix**: two stale unit tests that failed in downstream distro sandboxes ([#46](https://github.com/modelscope/modelscope_hub/issues/46), NixOS): align the `mcp deploy` call-shape assertion and the `parse_timestamp` timezone-normalization contract
+- **Feature**: `ms-hub mcp deploy` prints the operational URL after deployment; new `--auth-check` and repeatable `--env KEY=VALUE` options; `--transport-type` now validates against `sse`/`streamable_http`
+- **CI**: new `citest` workflow — mock-mode test suite (no credentials/network, mirrors distro build sandboxes) on Python 3.10/3.12/3.14 plus ruff/mypy hard gates; releases now require a green test gate before publishing; added a `pre-commit` config
+- **Quality**: ruff & mypy debt cleared to zero; lint/type-check targets aligned to the supported Python floor (3.10)
+
 **v0.1.8** (2026-07-21)
 - **Feature**: `ms-hub agent` raw file transfer (download/upload/list) for remote agent repos; visibility support for agent hub; cache checksum verification (`ms-hub cache verify`)
 - **Fix**: forward `progress_callbacks` through `HubApi.download_repo` so custom download-progress callbacks work end-to-end; harden legacy (pre-1.38) cache auto-detection (reuse existing `{cache}/models/...` and default `{cache}/hub/models/...` layouts); normal (non-LFS) file upload
 - **Packaging**: rename console scripts to `modelscope-hub` / `ms-hub` to avoid a file conflict with the `modelscope` package (e.g. FreeBSD pkg)
+
+<details>
+<summary>Older releases</summary>
 
 **v0.1.7** (2026-07-07)
 - **Feature**: intra-/inter-region cloud download acceleration, with a source marker in the progress bar
@@ -48,9 +62,6 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 **v0.1.5** (2026-06-30)
 - **Fix**: adaptive commit batch size for uploads
-
-<details>
-<summary>Older releases</summary>
 
 **v0.1.4** (2026-06-26)
 - **Feature**: `gated_mode` parameter for `create_repo`; `ms-hub create --gated/--no-gated` flags

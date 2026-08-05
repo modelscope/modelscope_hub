@@ -10,8 +10,8 @@ from __future__ import annotations
 import os
 import warnings
 from argparse import SUPPRESS, Action, ArgumentParser, Namespace
-from typing import Any, Sequence
-
+from collections.abc import Sequence
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Deprecation infrastructure
@@ -25,8 +25,7 @@ def deprecated_arg(old: str, new: str) -> None:
     if os.environ.get(_SUPPRESS_ENVVAR) or os.environ.get(_SUPPRESS_ENVVAR_OLD):
         return
     warnings.warn(
-        f"'{old}' is deprecated and will be removed in a future version. "
-        f"Use '{new}' instead.",
+        f"'{old}' is deprecated and will be removed in a future version. Use '{new}' instead.",
         DeprecationWarning,
         stacklevel=3,
     )
@@ -49,9 +48,11 @@ class PatternAction(Action):
         self,
         parser: ArgumentParser,
         namespace: Namespace,
-        values: str | Sequence[str],
+        values: str | Sequence[Any] | None,
         option_string: str | None = None,
     ) -> None:
+        if values is None:
+            return
         current: list[str] = getattr(namespace, self.dest, None) or []
         if isinstance(values, str):
             current.append(values)
@@ -140,10 +141,7 @@ def normalize_download_args(args: Namespace) -> Namespace:
         args.files = []
 
     if not args.repo_id:
-        raise ValueError(
-            "repo_id is required. Provide it as a positional argument "
-            "or via --model/--dataset."
-        )
+        raise ValueError("repo_id is required. Provide it as a positional argument or via --model/--dataset.")
 
     return args
 

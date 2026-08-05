@@ -7,11 +7,11 @@ endpoints exposed by :class:`HubApi`.
 from __future__ import annotations
 
 import json
-from argparse import Action
 
 from ..constants import RepoType
 from .base import (
     CLICommand,
+    SubParsers,
     add_repo_type_arg,
     info,
     make_api,
@@ -25,7 +25,7 @@ class DeployCommand(CLICommand):
     """Deploy a Studio space or an MCP server."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("deploy", help="Deploy a studio space or MCP server.")
         p.add_argument("repo_id")
         add_repo_type_arg(
@@ -47,7 +47,7 @@ class StopCommand(CLICommand):
     """Stop a running Studio or undeploy an MCP server."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("stop", help="Stop a studio space or undeploy MCP server.")
         p.add_argument("repo_id")
         add_repo_type_arg(
@@ -69,7 +69,7 @@ class LogsCommand(CLICommand):
     """Stream paginated run / build logs of a Studio space."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("logs", help="Fetch logs for a studio space.")
         p.add_argument("repo_id")
         add_repo_type_arg(
@@ -108,7 +108,7 @@ class SettingsCommand(CLICommand):
     """Update Studio / Skill settings via ``key=value`` tokens."""
 
     @staticmethod
-    def register(subparsers: Action) -> None:
+    def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser(
             "settings",
             help="Update studio or skill settings (key=value pairs).",
@@ -142,7 +142,10 @@ def _extract_log_lines(payload: object) -> list[str]:
         for key in ("logs", "items", "list", "data"):
             value = payload.get(key)
             if isinstance(value, list):
-                return [str(v) if not isinstance(v, dict) else (v.get("message") or json.dumps(v, ensure_ascii=False)) for v in value]
+                return [
+                    str(v) if not isinstance(v, dict) else (v.get("message") or json.dumps(v, ensure_ascii=False))
+                    for v in value
+                ]
             if isinstance(value, str):
                 return value.splitlines()
     return []

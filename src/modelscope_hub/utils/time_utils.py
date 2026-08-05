@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import zoneinfo
 from datetime import datetime, timezone
-from typing import Union
 
 # Accepted ISO-like formats for naive (local) timestamps.
 _NAIVE_FORMATS: tuple[str, ...] = (
@@ -56,7 +55,7 @@ def _parse_naive_string(value: str, target_tz: zoneinfo.ZoneInfo) -> datetime:
 
 
 def parse_timestamp(
-    value: Union[int, str, datetime, None],
+    value: int | str | datetime | None,
     *,
     tz: str = "Asia/Shanghai",
 ) -> datetime | None:
