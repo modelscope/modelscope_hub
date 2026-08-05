@@ -104,8 +104,7 @@ def agent_visibility_label(item: dict) -> str:
     # because ``private=False`` means PUBLIC and would be skipped as falsy.
     for key in ("Private", "private"):
         if key in item and item[key] is not None:
-            return (Visibility.PRIVATE.label
-                    if item[key] else Visibility.PUBLIC.label)
+            return Visibility.PRIVATE.label if item[key] else Visibility.PUBLIC.label
 
     # Legacy field, which arrived in several shapes: a label of any casing
     # (``"Public"``), an int enum (1/3/5) or its numeric string -- hence the
@@ -134,8 +133,7 @@ def agent_last_modified(item: dict) -> str:
     UTC RFC3339, so it must not be shown as if it were local time. Older keys
     are accepted as a fallback.
     """
-    for key in ("LastModified", "last_modified", "GmtModified", "gmt_modified",
-                "LastUpdatedDate", "last_updated_date"):
+    for key in ("LastModified", "last_modified", "GmtModified", "gmt_modified", "LastUpdatedDate", "last_updated_date"):
         val = item.get(key)
         if val:
             return str(val)
@@ -294,8 +292,7 @@ class AgentApi:
         """
         allowed = (Visibility.PUBLIC.label, Visibility.PRIVATE.label)
         if visibility not in allowed:
-            raise ValueError(
-                f"visibility must be one of {allowed}, got {visibility!r}")
+            raise ValueError(f"visibility must be one of {allowed}, got {visibility!r}")
         # The agent API takes a boolean ``private`` (INVERTED semantics), not
         # the old ``visibility`` string. A string here would be rejected with
         # 400, and omitting it would silently default to public, so always

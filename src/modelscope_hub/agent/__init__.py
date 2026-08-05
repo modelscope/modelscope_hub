@@ -15,6 +15,7 @@ Public API
   metadata fields from an API item, tolerating both JSON spellings
   (snake_case and PascalCase) and legacy keys.
 """
+
 from ._api import AgentApi, RemoteFileInfo, agent_last_modified, agent_visibility_label, is_lfs_file
 
 __all__ = [
