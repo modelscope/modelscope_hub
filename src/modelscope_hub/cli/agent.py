@@ -14,8 +14,7 @@ import sys
 from argparse import RawDescriptionHelpFormatter
 from pathlib import Path
 
-from ..agent import (AgentApi, agent_last_modified, agent_visibility_label,
-                     is_lfs_file)
+from ..agent import AgentApi, agent_last_modified, agent_visibility_label, is_lfs_file
 from ..constants import Visibility
 from ..errors import APIError
 from .base import CLICommand, SubParsers
