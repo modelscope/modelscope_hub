@@ -98,28 +98,6 @@ def agent_last_modified(item: dict) -> str:
     return "-"
 
 
-def agent_downloads(item: dict) -> int:
-    """Read an agent's download count (``downloads``, was ``download_count``).
-    """
-    for key in ("Downloads", "downloads", "DownloadCount", "download_count"):
-        val = item.get(key)
-        if val is not None:
-            try:
-                return int(val)
-            except (TypeError, ValueError):
-                return 0
-    return 0
-
-
-def agent_logo_url(item: dict) -> str:
-    """Read an agent's logo URL (``logo_url``, formerly ``logo``)."""
-    for key in ("LogoUrl", "logo_url", "Logo", "logo"):
-        val = item.get(key)
-        if val:
-            return str(val)
-    return ""
-
-
 @dataclass
 class RemoteFileInfo:
     """Metadata for a single file in the remote repository."""
