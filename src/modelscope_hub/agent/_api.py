@@ -89,6 +89,57 @@ _LFS_EXTENSIONS: frozenset[str] = frozenset(
 _LFS_SIZE_THRESHOLD: int = 1 * 1024 * 1024  # 1 MB
 
 
+def agent_visibility_label(item: dict) -> str:
+    """Read an agent's visibility from an API item as a public/private label.
+
+    The agent API replaced the ``visibility`` string with a boolean ``private``
+    of INVERTED meaning (``private=false`` is public), in both snake_case
+    (OpenAPI / detail) and PascalCase (list / search) spellings. Reading the
+    raw field directly is a trap: ``False`` is falsy, so an ``or``-chain would
+    silently report a public agent as unknown. Legacy ``visibility`` keys are
+    still honoured so this works against older servers.
+    """
+    # Current field: a plain bool, so truthiness is the whole story -- no
+    # casing/whitespace normalization applies. ``key in item`` (not ``or``)
+    # because ``private=False`` means PUBLIC and would be skipped as falsy.
+    for key in ("Private", "private"):
+        if key in item and item[key] is not None:
+            return Visibility.PRIVATE.label if item[key] else Visibility.PUBLIC.label
+
+    # Legacy field, which arrived in several shapes: a label of any casing
+    # (``"Public"``), an int enum (1/3/5) or its numeric string -- hence the
+    # normalization below. Unknown values are echoed rather than guessed:
+    # the old server logic treated everything != "public" as private, which
+    # is exactly how ``"Public"`` used to flip an agent private by accident.
+    raw = item.get("Visibility")
+    if raw is None:
+        raw = item.get("visibility")
+    if raw is None or raw == "":
+        return "-"
+    if isinstance(raw, bool):  # bool is an int subclass -- check it first
+        return Visibility.PRIVATE.label if raw else Visibility.PUBLIC.label
+    try:
+        if isinstance(raw, int):
+            return Visibility(raw).label
+        return Visibility.from_label(str(raw).strip().lower()).label
+    except (ValueError, KeyError):
+        return str(raw).strip().lower() or "-"
+
+
+def agent_last_modified(item: dict) -> str:
+    """Read an agent's last-modified timestamp from an API item.
+
+    ``last_modified`` / ``LastModified`` superseded ``gmt_modified`` and is now
+    UTC RFC3339, so it must not be shown as if it were local time. Older keys
+    are accepted as a fallback.
+    """
+    for key in ("LastModified", "last_modified", "GmtModified", "gmt_modified", "LastUpdatedDate", "last_updated_date"):
+        val = item.get(key)
+        if val:
+            return str(val)
+    return "-"
+
+
 @dataclass
 class RemoteFileInfo:
     """Metadata for a single file in the remote repository."""
@@ -235,12 +286,22 @@ class AgentApi:
                        repo (e.g. "qoder", "nanobot").  Defaults to server-side
                        default when omitted.
             visibility: Repository visibility, ``"public"`` (default) or
-                        ``"private"``.
+                        ``"private"``.  Kept as a label for a stable caller-
+                        facing API; it is sent over the wire as the boolean
+                        ``private`` field (see below).
         """
         allowed = (Visibility.PUBLIC.label, Visibility.PRIVATE.label)
         if visibility not in allowed:
             raise ValueError(f"visibility must be one of {allowed}, got {visibility!r}")
-        body: dict = {"path": path, "name": name, "visibility": visibility}
+        # The agent API takes a boolean ``private`` (INVERTED semantics), not
+        # the old ``visibility`` string. A string here would be rejected with
+        # 400, and omitting it would silently default to public, so always
+        # send an explicit bool.
+        body: dict = {
+            "path": path,
+            "name": name,
+            "private": visibility == Visibility.PRIVATE.label,
+        }
         if framework:
             body["framework"] = framework
         return self._openapi.request("POST", "/agents", json_body=body)
