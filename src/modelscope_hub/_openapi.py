@@ -388,6 +388,28 @@ class OpenAPIClient:
         """``GET /users/me`` — fetch the authenticated user profile."""
         return self._request("GET", "/users/me")
 
+    def get_current_username(self) -> str:
+        """The authenticated account handle, or ``""`` when unresolvable.
+
+        Callers need the handle to build repo paths (``<owner>/<repo>``), and
+        the field it arrives in has changed: the endpoint now answers with
+        OIDC-style claims (``preferred_username`` / ``name``) where it used to
+        return ModelScope's own ``Username``. Reading only the old key yielded
+        an empty owner, which then produced confusing downstream failures
+        (``path is required`` on create, then a ``//`` URL 404 on commit).
+
+        Keys are tried in handle-before-display-name order so a server that
+        populates both still gives the login handle rather than a full name.
+        """
+        data = self.get_current_user()
+        if not isinstance(data, dict):
+            return ""
+        for key in ("Username", "username", "preferred_username", "name"):
+            value = data.get(key)
+            if value:
+                return str(value)
+        return ""
+
     # ==================================================================
     # Models
     # ==================================================================
