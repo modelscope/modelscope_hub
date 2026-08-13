@@ -379,3 +379,45 @@ class TestForeignHostCredentialIsolation:
         assert call_kwargs["cookies"] == {}
         # Caller-supplied headers (not credentials) must still be sent.
         assert call_kwargs["headers"]["Content-Type"] == "application/octet-stream"
+
+
+class TestCurrentUsernameFieldCompat:
+    """``/users/me`` moved from ``Username`` to OIDC claims; both must work.
+
+    Reading only the old key silently produced an empty owner, which surfaced
+    much later as ``path is required`` on repo creation and a ``//`` URL 404 on
+    commit -- so each accepted shape is pinned here.
+    """
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            # Shape observed on the server today: OIDC claims, handle in ``name``
+            # while ``preferred_username`` comes back empty.
+            (
+                {
+                    "name": "tastelikefeet",
+                    "preferred_username": "",
+                    "description": "",
+                    "avatar": "",
+                    "email": "user@example.com",
+                },
+                "tastelikefeet",
+            ),
+            # Legacy ModelScope shapes still deployed elsewhere.
+            ({"Username": "alice", "Email": "a@b.c"}, "alice"),
+            ({"username": "bob"}, "bob"),
+            # A server populating both must yield the login handle, not the
+            # human-readable display name.
+            ({"preferred_username": "carol", "name": "Carol Smith"}, "carol"),
+            ({"Username": "dave", "name": "Dave X"}, "dave"),
+            # Unresolvable responses degrade to "" so callers can report it.
+            ({}, ""),
+            ({"name": ""}, ""),
+            (None, ""),
+            ("not-a-dict", ""),
+        ],
+    )
+    def test_username_resolved_from_any_known_field(self, client, payload, expected):
+        with patch.object(OpenAPIClient, "get_current_user", return_value=payload):
+            assert client.get_current_username() == expected
