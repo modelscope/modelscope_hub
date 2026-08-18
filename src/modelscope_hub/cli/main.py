@@ -1,10 +1,17 @@
-"""Entry point for the ``modelscope-hub`` / ``ms-hub`` console scripts.
+"""Entry point for every ModelScope console script.
 
-This module is also reused by the umbrella ``modelscope`` package for its
-``modelscope`` / ``ms`` commands. Because a single parser serves all four
-aliases, the program name is derived from ``sys.argv[0]`` (rather than
-hard-coded) so help/usage output shows whichever command was actually
-invoked.
+This package owns all four aliases -- ``modelscope``, ``ms``,
+``modelscope-hub`` and ``ms-hub`` -- so exactly one distribution writes those
+files and no cross-package overwrite can leave a user without a working CLI.
+The umbrella ``modelscope`` SDK contributes its commands as plugins instead of
+shipping a competing script.
+
+Because a single parser serves all four aliases, the program name,
+``--version`` output and help epilog are derived from ``sys.argv[0]`` rather
+than hard-coded, so each alias reports itself accurately. Only the two
+``*-hub`` aliases are treated as hub-only; anything else (including
+``python -m``) gets the brand view, which always names the hub version too and
+so cannot misreport this package.
 
 Subcommands live in dedicated modules and are wired in via their
 :meth:`CLICommand.register` static method. :func:`run_cmd` is intentionally
@@ -18,8 +25,10 @@ import argparse
 import importlib.metadata
 import logging
 import sys
-from argparse import SUPPRESS
+from argparse import SUPPRESS, Action
 from collections.abc import Sequence
+from functools import cache
+from pathlib import Path
 
 from .. import __version__
 from ..constants import MODELSCOPE_ASCII
@@ -60,20 +69,112 @@ _COMMANDS = [
 _PLUGIN_GROUP = "modelscope_hub.cli_plugins"
 
 
+# ---------------------------------------------------------------------------
+# Invocation identity
+# ---------------------------------------------------------------------------
+# Aliases that address this package alone. The other two (``modelscope`` /
+# ``ms``) front the whole brand, so they lead with the umbrella SDK version
+# whenever it is installed alongside.
+_HUB_ONLY_PROGS = frozenset({"modelscope-hub", "ms-hub"})
+
+# Distribution name of the umbrella SDK that contributes the plugin commands.
+_SDK_DIST = "modelscope"
+
+
+def _invoked_as() -> str:
+    """Basename of the console script that started this process."""
+    return Path(sys.argv[0]).name
+
+
+@cache
+def _sdk_version() -> str | None:
+    """Version of the umbrella ``modelscope`` SDK, or ``None`` when absent.
+
+    Cached because resolving it walks ``sys.path`` looking for installed
+    distribution metadata, and both the version line and the help epilog ask
+    the same question.
+    """
+    try:
+        return importlib.metadata.version(_SDK_DIST)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _version_text() -> str:
+    """Build the ``--version`` line for the alias actually invoked."""
+    hub = f"modelscope-hub {__version__}"
+    if _invoked_as() in _HUB_ONLY_PROGS:
+        return hub
+    sdk = _sdk_version()
+    if sdk is None:
+        return f"{hub} (full ModelScope SDK not installed)"
+    return f"modelscope {sdk} ({hub})"
+
+
+def _brand_epilog() -> str | None:
+    """Tell brand-alias users why SDK subcommands are missing, if they are.
+
+    ``modelscope`` / ``ms`` ship with this package, so they exist even on a
+    lightweight hub-only install -- in which case the SDK subcommands are
+    genuinely absent and the user deserves to know how to get them.
+    """
+    if _invoked_as() in _HUB_ONLY_PROGS or _sdk_version() is not None:
+        return None
+    return (
+        "Commands from the full ModelScope SDK (pipeline, server, studio,\n"
+        "modelcard, ...) are not installed. Add them with:\n"
+        "    pip install modelscope"
+    )
+
+
+class _VersionAction(argparse.Action):
+    """``--version`` resolved on use rather than at parser-build time.
+
+    The stock ``version`` action needs its string up front, which would make
+    every invocation pay for a distribution-metadata lookup just to run an
+    unrelated subcommand.
+    """
+
+    def __init__(
+        self,
+        option_strings: Sequence[str],
+        dest: str = SUPPRESS,
+        default: str = SUPPRESS,
+        help: str | None = None,
+    ) -> None:
+        super().__init__(
+            option_strings=list(option_strings),
+            dest=dest,
+            default=default,
+            nargs=0,
+            help=help,
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: object,
+        option_string: str | None = None,
+    ) -> None:
+        print(_version_text())
+        parser.exit()
+
+
 def _build_parser() -> argparse.ArgumentParser:
     # ``prog`` is intentionally left unset so argparse derives it from
-    # ``sys.argv[0]``. The same parser backs the standalone
-    # ``modelscope-hub`` / ``ms-hub`` scripts and the umbrella
-    # ``modelscope`` / ``ms`` scripts, so help output reflects whichever
-    # command the user actually ran.
+    # ``sys.argv[0]``: one parser backs all four console scripts, so usage and
+    # help output must reflect whichever command the user actually ran.
     parser = argparse.ArgumentParser(
         description="ModelScope Hub command-line interface.",
+        epilog=_brand_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "-V",
         "--version",
-        action="version",
-        version=f"modelscope-hub {__version__}",
+        action=_VersionAction,
+        help="Show the version of the invoked command and exit.",
     )
     parser.add_argument(
         "--token",
@@ -175,20 +276,40 @@ class _ClearCacheAlias(CLICommand):
 # ---------------------------------------------------------------------------
 # Plugin discovery
 # ---------------------------------------------------------------------------
-def _discover_plugins(subparsers) -> None:
-    """Discover CLI plugins registered via entry_points."""
+def _discover_plugins(subparsers: Action) -> None:
+    """Discover CLI plugins registered via entry_points.
+
+    A plugin must never be able to break the whole CLI, so every failure is
+    contained. Failure severity differs though: a plugin that cannot even be
+    imported is usually an optional extra the user simply did not install
+    (``server`` needs the HTTP stack, for instance), which would make a warning
+    on every invocation pure noise -- whereas a name collision is always a
+    packaging mistake and stays silent forever unless we say so.
+    """
     # ``entry_points(group=...)`` is available on all supported Pythons (3.10+).
     eps = importlib.metadata.entry_points(group=_PLUGIN_GROUP)
+    log = logging.getLogger(__name__)
+    # Live reference: it also grows as plugins register, so plugin-vs-plugin
+    # collisions are caught too, not just plugin-vs-built-in.
+    registered = getattr(subparsers, "choices", None)
 
     for ep in eps:
         try:
             cmd_cls = ep.load()
+            name = getattr(cmd_cls, "name", ep.name)
+            if registered is not None and name in registered:
+                log.warning(
+                    "Skipping CLI plugin %r: command %r is already registered.",
+                    ep.name,
+                    name,
+                )
+                continue
             if hasattr(cmd_cls, "register"):
                 cmd_cls.register(subparsers)
             elif hasattr(cmd_cls, "define_args"):
                 cmd_cls.define_args(subparsers)
         except Exception as exc:
-            logging.getLogger(__name__).debug("Failed to load CLI plugin %r: %s", ep.name, exc)
+            log.debug("Failed to load CLI plugin %r: %s", ep.name, exc)
 
 
 # ---------------------------------------------------------------------------

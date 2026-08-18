@@ -116,6 +116,36 @@ pip install modelscope-hub
 
 Requires Python 3.10+. Lightweight — only `requests`, `tqdm`, `filelock`, `urllib3`.
 
+### Command names
+
+This package installs every ModelScope console script, and all four are the same
+program — pick whichever reads best in your shell:
+
+| Command | Use it for |
+| --- | --- |
+| `modelscope` | the primary, brand-level command |
+| `ms` | short form of `modelscope` |
+| `modelscope-hub` | explicit hub-only invocation |
+| `ms-hub` | short form of `modelscope-hub` |
+
+Owning all four in one distribution is deliberate: when the umbrella
+[`modelscope`](https://github.com/modelscope/modelscope) SDK also declared
+`modelscope` / `ms`, installing or upgrading either package could overwrite or
+delete the other's scripts and leave you with no CLI at all. OS packagers (such
+as FreeBSD pkg) likewise refuse to let two ports own the same path. The SDK now
+contributes its extra commands as plugins instead.
+
+So `modelscope` and `ms` work on a hub-only install too. Commands that belong to
+the full SDK (`pipeline`, `server`, `studio`, `modelcard`, …) appear once you
+also `pip install modelscope`; until then `--help` says so. The two `*-hub`
+aliases always report just this package, which is handy for scripts that must
+pin the lightweight client:
+
+```bash
+ms-hub --version      # modelscope-hub X.Y.Z
+modelscope --version  # modelscope A.B.C (modelscope-hub X.Y.Z)
+```
+
 ---
 
 ## Quick Start
