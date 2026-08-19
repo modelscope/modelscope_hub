@@ -20,6 +20,11 @@ on:
       - "LICENSE"
       - ".github/workflows/publish.yaml"
 
+  # The cross-repo job below is opt-in: it installs the umbrella SDK from its
+  # own default branch, so gating every push on that would make this pipeline
+  # fail whenever an unrelated change lands there.
+  workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -77,3 +82,122 @@ jobs:
 
       - name: Mypy
         run: mypy src/modelscope_hub/
+
+  cli-entrypoints:
+    # This package installs every ModelScope console script, and the umbrella
+    # `modelscope` SDK deliberately declares none of its own. That split is the
+    # contract between the two: if these four stop being installed here, the
+    # brand CLI disappears for everyone downstream. Installed non-editable,
+    # because that is how users actually receive the scripts.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install package
+        run: pip install .
+
+      - name: Every alias is installed and runnable
+        run: |
+          for cmd in modelscope ms modelscope-hub ms-hub; do
+            command -v "$cmd" >/dev/null || { echo "::error::missing console script: $cmd"; exit 1; }
+            "$cmd" --version >/dev/null || { echo "::error::$cmd --version failed"; exit 1; }
+          done
+
+      - name: Hub aliases speak only for this package
+        run: |
+          for cmd in modelscope-hub ms-hub; do
+            "$cmd" --version | grep -q '^modelscope-hub ' \
+              || { echo "::error::$cmd --version should report only modelscope-hub"; exit 1; }
+            if "$cmd" --help | grep -qF 'pip install modelscope'; then
+              echo "::error::$cmd must not advertise the umbrella SDK"; exit 1
+            fi
+          done
+
+      - name: Brand aliases flag the absent SDK
+        run: |
+          for cmd in modelscope ms; do
+            "$cmd" --version | grep -qF 'not installed' \
+              || { echo "::error::$cmd --version should flag the missing SDK"; exit 1; }
+            "$cmd" --help | grep -qF 'pip install modelscope' \
+              || { echo "::error::$cmd --help should explain how to get SDK commands"; exit 1; }
+          done
+
+  cli-with-umbrella-sdk:
+    # Manual only (see `workflow_dispatch` above). Verifies the half of the
+    # contract that lives in the other repository: with both packages present
+    # the brand aliases must report the SDK, the SDK's commands must appear as
+    # plugins, and removing the SDK must not take the CLI down with it.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install this package, then the umbrella SDK
+        run: |
+          pip install .
+          pip install "modelscope @ git+https://github.com/modelscope/modelscope"
+          # Reinstate the checkout: resolving the SDK may have pulled a
+          # released modelscope-hub over the build under test.
+          pip install --force-reinstall --no-deps .
+
+      - name: The umbrella SDK must not ship competing scripts
+        run: |
+          python - <<'PY'
+          import importlib.metadata as md
+          import sys
+          scripts = [
+              ep.name
+              for ep in md.distribution("modelscope").entry_points
+              if ep.group == "console_scripts"
+          ]
+          if scripts:
+              print(f"::error::modelscope declares console scripts {scripts}; "
+                    "they belong to modelscope-hub")
+              sys.exit(1)
+          PY
+
+      - name: Brand aliases report the SDK, hub aliases do not
+        run: |
+          for cmd in modelscope ms; do
+            "$cmd" --version | grep -q '^modelscope ' \
+              || { echo "::error::$cmd --version should lead with the SDK version"; exit 1; }
+            "$cmd" --version | grep -qF 'modelscope-hub' \
+              || { echo "::error::$cmd --version should still name the hub"; exit 1; }
+          done
+          ms-hub --version | grep -q '^modelscope-hub ' \
+            || { echo "::error::ms-hub --version must stay hub-only"; exit 1; }
+
+      - name: SDK commands are discovered as plugins, without collisions
+        run: |
+          help_text="$(modelscope --help 2>&1)"
+          for cmd in pipeline studio modelcard download upload; do
+            printf '%s' "$help_text" | grep -qF "$cmd" \
+              || { echo "::error::command '$cmd' missing from help"; exit 1; }
+          done
+          if printf '%s' "$help_text" | grep -qF 'already registered'; then
+            echo "::error::a plugin collided with a built-in command"; exit 1
+          fi
+          python -m modelscope.cli.cli --version >/dev/null \
+            || { echo "::error::python -m modelscope.cli.cli regressed"; exit 1; }
+
+      - name: Removing the SDK leaves the CLI intact
+        run: |
+          pip uninstall -y modelscope
+          for cmd in modelscope ms modelscope-hub ms-hub; do
+            "$cmd" --version >/dev/null \
+              || { echo "::error::$cmd died with the SDK uninstall"; exit 1; }
+          done

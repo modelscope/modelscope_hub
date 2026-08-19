@@ -15,6 +15,7 @@ needed for API calls.
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import IO, Any, BinaryIO
 from urllib.parse import quote_plus, urlparse
 
@@ -26,6 +27,9 @@ from .constants import (
     API_MAX_RETRIES,
     API_TIMEOUT,
     LEGACY_API_PREFIX,
+    REPO_FILES_TRUNCATION_LIMIT,
+    REPO_TREE_MAX_REQUESTS,
+    REPO_TREE_WALK_WORKERS,
     UPLOAD_BLOB_CONNECT_TIMEOUT,
     UPLOAD_BLOB_READ_TIMEOUT,
     UPLOAD_RETRY_ALLOWED_METHODS,
@@ -60,6 +64,21 @@ _REPOS_SEGMENT: dict[str, str] = {
 def _resolve_segment(repo_type: str) -> str:
     """Return the URL path segment for the given repo_type."""
     return _REPO_TYPE_SEGMENT.get(repo_type, f"{repo_type}s")
+
+
+def _is_dataset(repo_type: str) -> bool:
+    """Whether the repo_type addresses the dataset endpoints."""
+    return repo_type in (RepoType.DATASET, "dataset", "datasets")
+
+
+def _entry_path(entry: dict) -> str:
+    """Return the repo-relative path of a file-tree entry."""
+    return entry.get("Path") or entry.get("path") or entry.get("Name") or ""
+
+
+def _is_dir_entry(entry: dict) -> bool:
+    """Whether a file-tree entry is a directory (git tree object)."""
+    return (entry.get("Type") or entry.get("type") or "blob") == "tree"
 
 
 class LegacyClient:
@@ -316,7 +335,46 @@ class LegacyClient:
 
         Models/studios/etc: GET /api/v1/{type}s/{repo_id}/repo/files
         Datasets: GET /api/v1/datasets/{repo_id}/repo/tree
+
+        ``repo/files`` supports no pagination and silently truncates at
+        :data:`REPO_FILES_TRUNCATION_LIMIT` entries, so a recursive listing that
+        comes back exactly at the limit is re-enumerated directory by directory
+        (see :meth:`_walk_repo_files`). Datasets take the ``repo/tree``
+        endpoint, which does paginate, so they are paged through instead.
         """
+        if _is_dataset(repo_type):
+            if recursive:
+                return self.list_dataset_files_paginated(
+                    repo_id=repo_id,
+                    revision=revision,
+                    root_path=root or "/",
+                )
+            return self._list_files_page(repo_id, repo_type, revision, recursive=False, root=root)
+
+        entries = self._list_files_page(repo_id, repo_type, revision, recursive=recursive, root=root)
+        if len(entries) < REPO_FILES_TRUNCATION_LIMIT:
+            return entries
+        if not recursive:
+            logger.warning(
+                "Directory %r of %s holds at least %d entries and the server returns no more "
+                "than that for a single listing; the result is incomplete.",
+                root or "/",
+                repo_id,
+                REPO_FILES_TRUNCATION_LIMIT,
+            )
+            return entries
+        return self._walk_repo_files(repo_id, repo_type, revision, root=root, prefetched=entries)
+
+    def _list_files_page(
+        self,
+        repo_id: str,
+        repo_type: str,
+        revision: str,
+        *,
+        recursive: bool,
+        root: str | None = None,
+    ) -> list[dict]:
+        """Perform a single file-tree request and unwrap the entry list."""
         segment = _resolve_segment(repo_type)
         params: dict[str, Any] = {
             "Revision": revision,
@@ -325,7 +383,7 @@ class LegacyClient:
         if root:
             params["Root"] = root
 
-        suffix = "repo/tree" if repo_type in (RepoType.DATASET, "dataset", "datasets") else "repo/files"
+        suffix = "repo/tree" if _is_dataset(repo_type) else "repo/files"
         resp = self._request("GET", f"{segment}/{repo_id}/{suffix}", params=params)
         data = self._json_data(resp)
         if isinstance(data, list):
@@ -334,6 +392,158 @@ class LegacyClient:
         if isinstance(data, dict):
             return data.get("Files") or data.get("files") or []
         return []
+
+    def _walk_repo_files(
+        self,
+        repo_id: str,
+        repo_type: str,
+        revision: str,
+        *,
+        root: str | None = None,
+        prefetched: list[dict] | None = None,
+    ) -> list[dict]:
+        """Enumerate a file tree the server truncated, one directory at a time.
+
+        Since ``repo/files`` caps every response, the only way to see past the
+        cap is to scope requests with ``Root``. Each subtree is first requested
+        whole; only the subtrees that come back at the cap are listed shallowly
+        and walked per child directory. The request count therefore scales with
+        the number of oversized directories, not with the directory total.
+
+        The walk proceeds one tree level at a time and issues the listings of a
+        level concurrently, since a deep repo needs hundreds of round trips.
+
+        ``prefetched`` is the already-truncated listing of ``root``, reused so
+        the caller's request is not repeated. Entries are de-duplicated by path.
+        Directories with more direct children than the cap cannot be enumerated
+        at all — those are reported through a warning and the returned list is
+        then knowingly incomplete.
+        """
+        limit = REPO_FILES_TRUNCATION_LIMIT
+        collected: dict[str, dict] = {}
+        oversized: list[str] = []
+        requests_made = 0
+        progress_mark = 200
+        budget_spent = False
+
+        logger.info(
+            "Repo %s: file listing came back at the server cap of %d entries; walking the "
+            "tree per directory to recover the full list ...",
+            repo_id,
+            limit,
+        )
+
+        def absorb(entries: list[dict]) -> None:
+            for entry in entries:
+                path = _entry_path(entry)
+                if path:
+                    collected.setdefault(path, entry)
+
+        def fetch_level(roots: list[str | None], *, recursive: bool) -> dict[str | None, list[dict]]:
+            """List several directories at once, clamped to the request budget."""
+            nonlocal requests_made, budget_spent, progress_mark
+            if not roots:
+                return {}
+            remaining = REPO_TREE_MAX_REQUESTS - requests_made
+            if remaining <= 0:
+                budget_spent = True
+                return {}
+            if len(roots) > remaining:
+                roots = roots[:remaining]
+                budget_spent = True
+            requests_made += len(roots)
+
+            def one(subroot: str | None) -> list[dict]:
+                return self._list_files_page(
+                    repo_id,
+                    repo_type,
+                    revision,
+                    recursive=recursive,
+                    root=subroot,
+                )
+
+            if len(roots) == 1:
+                listings = {roots[0]: one(roots[0])}
+            else:
+                workers = min(REPO_TREE_WALK_WORKERS, len(roots))
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    futures = {pool.submit(one, subroot): subroot for subroot in roots}
+                    listings = {futures[future]: future.result() for future in as_completed(futures)}
+
+            if requests_made >= progress_mark:
+                logger.info(
+                    "Repo %s: %d listings done, %d entries collected so far ...",
+                    repo_id,
+                    requests_made,
+                    len(collected),
+                )
+                progress_mark = requests_made + 200
+            return listings
+
+        frontier: list[str | None] = [root]
+        known: dict[str | None, list[dict]] = {} if prefetched is None else {root: prefetched}
+
+        while frontier:
+            known.update(fetch_level([r for r in frontier if r not in known], recursive=True))
+
+            truncated: list[str | None] = []
+            for subroot in frontier:
+                subtree = known.pop(subroot, None)
+                if subtree is None:
+                    continue  # budget ran out before this directory was reached
+                # A truncated subtree is still a valid prefix, so keep its entries
+                # and split the directory up to reach the rest.
+                absorb(subtree)
+                if len(subtree) >= limit:
+                    truncated.append(subroot)
+            if not truncated or budget_spent:
+                break
+
+            shallow_listings = fetch_level(truncated, recursive=False)
+            next_frontier: list[str | None] = []
+            for subroot in truncated:
+                shallow = shallow_listings.get(subroot)
+                if shallow is None:
+                    continue
+                absorb(shallow)
+                child_dirs = [path for path in map(_entry_path, filter(_is_dir_entry, shallow)) if path]
+                if len(shallow) >= limit or not child_dirs:
+                    # This level alone exceeds the cap, or it has no sub-directories
+                    # to split by: part of it stays invisible whatever we do. Still
+                    # descend into the children we did see — that recovers strictly
+                    # more than giving up here.
+                    oversized.append(subroot or "/")
+                next_frontier.extend(child_dirs)
+            if budget_spent:
+                break
+            frontier = list(dict.fromkeys(next_frontier))
+
+        if budget_spent:
+            logger.warning(
+                "Repo %s: stopped walking the file tree after %d listings "
+                "(MODELSCOPE_REPO_TREE_MAX_REQUESTS=%d); the file list is incomplete.",
+                repo_id,
+                requests_made,
+                REPO_TREE_MAX_REQUESTS,
+            )
+        if oversized:
+            shown = ", ".join(oversized[:5]) + (" ..." if len(oversized) > 5 else "")
+            logger.warning(
+                "Repo %s: %d director%s hold %d or more direct entries, which the server "
+                "cannot enumerate in full; the file list is incomplete: %s",
+                repo_id,
+                len(oversized),
+                "y" if len(oversized) == 1 else "ies",
+                limit,
+                shown,
+            )
+        logger.info(
+            "Repo %s: collected %d entries from %d directory listings.",
+            repo_id,
+            len(collected),
+            requests_made,
+        )
+        return list(collected.values())
 
     def list_dataset_files_paginated(
         self,

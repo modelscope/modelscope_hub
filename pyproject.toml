@@ -35,6 +35,14 @@ dev = [
 ]
 
 [project.scripts]
+# This package owns every ModelScope console script. Keeping all four in one
+# distribution means only one installer ever writes these files: when the
+# umbrella `modelscope` package also declared `modelscope`/`ms`, upgrading
+# either package could overwrite or delete the other's scripts and leave the
+# user with no CLI at all. It also keeps OS packagers (e.g. FreeBSD pkg, which
+# refuses two ports owning one path) free of file conflicts.
+modelscope = "modelscope_hub.cli.main:run_cmd"
+ms = "modelscope_hub.cli.main:run_cmd"
 modelscope-hub = "modelscope_hub.cli.main:run_cmd"
 ms-hub = "modelscope_hub.cli.main:run_cmd"
 

@@ -295,6 +295,30 @@ API_MAX_RETRIES: int = _env_int(
     "API_MAX_RETRIES",
 )
 
+REPO_FILES_TRUNCATION_LIMIT: int = 3000
+"""Server-side hard cap on a single ``repo/files`` listing.
+
+``GET /api/v1/{type}s/{repo_id}/repo/files`` silently truncates the file tree at
+this many entries: the response is ``HTTP 200`` with ``Success: true``, carries
+neither ``TotalCount`` nor a truncation flag, and ignores every pagination
+parameter. A listing whose length equals this limit therefore means "there may
+be more", and the tree has to be re-enumerated with ``Root``-scoped requests.
+"""
+
+REPO_TREE_MAX_REQUESTS: int = _env_int(
+    "MODELSCOPE_REPO_TREE_MAX_REQUESTS",
+    5000,
+    "Request budget for walking a truncated repo file tree",
+    "Network",
+)
+
+REPO_TREE_WALK_WORKERS: int = _env_int(
+    "MODELSCOPE_REPO_TREE_WALK_WORKERS",
+    8,
+    "Concurrent listings when walking a truncated repo file tree",
+    "Network",
+)
+
 # ---------------------------------------------------------------------------
 # Endpoint switching
 # ---------------------------------------------------------------------------
