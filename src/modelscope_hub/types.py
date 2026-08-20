@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Generic, TypedDict, TypeVar
+from typing import Any, ClassVar, Generic, TypedDict, TypeVar
 
 from .constants import RepoType, Visibility
 
@@ -40,12 +40,15 @@ def _coerce_datetime(value: Any) -> datetime | None:
 class _FromDictMixin:
     """Adds tolerant ``from_dict`` construction to a dataclass."""
 
+    _field_aliases: ClassVar[dict[str, str]] = {}
+
     @classmethod
     def from_dict(cls: type[_TDataclass], data: Mapping[str, Any] | None) -> _TDataclass:
         if not data:
             return cls()  # type: ignore[call-arg]
         known = {f.name for f in fields(cls)}  # type: ignore[arg-type]
-        kwargs = {key: value for key, value in data.items() if key in known}
+        aliases = cls._field_aliases
+        kwargs = {aliases.get(key, key): value for key, value in data.items() if aliases.get(key, key) in known}
         return cls(**kwargs)  # type: ignore[arg-type]
 
 
@@ -54,6 +57,11 @@ class _FromDictMixin:
 # ---------------------------------------------------------------------------
 @dataclass(slots=True)
 class UserInfo(_FromDictMixin):
+    _field_aliases: ClassVar[dict[str, str]] = {
+        "name": "username",
+        "avatar": "avatar_url",
+    }
+
     id: str | int | None = None
     username: str | None = None
     email: str | None = None
