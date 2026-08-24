@@ -1,6 +1,6 @@
-"""``ms login`` and ``ms whoami`` commands.
+"""``ms login``, ``ms logout`` and ``ms whoami`` commands.
 
-The two flows share their HubApi construction but live in distinct
+The three flows share their HubApi construction but live in distinct
 :class:`CLICommand` classes so each can be registered, tested and evolved
 independently.
 """
@@ -55,6 +55,29 @@ class LoginCommand(CLICommand):
         user = api.login(token.strip())
         identity = user.username or user.email or str(user.id) or "<unknown>"
         success(f"Logged in as {identity}.")
+
+
+class LogoutCommand(CLICommand):
+    """Clear locally persisted ModelScope credentials."""
+
+    @staticmethod
+    def register(subparsers: SubParsers) -> None:
+        parser = subparsers.add_parser(
+            "logout",
+            help="Clear locally persisted ModelScope credentials.",
+            description="Removes saved cookies, git token and cached user identity.",
+        )
+        # Legacy compat: allow subcommand-level auth flags even though logout
+        # never contacts the server. This keeps `ms logout --token ...` from
+        # failing on argument parsing in scripts that pass shared auth flags to
+        # every command.
+        add_subcmd_token_endpoint(parser)
+        parser.set_defaults(_command=LogoutCommand)
+
+    def execute(self) -> None:
+        api = make_api(self.args)
+        api.logout()
+        success("Logged out.")
 
 
 class WhoamiCommand(CLICommand):
