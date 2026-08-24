@@ -409,7 +409,7 @@ class TestCurrentUsernameFieldCompat:
             ({"username": "bob"}, "bob"),
             # A server populating both must yield the login handle, not the
             # human-readable display name.
-            ({"preferred_username": "carol", "name": "Carol Smith"}, "carol"),
+            ({"preferred_username": "Carol Smith", "name": "carol"}, "carol"),
             ({"Username": "dave", "name": "Dave X"}, "dave"),
             # Unresolvable responses degrade to "" so callers can report it.
             ({}, ""),

@@ -404,7 +404,7 @@ class OpenAPIClient:
         data = self.get_current_user()
         if not isinstance(data, dict):
             return ""
-        for key in ("Username", "username", "preferred_username", "name"):
+        for key in ("Username", "username", "name", "preferred_username"):
             value = data.get(key)
             if value:
                 return str(value)
