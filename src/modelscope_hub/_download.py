@@ -904,13 +904,28 @@ class DownloadManager:
         cache_dir: Path | None = None,
         file_path: str | None = None,
     ) -> Path:
-        """Compute the lock file path for a given repo or file."""
+        """Compute a fixed-length lock file path for a repo or file.
+
+        File systems commonly cap a single path component at 255 bytes. Older
+        versions embedded the full ``file_path`` in the lock basename, so a
+        perfectly valid remote filename could make the local lock filename too
+        long before the download even started. Keep the lock *key* semantics
+        (repo type + repo id + optional file path), but store only a stable
+        SHA-256 digest in the basename.
+        """
         base = cache_dir or self._config.cache_dir
-        safe_id = repo_id.replace("/", "___")
-        if file_path is not None:
-            safe_file = file_path.replace("/", "___").replace(".", "_")
-            return base / ".lock" / f"{repo_type}_{safe_id}_{safe_file}.lock"
-        return base / ".lock" / f"{repo_type}_{safe_id}.lock"
+        scope = "file" if file_path is not None else "repo"
+        key = "\0".join(
+            (
+                "modelscope-hub-download-lock-v2",
+                scope,
+                str(repo_type),
+                repo_id,
+                file_path or "",
+            )
+        )
+        digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+        return base / ".lock" / f"{scope}_{digest}.lock"
 
     def _download_with_resume(
         self,
