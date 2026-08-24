@@ -1,8 +1,8 @@
-"""Tests for ``ms login`` and ``ms whoami`` commands.
+"""Tests for ``ms login``, ``ms logout`` and ``ms whoami`` commands.
 
 Includes:
 - Parser tests: argument parsing
-- Execution tests: mock HubApi for login/whoami logic
+- Execution tests: mock HubApi for login/logout/whoami logic
 - Remote tests: real API (existing)
 """
 
@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
-from modelscope_hub.cli.login import LoginCommand, WhoamiCommand
+from modelscope_hub.cli.login import LoginCommand, LogoutCommand, WhoamiCommand
 from modelscope_hub.types import UserInfo
 
 from .conftest import run_cli
@@ -35,6 +35,27 @@ class TestLoginParser:
     def test_subcmd_endpoint(self, parser):
         args = parser.parse_args(["login", "--endpoint", "https://custom.cn"])
         assert args.subcmd_endpoint == "https://custom.cn"
+
+
+class TestLogoutParser:
+    """``ms logout`` argument parsing."""
+
+    def test_no_args(self, parser):
+        args = parser.parse_args(["logout"])
+        assert args._command is LogoutCommand
+
+    def test_subcmd_token_endpoint_is_accepted(self, parser):
+        args = parser.parse_args(
+            [
+                "logout",
+                "--token",
+                "my-tok",
+                "--endpoint",
+                "https://x.cn",
+            ]
+        )
+        assert args.subcmd_token == "my-tok"
+        assert args.subcmd_endpoint == "https://x.cn"
 
 
 class TestWhoamiParser:
@@ -142,6 +163,25 @@ class TestLoginExecute:
         with patch("modelscope_hub.cli.login.make_api", return_value=mock_api):
             LoginCommand(args).execute()
         assert args.endpoint == "https://custom.cn"
+
+
+@pytest.mark.mock_only
+class TestLogoutExecute:
+    """LogoutCommand.execute() logic."""
+
+    def test_logout_clears_credentials(self, parser, mock_api, capsys):
+        args = parser.parse_args(["logout"])
+        with patch("modelscope_hub.cli.login.make_api", return_value=mock_api):
+            LogoutCommand(args).execute()
+        mock_api.logout.assert_called_once()
+        assert "Logged out" in capsys.readouterr().out
+
+    def test_logout_dispatches_through_run_cmd(self, mock_api):
+        with patch("modelscope_hub.cli.login.make_api", return_value=mock_api):
+            code, out, err = run_cli(["logout"])
+        assert code == 0
+        assert "Logged out" in out
+        mock_api.logout.assert_called_once()
 
 
 @pytest.mark.mock_only

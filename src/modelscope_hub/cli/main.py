@@ -38,7 +38,7 @@ from .base import CLICommand, error, info
 from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
 from .download import DownloadCommand
-from .login import LoginCommand, WhoamiCommand
+from .login import LoginCommand, LogoutCommand, WhoamiCommand
 from .mcp import McpCommand
 from .repo import CreateCommand, DeleteCommand, InfoCommand, ListCommand, RepoCommand
 from .secret import SecretCommand
@@ -48,6 +48,7 @@ from .upload import UploadCommand
 # importing it above and appending it here — that's it.
 _COMMANDS = [
     LoginCommand,
+    LogoutCommand,
     WhoamiCommand,
     CreateCommand,
     InfoCommand,
