@@ -7,7 +7,12 @@ cache instead of re-downloading into the new layout.
 
 from __future__ import annotations
 
+from unittest import mock
+
+import pytest
+
 from modelscope_hub.api import HubApi
+from modelscope_hub.errors import CacheNotFound
 
 
 def _make_download_manager():
@@ -55,3 +60,59 @@ class TestFindLegacyRepoDir:
 
         dm = _make_download_manager()
         assert dm._find_legacy_repo_dir("Qwen/Qwen3.5-4B", "model", tmp_path) is None
+
+
+class TestLocalFilesOnlyCacheResolution:
+    def test_snapshot_without_revision_uses_single_cached_non_default_revision(self, tmp_path):
+        snapshot = tmp_path / "models" / "owner--repo" / "snapshots" / "v2.0.4"
+        snapshot.mkdir(parents=True)
+        (snapshot / "config.json").write_text("{}")
+
+        api = HubApi()
+        with mock.patch.object(api.legacy, "list_repo_files", side_effect=AssertionError("network should not be used")):
+            result = api.download_repo("owner/repo", "model", cache_dir=tmp_path, local_files_only=True)
+
+        assert result == snapshot
+        assert not (tmp_path / "models" / "owner--repo" / "snapshots" / "master").exists()
+
+    def test_file_without_revision_uses_single_cached_non_default_revision(self, tmp_path):
+        cached_file = tmp_path / "models" / "owner--repo" / "snapshots" / "v2.0.4" / "weights" / "model.bin"
+        cached_file.parent.mkdir(parents=True)
+        cached_file.write_bytes(b"cached")
+
+        api = HubApi()
+        with mock.patch.object(
+            api.downloader,
+            "_download_with_resume",
+            side_effect=AssertionError("network should not be used"),
+        ):
+            result = api.download_file(
+                "owner/repo",
+                "model",
+                "weights/model.bin",
+                cache_dir=tmp_path,
+                local_files_only=True,
+            )
+
+        assert result == cached_file
+        assert not (tmp_path / "models" / "owner--repo" / "snapshots" / "master").exists()
+
+    def test_cache_not_found_mentions_available_cached_revisions(self, tmp_path):
+        snapshot = tmp_path / "models" / "owner--repo" / "snapshots" / "v2.0.4"
+        snapshot.mkdir(parents=True)
+        (snapshot / "config.json").write_text("{}")
+
+        api = HubApi()
+        with pytest.raises(CacheNotFound) as exc_info:
+            api.download_repo(
+                "owner/repo",
+                "model",
+                revision="main",
+                cache_dir=tmp_path,
+                local_files_only=True,
+            )
+
+        message = str(exc_info.value)
+        assert "revision 'main'" in message
+        assert "Cached revisions" in message
+        assert "v2.0.4" in message

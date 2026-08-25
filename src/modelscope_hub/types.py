@@ -61,12 +61,90 @@ class UserInfo(_FromDictMixin):
         "name": "username",
         "avatar": "avatar_url",
     }
+    _id_keys: ClassVar[tuple[str, ...]] = (
+        "id",
+        "Id",
+        "ID",
+        "user_id",
+        "UserId",
+        "userId",
+        "uid",
+        "Uid",
+        "UID",
+        "sub",
+        "Sub",
+    )
+    _username_keys: ClassVar[tuple[str, ...]] = (
+        "Username",
+        "username",
+        # Observed OIDC-style shape on newer /users/me responses: the login
+        # handle may be in ``name`` while ``preferred_username`` can be empty or
+        # a display value, so keep the same priority as get_current_username().
+        "name",
+        "Name",
+        "preferred_username",
+        "PreferredUsername",
+        "preferredUsername",
+        "user_name",
+        "UserName",
+        "login",
+        "Login",
+        "nickname",
+        "Nickname",
+    )
+    _email_keys: ClassVar[tuple[str, ...]] = ("email", "Email", "mail", "Mail")
+    _avatar_keys: ClassVar[tuple[str, ...]] = (
+        "avatar_url",
+        "avatarUrl",
+        "AvatarUrl",
+        "avatar",
+        "Avatar",
+        "picture",
+        "Picture",
+    )
+    _description_keys: ClassVar[tuple[str, ...]] = (
+        "description",
+        "Description",
+        "bio",
+        "Bio",
+        "introduction",
+        "Introduction",
+    )
 
     id: str | int | None = None
     username: str | None = None
     email: str | None = None
     avatar_url: str | None = None
     description: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> UserInfo:
+        """Build user info from legacy ModelScope and newer OIDC-style keys."""
+        if not isinstance(data, Mapping) or not data:
+            return cls()
+        return cls(
+            id=cls._first_non_empty(data, cls._id_keys),
+            username=cls._as_str_or_none(cls._first_non_empty(data, cls._username_keys)),
+            email=cls._as_str_or_none(cls._first_non_empty(data, cls._email_keys)),
+            avatar_url=cls._as_str_or_none(cls._first_non_empty(data, cls._avatar_keys)),
+            description=cls._as_str_or_none(cls._first_non_empty(data, cls._description_keys)),
+        )
+
+    @staticmethod
+    def _first_non_empty(data: Mapping[str, Any], keys: tuple[str, ...]) -> Any | None:
+        for key in keys:
+            if key not in data:
+                continue
+            value = data[key]
+            if value is not None and value != "":
+                return value
+        return None
+
+    @staticmethod
+    def _as_str_or_none(value: Any | None) -> str | None:
+        if value is None:
+            return None
+        return str(value)
 
 
 # ---------------------------------------------------------------------------
