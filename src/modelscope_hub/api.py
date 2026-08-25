@@ -1376,7 +1376,7 @@ class HubApi:
             repo_id=repo_id,
             repo_type=str(rt),
             file_path=file_path,
-            revision=revision or "master",
+            revision=revision,
             cache_dir=Path(cache_dir) if cache_dir else None,
             local_dir=Path(local_dir) if local_dir else None,
             force=force,
@@ -1459,7 +1459,7 @@ class HubApi:
         return self.downloader.download_repo(
             repo_id=repo_id,
             repo_type=str(rt),
-            revision=revision or "master",
+            revision=revision,
             cache_dir=Path(cache_dir) if cache_dir else None,
             local_dir=Path(local_dir) if local_dir else None,
             allow_patterns=allow_patterns,

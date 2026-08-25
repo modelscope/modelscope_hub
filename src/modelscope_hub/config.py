@@ -14,6 +14,8 @@ This separation keeps the SDK trivially testable: tests can supply a
 from __future__ import annotations
 
 import os
+import stat
+import uuid
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +47,57 @@ _CREDENTIAL_FILE_NAMES: tuple[str, ...] = (
     GIT_TOKEN_FILE_NAME,
     USER_INFO_FILE_NAME,
 )
+
+# Credentials are private even when they are not bearer tokens: ``user`` stores
+# username/email and ``session`` is a stable install identifier.  Do not rely on
+# process umask for files under ``~/.modelscope/credentials``.
+_PRIVATE_DIR_MODE = stat.S_IRWXU
+_PRIVATE_FILE_MODE = stat.S_IRUSR | stat.S_IWUSR
+
+
+def _chmod_private(path: Path, mode: int) -> None:
+    """Best-effort chmod used for credential files and directories."""
+    try:
+        path.chmod(mode)
+    except OSError:
+        # Some filesystems/OSes do not implement POSIX modes fully. Credential
+        # reads should still work; tests assert exact modes only on POSIX.
+        pass
+
+
+def _write_private_bytes(path: Path, data: bytes) -> None:
+    """Atomically write *data* with a private initial mode.
+
+    Creating the temporary file with ``0o600`` avoids the short window where a
+    normal ``open``/``write_text`` would respect a permissive umask (commonly
+    yielding ``0644``) before a later chmod could tighten permissions.
+    """
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    fd: int | None = None
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _PRIVATE_FILE_MODE)
+        with os.fdopen(fd, "wb") as f:
+            fd = None
+            f.write(data)
+        _chmod_private(tmp, _PRIVATE_FILE_MODE)
+        os.replace(tmp, path)
+        _chmod_private(path, _PRIVATE_FILE_MODE)
+    except Exception:
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    """Atomically write UTF-8 text with ``0600`` permissions."""
+    _write_private_bytes(path, text.encode("utf-8"))
 
 
 def _expand(path: str | os.PathLike[str]) -> Path:
@@ -94,6 +147,7 @@ class HubConfig:
             else:
                 self.endpoint = DEFAULT_ENDPOINT
         self.endpoint = self.normalize_endpoint(self.endpoint)
+        self._repair_credential_permissions()
         # Token precedence: explicit arg > MODELSCOPE_API_TOKEN env var >
         # persisted credential. An explicitly provided value wins even when
         # empty ("" means "use no token"), so an explicit override never
@@ -138,8 +192,28 @@ class HubConfig:
             self.config_dir.mkdir(parents=True, exist_ok=True)
             self.cache_dir.mkdir(parents=True, exist_ok=True)
             self.credentials_dir.mkdir(parents=True, exist_ok=True)
+            _chmod_private(self.credentials_dir, _PRIVATE_DIR_MODE)
         except OSError as exc:  # pragma: no cover - filesystem dependent
             raise CacheError(f"Failed to create SDK directories: {exc}") from exc
+
+    def _repair_credential_permissions(self) -> None:
+        """Tighten permissions for credentials written by older versions.
+
+        This is intentionally non-creating: constructing ``HubConfig`` should
+        not materialise ``~/.modelscope`` for users who only use environment
+        variables. If a credentials directory already exists, repair its mode and
+        every known file inside it.
+        """
+        try:
+            if not self.credentials_dir.is_dir():
+                return
+            _chmod_private(self.credentials_dir, _PRIVATE_DIR_MODE)
+            for name in (*_CREDENTIAL_FILE_NAMES, SESSION_FILE_NAME):
+                path = self.credentials_dir / name
+                if path.is_file():
+                    _chmod_private(path, _PRIVATE_FILE_MODE)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------
     # Token persistence
@@ -230,13 +304,10 @@ class HubConfig:
     def save_cookies(self, cookies: object) -> None:
         """Pickle cookies to ``~/.modelscope/credentials/cookies``."""
         import pickle
-        import stat
 
         self.ensure_dirs()
         path = self.credentials_dir / COOKIES_FILE_NAME
-        with open(path, "wb") as f:
-            pickle.dump(cookies, f)
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        _write_private_bytes(path, pickle.dumps(cookies))
 
     def load_cookies(self) -> Any:
         """Load saved cookies, returning None if absent or expired."""
@@ -261,16 +332,13 @@ class HubConfig:
         """Save ``username:email`` to ``~/.modelscope/credentials/user``."""
         self.ensure_dirs()
         path = self.credentials_dir / USER_INFO_FILE_NAME
-        path.write_text(f"{username}:{email}", encoding="utf-8")
+        _write_private_text(path, f"{username}:{email}")
 
     def save_git_token(self, git_token: str) -> None:
         """Save git token to ``~/.modelscope/credentials/git_token``."""
-        import stat
-
         self.ensure_dirs()
         path = self.credentials_dir / GIT_TOKEN_FILE_NAME
-        path.write_text(git_token, encoding="utf-8")
-        path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        _write_private_text(path, git_token)
 
     def load_git_token(self) -> str | None:
         """Read git token from ``~/.modelscope/credentials/git_token``."""
@@ -288,19 +356,18 @@ class HubConfig:
         The session ID is persisted to ``~/.modelscope/credentials/session``
         and included in the User-Agent header for telemetry.
         """
-        import uuid as _uuid
-
         path = self.credentials_dir / SESSION_FILE_NAME
         if path.is_file():
             try:
                 sid = path.read_text(encoding="utf-8").strip()
                 if len(sid) == 32:
+                    _chmod_private(path, _PRIVATE_FILE_MODE)
                     return sid
             except OSError:
                 pass
-        sid = _uuid.uuid4().hex
+        sid = uuid.uuid4().hex
         self.ensure_dirs()
-        path.write_text(sid, encoding="utf-8")
+        _write_private_text(path, sid)
         return sid
 
 
