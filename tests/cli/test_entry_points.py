@@ -284,6 +284,23 @@ class TestPluginDiscovery:
         args = parser.parse_args(["download", "owner/name"])
         assert args.repo_id == "owner/name"
 
+    def test_legacy_studio_plugin_collision_is_silent(self, only_plugins, plugin_warnings):
+        """Old ``modelscope`` wheels still advertise ``studio``; hub now owns it."""
+
+        class _LegacyStudio:
+            name = "studio"
+
+            @staticmethod
+            def register(subparsers):
+                raise AssertionError("legacy studio plugin must be skipped")
+
+        only_plugins(_FakeEntryPoint("studio", _LegacyStudio))
+
+        parser = _build_parser()
+
+        assert plugin_warnings == []
+        assert parser.parse_args(["studio", "deploy", "owner/demo"]).studio_action == "deploy"
+
     def test_unimportable_plugin_does_not_break_the_cli(self, only_plugins, plugin_warnings):
         """Optional extras are legitimately absent, so this must stay quiet."""
         only_plugins(_FakeEntryPoint("broken", None, boom=True))
