@@ -13,7 +13,6 @@ import requests as _requests
 from ..api import HubApi
 from ..constants import RepoType
 from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
-from .constants import DEFAULT_DATASET_REVISION
 
 
 def _resolve_legacy_paths(
@@ -123,7 +122,7 @@ def dataset_file_download(
             dataset_id,
             repo_type=RepoType.DATASET,
             file_path=file_path,
-            revision=revision or DEFAULT_DATASET_REVISION,
+            revision=revision,
             cache_dir=effective_cache,
             local_dir=effective_local,
             local_files_only=local_files_only,

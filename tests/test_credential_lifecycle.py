@@ -12,6 +12,9 @@ Covers two defects that left the SDK half-authenticated:
 
 from __future__ import annotations
 
+import os
+import stat
+
 import pytest
 
 from modelscope_hub.api import HubApi
@@ -25,6 +28,18 @@ from modelscope_hub.constants import (
 
 TOKEN = "ms-token-under-test"
 GIT_TOKEN = "git-token-value"
+_PRIVATE_FILE_MODE = 0o600
+_PRIVATE_DIR_MODE = 0o700
+
+
+def _mode(path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+_requires_posix_permissions = pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX credential permission bits are not reliable on Windows.",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -46,6 +61,64 @@ def fully_logged_in(home) -> HubConfig:
     for name in (COOKIES_FILE_NAME, GIT_TOKEN_FILE_NAME, USER_INFO_FILE_NAME, SESSION_FILE_NAME):
         assert (config.credentials_dir / name).exists(), name
     return config
+
+
+@_requires_posix_permissions
+def test_credential_directory_is_private(isolated_home):
+    config = HubConfig(config_dir=isolated_home)
+
+    config.ensure_dirs()
+
+    assert _mode(config.credentials_dir) == _PRIVATE_DIR_MODE
+
+
+@_requires_posix_permissions
+def test_saved_credential_files_are_private(isolated_home):
+    config = fully_logged_in(isolated_home)
+
+    expected_private = (COOKIES_FILE_NAME, GIT_TOKEN_FILE_NAME, USER_INFO_FILE_NAME, SESSION_FILE_NAME)
+    for name in expected_private:
+        assert _mode(config.credentials_dir / name) == _PRIVATE_FILE_MODE, name
+
+
+@_requires_posix_permissions
+def test_existing_session_permission_is_repaired(isolated_home):
+    config = HubConfig(config_dir=isolated_home)
+    config.ensure_dirs()
+    session_path = config.credentials_dir / SESSION_FILE_NAME
+    existing_session = "a" * 32
+    session_path.write_text(existing_session, encoding="utf-8")
+    session_path.chmod(0o644)
+
+    assert config.get_session_id() == existing_session
+
+    assert _mode(session_path) == _PRIVATE_FILE_MODE
+
+
+@_requires_posix_permissions
+def test_existing_credential_permissions_are_repaired_on_config_load(isolated_home):
+    credentials = isolated_home / "credentials"
+    credentials.mkdir(parents=True)
+    credentials.chmod(0o755)
+    for name in (COOKIES_FILE_NAME, GIT_TOKEN_FILE_NAME, USER_INFO_FILE_NAME, SESSION_FILE_NAME):
+        path = credentials / name
+        path.write_text("placeholder", encoding="utf-8")
+        path.chmod(0o644)
+
+    HubConfig(config_dir=isolated_home, token="")
+
+    assert _mode(credentials) == _PRIVATE_DIR_MODE
+    for name in (COOKIES_FILE_NAME, GIT_TOKEN_FILE_NAME, USER_INFO_FILE_NAME, SESSION_FILE_NAME):
+        assert _mode(credentials / name) == _PRIVATE_FILE_MODE, name
+
+
+def test_config_load_does_not_create_credentials_directory(isolated_home):
+    credentials = isolated_home / "credentials"
+    assert not credentials.exists()
+
+    HubConfig(config_dir=isolated_home, token="")
+
+    assert not credentials.exists()
 
 
 # ---------------------------------------------------------------------------

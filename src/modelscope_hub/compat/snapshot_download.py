@@ -17,7 +17,6 @@ from ..api import HubApi
 from ..constants import RepoType
 from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
 from ..utils.patterns import normalize_patterns
-from .constants import DEFAULT_DATASET_REVISION
 from .file_download import _resolve_legacy_paths
 
 if TYPE_CHECKING:
@@ -150,7 +149,7 @@ def dataset_snapshot_download(
         result = api.download_repo(
             dataset_id,
             repo_type=RepoType.DATASET,
-            revision=revision or DEFAULT_DATASET_REVISION,
+            revision=revision,
             cache_dir=effective_cache,
             local_dir=effective_local,
             allow_patterns=include,

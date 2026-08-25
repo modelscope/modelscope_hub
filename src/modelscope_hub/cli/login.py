@@ -10,7 +10,7 @@ from __future__ import annotations
 import getpass
 from argparse import SUPPRESS
 
-from .base import CLICommand, SubParsers, error, info, make_api, success
+from .base import CLICommand, SubParsers, error, info, make_api, success, warn
 from .compat import add_subcmd_token_endpoint
 
 
@@ -100,3 +100,5 @@ class WhoamiCommand(CLICommand):
         info(f"id         : {user.id if user.id is not None else '-'}")
         if user.description:
             info(f"description: {user.description}")
+        if not user.username:
+            warn("Username is missing from the server response; showing '-' for username.")

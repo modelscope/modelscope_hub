@@ -203,8 +203,9 @@ class TestWhoamiExecute:
         args = parser.parse_args(["whoami"])
         with patch("modelscope_hub.cli.login.make_api", return_value=mock_api):
             WhoamiCommand(args).execute()
-        out = capsys.readouterr().out
-        assert "-" in out
+        captured = capsys.readouterr()
+        assert "-" in captured.out
+        assert "Username is missing" in captured.err
 
 
 # ===================================================================

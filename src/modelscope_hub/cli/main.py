@@ -42,6 +42,7 @@ from .login import LoginCommand, LogoutCommand, WhoamiCommand
 from .mcp import McpCommand
 from .repo import CreateCommand, DeleteCommand, InfoCommand, ListCommand, RepoCommand
 from .secret import SecretCommand
+from .studio import StudioCommand
 from .upload import UploadCommand
 
 # All top-level commands in registration order. Adding a new command means
@@ -61,6 +62,7 @@ _COMMANDS = [
     LogsCommand,
     SettingsCommand,
     SecretCommand,
+    StudioCommand,
     McpCommand,
     CacheCommand,
     AgentCommand,
@@ -68,6 +70,13 @@ _COMMANDS = [
 
 # Plugin entry-point group name
 _PLUGIN_GROUP = "modelscope_hub.cli_plugins"
+
+# ``studio`` used to be contributed by the umbrella SDK. It is now built into
+# this package so hub-only installs can manage Studio spaces, but older SDK
+# wheels still advertise the same plugin. Silently skipping that known legacy
+# plugin avoids noisy warnings on every command while preserving warnings for
+# genuinely unexpected collisions.
+_KNOWN_BUILTIN_PLUGIN_MIGRATIONS = frozenset({"studio"})
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +308,13 @@ def _discover_plugins(subparsers: Action) -> None:
             cmd_cls = ep.load()
             name = getattr(cmd_cls, "name", ep.name)
             if registered is not None and name in registered:
+                if name in _KNOWN_BUILTIN_PLUGIN_MIGRATIONS:
+                    log.debug(
+                        "Skipping legacy CLI plugin %r: command %r is built in.",
+                        ep.name,
+                        name,
+                    )
+                    continue
                 log.warning(
                     "Skipping CLI plugin %r: command %r is already registered.",
                     ep.name,
