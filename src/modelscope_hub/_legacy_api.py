@@ -264,6 +264,16 @@ class LegacyClient:
             resp = self._request("POST", segment, json_body=body)
         return self._json_data(resp)
 
+    def create_aigc_model(self, body: dict[str, Any]) -> dict:
+        """POST /api/v1/models/aigc — create an AIGC model repository.
+
+        AIGC repositories use a dedicated legacy endpoint and payload shape;
+        routing them through :meth:`create_repo` would incorrectly target the
+        ordinary ``/models`` endpoint.
+        """
+        resp = self._request("POST", "models/aigc", json_body=body)
+        return self._json_data(resp)
+
     def get_repo_info(self, repo_id: str, repo_type: str) -> dict:
         """GET /api/v1/{type}s/{repo_id} — fetch repository metadata.
 
@@ -637,6 +647,11 @@ class LegacyClient:
                 revision_map.get("Tags") or [],
             )
         return [], []
+
+    def create_aigc_model_tag(self, body: dict[str, Any]) -> dict:
+        """POST /api/v1/models/aigc/repo/tag — create an AIGC model version."""
+        resp = self._request("POST", "models/aigc/repo/tag", json_body=body)
+        return self._json_data(resp)
 
     def create_tag(
         self,
