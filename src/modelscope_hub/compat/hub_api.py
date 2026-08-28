@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlencode
 
 from ..api import HubApi
-from ..constants import RepoType
+from ..constants import RepoType, Visibility
 from ..errors import (
     AlreadyExistsError,
     AuthenticationError,
@@ -33,6 +33,32 @@ logger = get_logger("compat")
 DEFAULT_DATASET_REVISION = "master"
 
 META_FILES_FORMAT = {".json", ".csv", ".jsonl", ".tsv", ".py"}
+
+
+class _AigcUploadAdapter:
+    """Expose model-only upload methods expected by legacy ``AigcModel``."""
+
+    def __init__(self, api: HubApi) -> None:
+        self._api = api
+
+    def upload_file(self, *, repo_id: str, path_or_fileobj: Any, path_in_repo: str, **kwargs: Any) -> dict:
+        kwargs.pop("token", None)
+        return self._api.upload_file(
+            repo_id=repo_id,
+            repo_type=RepoType.MODEL,
+            path_or_fileobj=path_or_fileobj,
+            path_in_repo=path_in_repo,
+            **kwargs,
+        )
+
+    def upload_folder(self, *, repo_id: str, folder_path: Any, **kwargs: Any) -> dict | list[dict] | None:
+        kwargs.pop("token", None)
+        return self._api.upload_folder(
+            repo_id=repo_id,
+            repo_type=RepoType.MODEL,
+            folder_path=folder_path,
+            **kwargs,
+        )
 
 
 class LegacyHubApi:
@@ -164,14 +190,17 @@ class LegacyHubApi:
     def create_model(self, model_id: str, **kwargs: Any) -> str:
         """Create a model repo (legacy signature).
 
-        Returns the model repository URL for backward compatibility.
-        Converts authentication errors to ``ValueError`` for legacy callers.
+        AIGC models retain their dedicated endpoint and payload mapping. Plain
+        models continue to use the unified :meth:`create_repo` path.
         """
         # Pre-normalize: convert numeric string to int for backward compatibility
         visibility = kwargs.get("visibility")
         if isinstance(visibility, str) and visibility.isdigit():
             kwargs["visibility"] = int(visibility)
         try:
+            aigc_model = kwargs.pop("aigc_model", None)
+            if aigc_model is not None:
+                return self._create_aigc_model(model_id, aigc_model, kwargs)
             self.create_repo(model_id, repo_type="model", **kwargs)
         except (AuthenticationError, InvalidParameter) as e:
             if _is_auth_related(e):
@@ -179,6 +208,116 @@ class LegacyHubApi:
             raise
         ep = self._endpoint or self._api._config.endpoint
         return f"{ep}/models/{model_id}"
+
+    def _create_aigc_model(self, model_id: str, aigc_model: Any, kwargs: dict[str, Any]) -> str:
+        """Create an AIGC model without changing the plain-model code path."""
+        token = kwargs.pop("token", None)
+        endpoint = kwargs.pop("endpoint", None)
+        visibility = kwargs.pop("visibility", None)
+        license_name = kwargs.pop("license", None)
+        chinese_name = kwargs.pop("chinese_name", None)
+        original_model_id = kwargs.pop("original_model_id", "")
+        gated_mode = kwargs.pop("gated_mode", None)
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"create_model() got unexpected keyword argument(s): {unexpected}")
+
+        api = self._api
+        if token or endpoint:
+            api = HubApi(token=token, endpoint=endpoint or self._endpoint)
+        owner, name = api._parse_repo_id(model_id)
+        normalised_visibility = api._normalize_visibility(visibility)
+        if normalised_visibility is None:
+            normalised_visibility = int(Visibility.PUBLIC)
+
+        body: dict[str, Any] = {
+            "Path": owner,
+            "Name": name,
+            "ChineseName": chinese_name,
+            "Visibility": normalised_visibility,
+            "License": license_name or "Apache License 2.0",
+            "OriginalModelId": original_model_id,
+            "TrainId": os.environ.get("MODELSCOPE_TRAIN_ID", ""),
+            "TagShowName": aigc_model.tag,
+            "CoverImages": aigc_model.cover_images,
+            "AigcType": aigc_model.aigc_type,
+            "TagDescription": aigc_model.description,
+            "VisionFoundation": aigc_model.base_model_type,
+            "BaseModel": aigc_model.base_model_id or original_model_id,
+            "WeightsName": aigc_model.weight_filename,
+            "WeightsSha256": aigc_model.weight_sha256,
+            "WeightsSize": aigc_model.weight_size,
+            "ModelPath": aigc_model.model_path,
+            "TriggerWords": aigc_model.trigger_words,
+            "ModelSource": aigc_model.model_source,
+            "SubVisionFoundation": aigc_model.base_model_sub_type,
+        }
+        if aigc_model.official_tags:
+            body["OfficialTags"] = aigc_model.official_tags
+        if gated_mode is not None:
+            if normalised_visibility == int(Visibility.PRIVATE):
+                body["ProtectedMode"] = 1 if gated_mode else 2
+            else:
+                logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
+
+        cookies = api.get_cookies(access_token=token, cookies_required=True)
+        aigc_model.preupload_weights(
+            cookies=cookies,
+            headers={},
+            endpoint=api._config.endpoint,
+        )
+        api.legacy.create_aigc_model(body)
+        aigc_model.upload_to_repo(_AigcUploadAdapter(api), model_id, token)
+        return f"{api._config.endpoint}/models/{model_id}"
+
+    def create_model_tag(
+        self,
+        model_id: str,
+        tag_name: str,
+        endpoint: str | None = None,
+        token: str | None = None,
+        aigc_model: Any = None,
+    ) -> str:
+        """Create a model tag while preserving the AIGC-specific endpoint."""
+        if not model_id:
+            raise InvalidParameter("model_id is required!")
+        if not tag_name:
+            raise InvalidParameter("tag_name is required!")
+        if tag_name.lower() in {"main", "master"}:
+            raise InvalidParameter(
+                f'tag_name "{tag_name}" is not allowed. '
+                'Please use a different tag name (e.g., "v1.0", "v1.1", "latest"). '
+                'Reserved names: main, master'
+            )
+
+        api = self._api
+        if token or endpoint:
+            api = HubApi(token=token, endpoint=endpoint or self._endpoint)
+        if aigc_model is None:
+            api.create_repo_tag(model_id, RepoType.MODEL, tag_name, revision="master")
+        else:
+            owner, name = api._parse_repo_id(model_id)
+            cookies = api.get_cookies(access_token=token, cookies_required=True)
+            aigc_model.preupload_weights(
+                cookies=cookies,
+                headers={},
+                endpoint=api._config.endpoint,
+            )
+            api.legacy.create_aigc_model_tag(
+                {
+                    "CoverImages": aigc_model.cover_images,
+                    "Name": name,
+                    "Path": owner,
+                    "TagShowName": tag_name,
+                    "WeightsName": aigc_model.weight_filename,
+                    "WeightsSha256": aigc_model.weight_sha256,
+                    "WeightsSize": aigc_model.weight_size,
+                    "TriggerWords": aigc_model.trigger_words,
+                    "AigcType": aigc_model.aigc_type,
+                    "VisionFoundation": aigc_model.base_model_type,
+                }
+            )
+        return f"{api._config.endpoint}/models/{model_id}/tags/{tag_name}"
 
     def push_model(self, model_id: str, model_dir: str, **kwargs: Any) -> None:
         """Upload a model directory (legacy signature)."""
