@@ -19,8 +19,10 @@ from ..errors import (
     AlreadyExistsError,
     AuthenticationError,
     InvalidParameter,
+    NetworkError,
     NotExistError,
     PermissionDeniedError,
+    RequestTimeoutError,
     is_repo_exists_error,
 )
 from ..utils.logger import get_logger
@@ -59,6 +61,26 @@ class _AigcUploadAdapter:
             folder_path=folder_path,
             **kwargs,
         )
+
+
+def _resolve_aigc_readme_content(aigc_model: Any, override: str | None = None) -> str | None:
+    content = override if override is not None else getattr(aigc_model, "readme_content", None)
+    if content is not None and not isinstance(content, str):
+        raise InvalidParameter("readme_content must be a string or None")
+    return content
+
+
+def _upload_aigc_readme(api: HubApi, model_id: str, content: str | None, version: str) -> None:
+    if content is None:
+        return
+    api.upload_file(
+        repo_id=model_id,
+        repo_type=RepoType.MODEL,
+        path_or_fileobj=content.encode("utf-8"),
+        path_in_repo="README.md",
+        revision="master",
+        commit_message=f"Update README.md for AIGC version {version}",
+    )
 
 
 class LegacyHubApi:
@@ -218,6 +240,9 @@ class LegacyHubApi:
         chinese_name = kwargs.pop("chinese_name", None)
         original_model_id = kwargs.pop("original_model_id", "")
         gated_mode = kwargs.pop("gated_mode", None)
+        readme_content = _resolve_aigc_readme_content(
+            aigc_model, kwargs.pop("readme_content", None)
+        )
         if kwargs:
             unexpected = ", ".join(sorted(kwargs))
             raise TypeError(f"create_model() got unexpected keyword argument(s): {unexpected}")
@@ -268,6 +293,7 @@ class LegacyHubApi:
         )
         api.legacy.create_aigc_model(body)
         aigc_model.upload_to_repo(_AigcUploadAdapter(api), model_id, token)
+        _upload_aigc_readme(api, model_id, readme_content, aigc_model.tag)
         return f"{api._config.endpoint}/models/{model_id}"
 
     def create_model_tag(
@@ -277,8 +303,14 @@ class LegacyHubApi:
         endpoint: str | None = None,
         token: str | None = None,
         aigc_model: Any = None,
+        readme_content: str | None = None,
     ) -> str:
-        """Create a model tag while preserving the AIGC-specific endpoint."""
+        """Create a model tag while preserving the AIGC-specific endpoint.
+
+        For AIGC models, ``readme_content`` is committed to ``master`` before
+        the immutable version snapshot is created. When omitted, the value on
+        ``aigc_model.readme_content`` is used.
+        """
         if not model_id:
             raise InvalidParameter("model_id is required!")
         if not tag_name:
@@ -294,29 +326,49 @@ class LegacyHubApi:
         if token or endpoint:
             api = HubApi(token=token, endpoint=endpoint or self._endpoint)
         if aigc_model is None:
+            if readme_content is not None:
+                raise InvalidParameter("readme_content is only supported for AIGC model tags")
             api.create_repo_tag(model_id, RepoType.MODEL, tag_name, revision="master")
         else:
             owner, name = api._parse_repo_id(model_id)
+            content = _resolve_aigc_readme_content(aigc_model, readme_content)
             cookies = api.get_cookies(access_token=token, cookies_required=True)
             aigc_model.preupload_weights(
                 cookies=cookies,
                 headers={},
                 endpoint=api._config.endpoint,
             )
-            api.legacy.create_aigc_model_tag(
-                {
-                    "CoverImages": aigc_model.cover_images,
-                    "Name": name,
-                    "Path": owner,
-                    "TagShowName": tag_name,
-                    "WeightsName": aigc_model.weight_filename,
-                    "WeightsSha256": aigc_model.weight_sha256,
-                    "WeightsSize": aigc_model.weight_size,
-                    "TriggerWords": aigc_model.trigger_words,
-                    "AigcType": aigc_model.aigc_type,
-                    "VisionFoundation": aigc_model.base_model_type,
-                }
-            )
+            _upload_aigc_readme(api, model_id, content, tag_name)
+            try:
+                api.legacy.create_aigc_model_tag(
+                    {
+                        "CoverImages": aigc_model.cover_images,
+                        "Name": name,
+                        "Path": owner,
+                        "TagShowName": tag_name,
+                        "WeightsName": aigc_model.weight_filename,
+                        "WeightsSha256": aigc_model.weight_sha256,
+                        "WeightsSize": aigc_model.weight_size,
+                        "TriggerWords": aigc_model.trigger_words,
+                        "AigcType": aigc_model.aigc_type,
+                        "VisionFoundation": aigc_model.base_model_type,
+                    }
+                )
+            except (NetworkError, RequestTimeoutError):
+                for attempt in range(5):
+                    try:
+                        _, tags = api.legacy.list_revisions_detail(model_id, "model")
+                        if any(
+                            item.get("ShowName") == tag_name or item.get("Revision") == tag_name
+                            for item in tags
+                        ):
+                            break
+                    except (NetworkError, RequestTimeoutError):
+                        pass
+                    if attempt < 4:
+                        time.sleep(2)
+                else:
+                    raise
         return f"{api._config.endpoint}/models/{model_id}/tags/{tag_name}"
 
     def push_model(self, model_id: str, model_dir: str, **kwargs: Any) -> None:
@@ -363,8 +415,8 @@ class LegacyHubApi:
                 revision=kwargs.get("revision"),
                 allow_patterns=kwargs.get("allow_patterns"),
                 ignore_patterns=kwargs.get("ignore_patterns"),
-                max_workers=kwargs.get("max_workers", 4),
-                use_cache=kwargs.get("use_cache", True),
+                max_workers=kwargs.get("max_workers"),
+                use_cache=kwargs.get("use_cache"),
             )
         except (AuthenticationError, InvalidParameter) as e:
             if _is_auth_related(e):

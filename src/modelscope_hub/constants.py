@@ -223,6 +223,75 @@ def _env_int_mb(
     return default_mb * 1024 * 1024
 
 
+def _env_int_mb_with_deprecated_units(
+    name: str,
+    default_mb: int,
+    description: str,
+    category: str,
+    *,
+    deprecated_mb_names: tuple[str, ...] = (),
+    deprecated_byte_names: tuple[str, ...] = (),
+) -> int:
+    """Read an MB setting while preserving aliases with explicit units."""
+    deprecated_names = deprecated_mb_names + deprecated_byte_names
+    _env_register(name, str(default_mb), description, category, deprecated_names=deprecated_names)
+    default_bytes = default_mb * 1024 * 1024
+
+    raw = os.environ.get(name)
+    if raw is not None and raw.strip():
+        try:
+            value = int(raw)
+        except ValueError:
+            return default_bytes
+        return value * 1024 * 1024 if value > 0 else default_bytes
+
+    import warnings
+
+    for old in deprecated_mb_names:
+        raw = os.environ.get(old)
+        if raw is not None and raw.strip():
+            warnings.warn(
+                f"Environment variable {old!r} is deprecated, use {name!r} instead.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            try:
+                value = int(raw)
+            except ValueError:
+                return default_bytes
+            return value * 1024 * 1024 if value > 0 else default_bytes
+
+    for old in deprecated_byte_names:
+        raw = os.environ.get(old)
+        if raw is not None and raw.strip():
+            warnings.warn(
+                f"Environment variable {old!r} is deprecated, use {name!r} instead. "
+                f"Note: {name!r} expects a value in MB.",
+                FutureWarning,
+                stacklevel=2,
+            )
+            try:
+                value = int(raw)
+            except ValueError:
+                return default_bytes
+            return value if value > 0 else default_bytes
+
+    return default_bytes
+
+
+def _env_csv_frozenset(
+    name: str,
+    default: str,
+    description: str,
+    category: str,
+    *deprecated_names: str,
+) -> frozenset[str]:
+    """Read a comma-separated, case-normalised set from the environment."""
+    _env_register(name, default, description, category, deprecated_names=deprecated_names)
+    raw = _env(name, *deprecated_names) or default
+    return frozenset(item.strip().upper() for item in raw.split(",") if item.strip())
+
+
 def _env_bool(
     name: str,
     default: bool,
@@ -424,103 +493,237 @@ _env_register(
     ENV_INTER_CLOUD_REGIONS, "", "Comma-separated peer regions for cross-region internal acceleration", "Download"
 )
 
-UPLOAD_LFS_THRESHOLD: int = _env_int("UPLOAD_LFS_THRESHOLD", 5 * 1024 * 1024)
-UPLOAD_LFS_ENFORCE_THRESHOLD: int = _env_int("UPLOAD_LFS_ENFORCE_THRESHOLD", 1 * 1024 * 1024)
-
-# Upload: blob retry
-UPLOAD_BLOB_MAX_RETRIES: int = _env_int("UPLOAD_BLOB_MAX_RETRIES", 5)
-UPLOAD_BLOB_RETRY_BACKOFF: int = _env_int("UPLOAD_BLOB_RETRY_BACKOFF", 2)
-UPLOAD_BLOB_RETRY_MAX_WAIT: int = _env_int("UPLOAD_BLOB_RETRY_MAX_WAIT", 60)
-UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD: int = _env_int("UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD", 5 * 1024 * 1024)
-
-# Upload: blob timeout
-UPLOAD_BLOB_CONNECT_TIMEOUT: int = _env_int(
-    "MODELSCOPE_UPLOAD_CONNECT_TIMEOUT",
+# Upload: blob transport and retries
+UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS",
     30,
-    "Upload connect timeout (seconds)",
+    "Blob upload connection timeout (seconds)",
     "Upload",
+    "MODELSCOPE_UPLOAD_CONNECT_TIMEOUT",
     "UPLOAD_BLOB_CONNECT_TIMEOUT",
 )
-UPLOAD_BLOB_READ_TIMEOUT: int = _env_int(
-    "MODELSCOPE_UPLOAD_READ_TIMEOUT",
+UPLOAD_BLOB_READ_TIMEOUT_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_BLOB_READ_TIMEOUT_SECONDS",
     3600,
-    "Upload read timeout (seconds)",
+    "Blob upload socket read idle timeout (seconds)",
     "Upload",
+    "MODELSCOPE_UPLOAD_READ_TIMEOUT",
     "UPLOAD_BLOB_READ_TIMEOUT",
+    "UPLOAD_BLOB_TIMEOUT_SECONDS",
+)
+UPLOAD_BLOB_MAX_ATTEMPTS: int = _env_int(
+    "MODELSCOPE_UPLOAD_BLOB_MAX_ATTEMPTS",
+    5,
+    "Maximum total attempts for one blob upload",
+    "Upload",
+    "UPLOAD_BLOB_MAX_RETRIES",
+)
+UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS",
+    2,
+    "Exponential backoff base for blob retries (seconds)",
+    "Upload",
+    "UPLOAD_BLOB_RETRY_BACKOFF",
+)
+UPLOAD_BLOB_RETRY_MAX_DELAY_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_BLOB_RETRY_MAX_DELAY_SECONDS",
+    60,
+    "Maximum delay between blob attempts (seconds)",
+    "Upload",
+    "UPLOAD_BLOB_RETRY_MAX_WAIT",
+)
+UPLOAD_BLOB_PROGRESS_THRESHOLD_BYTES: int = _env_int_mb_with_deprecated_units(
+    "MODELSCOPE_UPLOAD_BLOB_PROGRESS_THRESHOLD_MB",
+    5,
+    "Minimum blob size for displaying upload progress (MB)",
+    "Upload",
+    deprecated_byte_names=("UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD",),
 )
 
-# Upload: urllib3 retry
-UPLOAD_RETRY_ALLOWED_METHODS: frozenset[str] = frozenset(
-    os.environ.get("UPLOAD_RETRY_ALLOWED_METHODS", "GET,HEAD,DELETE,OPTIONS,TRACE").split(",")
+# Upload: HTTP transport retries
+UPLOAD_HTTP_RETRY_ALLOWED_METHODS: frozenset[str] = _env_csv_frozenset(
+    "MODELSCOPE_UPLOAD_HTTP_RETRY_ALLOWED_METHODS",
+    "GET,HEAD,DELETE,OPTIONS,TRACE",
+    "HTTP methods eligible for automatic transport retries",
+    "Upload",
+    "UPLOAD_RETRY_ALLOWED_METHODS",
 )
 
-# Upload: batching
-UPLOAD_COMMIT_BATCH_SIZE: int = _env_int("UPLOAD_COMMIT_BATCH_SIZE", 256)
-UPLOAD_ADAPTIVE_BATCH_SIZE: bool = _env_bool("UPLOAD_ADAPTIVE_BATCH_SIZE", True)
-UPLOAD_VALIDATE_BLOB_BATCH_SIZE: int = _env_int("UPLOAD_VALIDATE_BLOB_BATCH_SIZE", 64)
-
-# Upload: commit retry
-UPLOAD_COMMIT_MAX_RETRIES: int = _env_int("UPLOAD_COMMIT_MAX_RETRIES", 5)
-UPLOAD_COMMIT_MAX_TOTAL_WAIT: int = _env_int(
-    "MODELSCOPE_UPLOAD_COMMIT_MAX_TOTAL_WAIT",
+# Upload: batching and commit retries
+UPLOAD_COMMIT_BATCH_MAX_OPERATIONS: int = _env_int(
+    "MODELSCOPE_UPLOAD_COMMIT_BATCH_MAX_OPERATIONS",
+    256,
+    "Maximum operations in one upload commit batch",
+    "Upload",
+    "UPLOAD_COMMIT_BATCH_SIZE",
+)
+UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS: int = _env_int(
+    "MODELSCOPE_UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS",
+    64,
+    "Maximum objects in one blob validation request",
+    "Upload",
+    "UPLOAD_VALIDATE_BLOB_BATCH_SIZE",
+)
+UPLOAD_ADAPTIVE_BATCHING_ENABLED: bool = _env_bool(
+    "MODELSCOPE_UPLOAD_ADAPTIVE_BATCHING_ENABLED",
+    True,
+    "Enable adaptive upload commit batch sizing",
+    "Upload",
+    "UPLOAD_ADAPTIVE_BATCH_SIZE",
+)
+UPLOAD_COMMIT_MAX_ATTEMPTS: int = _env_int(
+    "MODELSCOPE_UPLOAD_COMMIT_MAX_ATTEMPTS",
+    5,
+    "Maximum total attempts for one upload commit",
+    "Upload",
+    "UPLOAD_COMMIT_MAX_RETRIES",
+)
+UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS",
     300,
-    "Maximum total wait time (seconds) for commit retries in _commit_with_retry",
+    "Maximum total wait across upload commit retries (seconds)",
     "Upload",
+    "MODELSCOPE_UPLOAD_COMMIT_MAX_TOTAL_WAIT",
 )
-
-# Upload: consecutive batch failure limit
-UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT: int = _env_int(
-    "MODELSCOPE_UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",
+UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES: int = _env_int(
+    "MODELSCOPE_UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES",
     3,
-    "Maximum consecutive batch commit failures before aborting upload_folder",
+    "Maximum consecutive failed upload commit batches",
     "Upload",
+    "MODELSCOPE_UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",
 )
-
-# Upload: failed file retry & ReAct
-UPLOAD_FAILED_FILE_MAX_RETRIES: int = _env_int("UPLOAD_FAILED_FILE_MAX_RETRIES", 3)
-UPLOAD_REACT_ENABLED: bool = _env_bool("UPLOAD_REACT_ENABLED", True)
-UPLOAD_REACT_ROUND2_BASE_DELAY: int = _env_int("UPLOAD_REACT_ROUND2_BASE_DELAY", 2)
-UPLOAD_REACT_ROUND3_FILE_DELAY: int = _env_int("UPLOAD_REACT_ROUND3_FILE_DELAY", 5)
-UPLOAD_REACT_BACKOFF_MAX_EXPONENT: int = _env_int("UPLOAD_REACT_BACKOFF_MAX_EXPONENT", 5)
-UPLOAD_REACT_MAX_DELAY: int = _env_int("UPLOAD_REACT_MAX_DELAY", 120)
+UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS",
+    3,
+    "Maximum retry rounds for failed upload files",
+    "Upload",
+    "UPLOAD_FAILED_FILE_MAX_RETRIES",
+)
+# Upload: progressive recovery
+UPLOAD_RECOVERY_ENABLED: bool = _env_bool(
+    "MODELSCOPE_UPLOAD_RECOVERY_ENABLED",
+    True,
+    "Enable progressive upload recovery",
+    "Upload",
+    "UPLOAD_REACT_ENABLED",
+)
+UPLOAD_RECOVERY_SERIAL_BACKOFF_BASE_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_RECOVERY_SERIAL_BACKOFF_BASE_SECONDS",
+    2,
+    "Backoff base for serial upload recovery (seconds)",
+    "Upload",
+    "UPLOAD_REACT_ROUND2_BASE_DELAY",
+)
+UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS",
+    5,
+    "Delay between single-file recovery attempts (seconds)",
+    "Upload",
+    "UPLOAD_REACT_ROUND3_FILE_DELAY",
+)
+UPLOAD_RECOVERY_BACKOFF_MAX_EXPONENT: int = _env_int(
+    "MODELSCOPE_UPLOAD_RECOVERY_BACKOFF_MAX_EXPONENT",
+    5,
+    "Maximum exponent for progressive upload recovery backoff",
+    "Upload",
+    "UPLOAD_REACT_BACKOFF_MAX_EXPONENT",
+)
+UPLOAD_RECOVERY_MAX_DELAY_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_RECOVERY_MAX_DELAY_SECONDS",
+    120,
+    "Maximum progressive upload recovery delay (seconds)",
+    "Upload",
+    "UPLOAD_REACT_MAX_DELAY",
+)
 
 # Upload: workers
-DEFAULT_MAX_WORKERS: int = _env_int(
-    "MODELSCOPE_UPLOAD_MAX_WORKERS",
+UPLOAD_MAX_CONCURRENT_WORKERS: int = _env_int(
+    "MODELSCOPE_UPLOAD_MAX_CONCURRENT_WORKERS",
     min(8, (os.cpu_count() or 4) + 4),
-    "Default parallel worker threads (min(8, cpu+4))",
+    "Maximum concurrent upload workers",
     "Upload",
+    "MODELSCOPE_UPLOAD_MAX_WORKERS",
     "DEFAULT_MAX_WORKERS",
 )
 
 # Upload: cache / tracker
-UPLOAD_USE_CACHE: bool = _env_bool(
-    "MODELSCOPE_UPLOAD_CACHE",
+UPLOAD_CACHE_ENABLED: bool = _env_bool(
+    "MODELSCOPE_UPLOAD_CACHE_ENABLED",
     True,
     "Enable resumable upload cache",
     "Upload",
+    "MODELSCOPE_UPLOAD_CACHE",
     "UPLOAD_USE_CACHE",
 )
 UPLOAD_CACHE_FILE: str = ".ms_upload_cache"
 UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 
 # Upload: limits
-UPLOAD_MAX_FILE_SIZE: int = _env_int_mb(
+UPLOAD_LFS_FORCE_THRESHOLD_BYTES: int = _env_int_mb_with_deprecated_units(
+    "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB",
+    1,
+    "File-size threshold that forces LFS mode (MB)",
+    "Upload",
+    deprecated_byte_names=("UPLOAD_LFS_ENFORCE_THRESHOLD", "UPLOAD_SIZE_THRESHOLD_TO_ENFORCE_LFS"),
+)
+UPLOAD_MAX_FILE_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
     "MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB",
     100 * 1024,
-    "Max single file size (MB, default 100 GB)",
+    "Maximum single upload file size (MB, default 100 GB)",
     "Upload",
-    "UPLOAD_MAX_FILE_SIZE",
+    deprecated_mb_names=("UPLOAD_MAX_FILE_SIZE_MB",),
+    deprecated_byte_names=("UPLOAD_MAX_FILE_SIZE",),
 )
 UPLOAD_MAX_FILE_COUNT: int = _env_int(
     "MODELSCOPE_UPLOAD_MAX_FILE_COUNT",
     100_000,
-    "Max total files per upload",
+    "Maximum total files per upload",
     "Upload",
     "UPLOAD_MAX_FILE_COUNT",
 )
-UPLOAD_MAX_FILE_COUNT_IN_DIR: int = _env_int("UPLOAD_MAX_FILE_COUNT_IN_DIR", 50_000)
-UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT: int = _env_int("UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT", 500 * 1024 * 1024)
+UPLOAD_MAX_FILES_PER_DIRECTORY: int = _env_int(
+    "MODELSCOPE_UPLOAD_MAX_FILES_PER_DIRECTORY",
+    50_000,
+    "Maximum files in one uploaded directory",
+    "Upload",
+    "UPLOAD_MAX_FILE_COUNT_IN_DIR",
+)
+UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
+    "MODELSCOPE_UPLOAD_NORMAL_FILES_TOTAL_SIZE_MB",
+    500,
+    "Maximum total size of normal (non-LFS) files (MB)",
+    "Upload",
+    deprecated_byte_names=("UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT",),
+)
+
+# Deprecated Python aliases. Runtime code must use the explicit names above.
+UPLOAD_BLOB_CONNECT_TIMEOUT = UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS
+UPLOAD_BLOB_READ_TIMEOUT = UPLOAD_BLOB_READ_TIMEOUT_SECONDS
+UPLOAD_BLOB_MAX_RETRIES = UPLOAD_BLOB_MAX_ATTEMPTS
+UPLOAD_BLOB_RETRY_BACKOFF = UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS
+UPLOAD_BLOB_RETRY_MAX_WAIT = UPLOAD_BLOB_RETRY_MAX_DELAY_SECONDS
+UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD = UPLOAD_BLOB_PROGRESS_THRESHOLD_BYTES
+UPLOAD_RETRY_ALLOWED_METHODS = UPLOAD_HTTP_RETRY_ALLOWED_METHODS
+UPLOAD_COMMIT_BATCH_SIZE = UPLOAD_COMMIT_BATCH_MAX_OPERATIONS
+UPLOAD_VALIDATE_BLOB_BATCH_SIZE = UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS
+UPLOAD_ADAPTIVE_BATCH_SIZE = UPLOAD_ADAPTIVE_BATCHING_ENABLED
+UPLOAD_COMMIT_MAX_RETRIES = UPLOAD_COMMIT_MAX_ATTEMPTS
+UPLOAD_COMMIT_MAX_TOTAL_WAIT = UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS
+UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT = UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES
+UPLOAD_FAILED_FILE_MAX_RETRIES = UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS
+UPLOAD_REACT_ENABLED = UPLOAD_RECOVERY_ENABLED
+UPLOAD_REACT_ROUND2_BASE_DELAY = UPLOAD_RECOVERY_SERIAL_BACKOFF_BASE_SECONDS
+UPLOAD_REACT_ROUND3_FILE_DELAY = UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS
+UPLOAD_REACT_BACKOFF_MAX_EXPONENT = UPLOAD_RECOVERY_BACKOFF_MAX_EXPONENT
+UPLOAD_REACT_MAX_DELAY = UPLOAD_RECOVERY_MAX_DELAY_SECONDS
+DEFAULT_MAX_WORKERS = UPLOAD_MAX_CONCURRENT_WORKERS
+UPLOAD_USE_CACHE = UPLOAD_CACHE_ENABLED
+UPLOAD_LFS_ENFORCE_THRESHOLD = UPLOAD_LFS_FORCE_THRESHOLD_BYTES
+UPLOAD_MAX_FILE_COUNT_IN_DIR = UPLOAD_MAX_FILES_PER_DIRECTORY
+UPLOAD_MAX_FILE_SIZE = UPLOAD_MAX_FILE_SIZE_BYTES
+UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT = UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES
+# This setting never affected runtime upload selection; keep only the import.
+UPLOAD_LFS_THRESHOLD: int = 5 * 1024 * 1024
 
 # LFS suffix lists (from old SDK — determines upload mode regardless of size)
 MODEL_LFS_SUFFIX: list[str] = [
@@ -692,31 +895,56 @@ __all__ = [
     "StrEnum",
     "SESSION_FILE_NAME",
     "TEMPORARY_FOLDER_NAME",
+    "UPLOAD_ADAPTIVE_BATCHING_ENABLED",
     "UPLOAD_ADAPTIVE_BATCH_SIZE",
+    "UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",
     "UPLOAD_BLOB_CONNECT_TIMEOUT",
+    "UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS",
+    "UPLOAD_BLOB_MAX_ATTEMPTS",
     "UPLOAD_BLOB_MAX_RETRIES",
+    "UPLOAD_BLOB_PROGRESS_THRESHOLD_BYTES",
     "UPLOAD_BLOB_READ_TIMEOUT",
+    "UPLOAD_BLOB_READ_TIMEOUT_SECONDS",
     "UPLOAD_BLOB_RETRY_BACKOFF",
+    "UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS",
+    "UPLOAD_BLOB_RETRY_MAX_DELAY_SECONDS",
     "UPLOAD_BLOB_RETRY_MAX_WAIT",
     "UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD",
+    "UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS",
+    "UPLOAD_CACHE_ENABLED",
     "UPLOAD_CACHE_FILE",
+    "UPLOAD_COMMIT_BATCH_MAX_OPERATIONS",
     "UPLOAD_COMMIT_BATCH_SIZE",
-    "UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",
+    "UPLOAD_COMMIT_MAX_ATTEMPTS",
+    "UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES",
     "UPLOAD_COMMIT_MAX_RETRIES",
     "UPLOAD_COMMIT_MAX_TOTAL_WAIT",
+    "UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS",
     "UPLOAD_FAILED_FILE_MAX_RETRIES",
+    "UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS",
+    "UPLOAD_HTTP_RETRY_ALLOWED_METHODS",
     "UPLOAD_LEGACY_PROGRESS_FILE",
     "UPLOAD_LFS_ENFORCE_THRESHOLD",
+    "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
     "UPLOAD_LFS_THRESHOLD",
+    "UPLOAD_MAX_CONCURRENT_WORKERS",
     "UPLOAD_MAX_FILE_COUNT",
     "UPLOAD_MAX_FILE_COUNT_IN_DIR",
     "UPLOAD_MAX_FILE_SIZE",
+    "UPLOAD_MAX_FILE_SIZE_BYTES",
+    "UPLOAD_MAX_FILES_PER_DIRECTORY",
     "UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT",
+    "UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES",
     "UPLOAD_REACT_BACKOFF_MAX_EXPONENT",
     "UPLOAD_REACT_ENABLED",
     "UPLOAD_REACT_MAX_DELAY",
     "UPLOAD_REACT_ROUND2_BASE_DELAY",
     "UPLOAD_REACT_ROUND3_FILE_DELAY",
+    "UPLOAD_RECOVERY_BACKOFF_MAX_EXPONENT",
+    "UPLOAD_RECOVERY_ENABLED",
+    "UPLOAD_RECOVERY_MAX_DELAY_SECONDS",
+    "UPLOAD_RECOVERY_SERIAL_BACKOFF_BASE_SECONDS",
+    "UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS",
     "UPLOAD_RETRY_ALLOWED_METHODS",
     "UPLOAD_USE_CACHE",
     "UPLOAD_VALIDATE_BLOB_BATCH_SIZE",

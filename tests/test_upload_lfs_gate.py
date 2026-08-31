@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import modelscope_hub._upload as upload_module
 from modelscope_hub._upload import UploadManager
+from modelscope_hub.errors import NetworkError
 
 
 def _make_manager() -> tuple[UploadManager, MagicMock]:
@@ -84,6 +86,52 @@ def test_upload_folder_mixed_files_only_uploads_lfs_blob(tmp_path: Path) -> None
         "README.md": "normal",
         "model.bin": "lfs",
     }
+
+
+def test_upload_folder_retries_blob_with_configured_max_attempts(tmp_path: Path, monkeypatch) -> None:
+    manager, client = _make_manager()
+    (tmp_path / "model.bin").write_bytes(b"weights")
+    attempts = 0
+
+    def upload_blob(*, upload_url: str, data, size: int) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise NetworkError("temporary upload failure")
+        while data.read(1024 * 1024):
+            pass
+
+    client.upload_blob.side_effect = upload_blob
+    monkeypatch.setattr(upload_module, "UPLOAD_BLOB_MAX_ATTEMPTS", 3)
+    monkeypatch.setattr(upload_module, "UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS", 1)
+    monkeypatch.setattr(upload_module.time, "sleep", lambda _seconds: None)
+
+    manager.upload_folder(
+        repo_id="owner/repo",
+        repo_type="model",
+        folder_path=tmp_path,
+        max_workers=1,
+        use_cache=False,
+        disable_tqdm=True,
+    )
+
+    assert client.upload_blob.call_count == 3
+
+
+def test_upload_folder_uses_configured_cache_default(tmp_path: Path, monkeypatch) -> None:
+    manager, _ = _make_manager()
+    (tmp_path / "README.md").write_bytes(b"hello")
+    monkeypatch.setattr(upload_module, "UPLOAD_CACHE_ENABLED", False)
+
+    manager.upload_folder(
+        repo_id="owner/repo",
+        repo_type="model",
+        folder_path=tmp_path,
+        max_workers=1,
+        disable_tqdm=True,
+    )
+
+    assert not (tmp_path / ".ms_upload_cache").exists()
 
 
 def test_upload_folder_cached_normal_hash_skips_batch_blob_validation(tmp_path: Path) -> None:

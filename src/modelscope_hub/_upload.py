@@ -32,32 +32,32 @@ from tqdm.auto import tqdm
 from .constants import (
     DATASET_LFS_SUFFIX,
     DEFAULT_IGNORE_PATTERNS,
-    DEFAULT_MAX_WORKERS,
     MODEL_LFS_SUFFIX,
-    UPLOAD_ADAPTIVE_BATCH_SIZE,
-    UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT,
-    UPLOAD_BLOB_MAX_RETRIES,
-    UPLOAD_BLOB_RETRY_BACKOFF,
-    UPLOAD_BLOB_RETRY_MAX_WAIT,
-    UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD,
+    UPLOAD_ADAPTIVE_BATCHING_ENABLED,
+    UPLOAD_BLOB_MAX_ATTEMPTS,
+    UPLOAD_BLOB_PROGRESS_THRESHOLD_BYTES,
+    UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS,
+    UPLOAD_BLOB_RETRY_MAX_DELAY_SECONDS,
+    UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS,
+    UPLOAD_CACHE_ENABLED,
     UPLOAD_CACHE_FILE,
-    UPLOAD_COMMIT_BATCH_SIZE,
-    UPLOAD_COMMIT_MAX_RETRIES,
-    UPLOAD_COMMIT_MAX_TOTAL_WAIT,
-    UPLOAD_FAILED_FILE_MAX_RETRIES,
+    UPLOAD_COMMIT_BATCH_MAX_OPERATIONS,
+    UPLOAD_COMMIT_MAX_ATTEMPTS,
+    UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES,
+    UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS,
+    UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS,
     UPLOAD_LEGACY_PROGRESS_FILE,
-    UPLOAD_LFS_ENFORCE_THRESHOLD,
+    UPLOAD_LFS_FORCE_THRESHOLD_BYTES,
+    UPLOAD_MAX_CONCURRENT_WORKERS,
     UPLOAD_MAX_FILE_COUNT,
-    UPLOAD_MAX_FILE_COUNT_IN_DIR,
-    UPLOAD_MAX_FILE_SIZE,
-    UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT,
-    UPLOAD_REACT_BACKOFF_MAX_EXPONENT,
-    UPLOAD_REACT_ENABLED,
-    UPLOAD_REACT_MAX_DELAY,
-    UPLOAD_REACT_ROUND2_BASE_DELAY,
-    UPLOAD_REACT_ROUND3_FILE_DELAY,
-    UPLOAD_USE_CACHE,
-    UPLOAD_VALIDATE_BLOB_BATCH_SIZE,
+    UPLOAD_MAX_FILE_SIZE_BYTES,
+    UPLOAD_MAX_FILES_PER_DIRECTORY,
+    UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES,
+    UPLOAD_RECOVERY_BACKOFF_MAX_EXPONENT,
+    UPLOAD_RECOVERY_ENABLED,
+    UPLOAD_RECOVERY_MAX_DELAY_SECONDS,
+    UPLOAD_RECOVERY_SERIAL_BACKOFF_BASE_SECONDS,
+    UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS,
 )
 from .errors import (
     FileIntegrityError,
@@ -121,14 +121,14 @@ class _CountedReadStream:
 
 def _is_lfs(path: str | Path, size: int, repo_type: str) -> bool:
     """Determine if a file should use LFS upload mode (suffix + size threshold)."""
-    if size > UPLOAD_LFS_ENFORCE_THRESHOLD:
+    if size > UPLOAD_LFS_FORCE_THRESHOLD_BYTES:
         return True
     suffix = Path(path).suffix.lower() if isinstance(path, (str, Path)) else ""
     if repo_type == "model":
         return suffix in MODEL_LFS_SUFFIX
     if repo_type == "dataset":
         return suffix in DATASET_LFS_SUFFIX
-    return size > UPLOAD_LFS_ENFORCE_THRESHOLD
+    return size > UPLOAD_LFS_FORCE_THRESHOLD_BYTES
 
 
 def _upload_mode(path: str | Path, size: int, repo_type: str) -> str:
@@ -651,7 +651,7 @@ class UploadManager:
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         max_workers: int | None = None,
-        use_cache: bool = UPLOAD_USE_CACHE,
+        use_cache: bool | None = None,
         disable_tqdm: bool = False,
         sync_remote_repo: bool = False,
     ) -> dict | list[dict] | None:
@@ -664,7 +664,9 @@ class UploadManager:
             raise InvalidParameter("The arg `folder_path` cannot be None!")
 
         if max_workers is None:
-            max_workers = DEFAULT_MAX_WORKERS
+            max_workers = UPLOAD_MAX_CONCURRENT_WORKERS
+        if use_cache is None:
+            use_cache = UPLOAD_CACHE_ENABLED
 
         # Normalize patterns
         allow_patterns = allow_patterns or None
@@ -723,7 +725,7 @@ class UploadManager:
         sorted_files = sorted(sorted_files, key=lambda x: x[0])
 
         # Calculate batch size
-        if UPLOAD_ADAPTIVE_BATCH_SIZE:
+        if UPLOAD_ADAPTIVE_BATCHING_ENABLED:
             commit_batch_size = _calculate_adaptive_batch_size(len(sorted_files))
             logger.info(
                 "Adaptive batch size: %d (for %d files)",
@@ -731,7 +733,11 @@ class UploadManager:
                 len(sorted_files),
             )
         else:
-            commit_batch_size = UPLOAD_COMMIT_BATCH_SIZE if UPLOAD_COMMIT_BATCH_SIZE > 0 else len(sorted_files)
+            commit_batch_size = (
+                UPLOAD_COMMIT_BATCH_MAX_OPERATIONS
+                if UPLOAD_COMMIT_BATCH_MAX_OPERATIONS > 0
+                else len(sorted_files)
+            )
 
         # Initialize tracker
         folder_path_resolved = Path(folder_path).resolve()
@@ -944,7 +950,7 @@ class UploadManager:
                             )
                             consecutive_failures += 1
 
-                        if consecutive_failures >= UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT:
+                        if consecutive_failures >= UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES:
                             raise RuntimeError(
                                 f"Upload aborted: {consecutive_failures} consecutive batch commits failed. "
                                 f"Last error: {e}"
@@ -953,7 +959,7 @@ class UploadManager:
             tracker.save()
 
         # ReAct progressive retry fallback
-        if total_failed_files and UPLOAD_REACT_ENABLED:
+        if total_failed_files and UPLOAD_RECOVERY_ENABLED:
             total_failed_files, react_commits, react_results = self._retry_failed_files_react(
                 failed_files=total_failed_files,
                 tracker=tracker,
@@ -1177,7 +1183,7 @@ class UploadManager:
         if upload_mode == "lfs":
             # Retry loop for transient blob upload failures
             last_error = None
-            for attempt in range(UPLOAD_BLOB_MAX_RETRIES):
+            for attempt in range(UPLOAD_BLOB_MAX_ATTEMPTS):
                 try:
                     if isinstance(file_path, (str, os.PathLike)):
                         current_size = os.path.getsize(str(file_path))
@@ -1193,7 +1199,7 @@ class UploadManager:
                         sha256=file_hash,
                         size=file_size,
                         data=file_path,
-                        disable_tqdm=(disable_tqdm or file_size <= UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD),
+                        disable_tqdm=(disable_tqdm or file_size <= UPLOAD_BLOB_PROGRESS_THRESHOLD_BYTES),
                         tqdm_desc=f"[Uploading {file_path_in_repo}]",
                         pre_validated=pre_validated,
                     )
@@ -1202,15 +1208,15 @@ class UploadManager:
                     if isinstance(e, HubError) and not e.retryable:
                         raise
                     last_error = e
-                    if attempt < UPLOAD_BLOB_MAX_RETRIES - 1:
+                    if attempt < UPLOAD_BLOB_MAX_ATTEMPTS - 1:
                         wait = min(
-                            UPLOAD_BLOB_RETRY_BACKOFF**attempt,
-                            UPLOAD_BLOB_RETRY_MAX_WAIT,
+                            UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS**attempt,
+                            UPLOAD_BLOB_RETRY_MAX_DELAY_SECONDS,
                         )
                         logger.warning(
                             "Blob upload attempt %d/%d failed for %s: %s, retrying in %ds ...",
                             attempt + 1,
-                            UPLOAD_BLOB_MAX_RETRIES,
+                            UPLOAD_BLOB_MAX_ATTEMPTS,
                             file_path_in_repo,
                             e,
                             wait,
@@ -1218,7 +1224,9 @@ class UploadManager:
                         time.sleep(wait)
             else:
                 raise StorageError(
-                    f"Blob upload failed after {UPLOAD_BLOB_MAX_RETRIES} attempts for {file_path_in_repo}: {last_error}"
+                    "Blob upload failed after "
+                    f"{UPLOAD_BLOB_MAX_ATTEMPTS} attempts for "
+                    f"{file_path_in_repo}: {last_error}"
                 ) from last_error
         else:
             if isinstance(file_path, (str, os.PathLike)):
@@ -1331,7 +1339,7 @@ class UploadManager:
         objects: list[dict],
     ) -> dict[str, str | None]:
         result: dict[str, str | None] = {}
-        batch_size = UPLOAD_VALIDATE_BLOB_BATCH_SIZE
+        batch_size = UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS
 
         for i in range(0, len(objects), batch_size):
             chunk = objects[i : i + batch_size]
@@ -1355,11 +1363,11 @@ class UploadManager:
         operations: list[dict],
         commit_message: str,
         revision: str = "master",
-        max_retries: int = UPLOAD_COMMIT_MAX_RETRIES,
+        max_attempts: int = UPLOAD_COMMIT_MAX_ATTEMPTS,
     ) -> dict:
         last_error: Exception | None = None
         start_time = time.monotonic()
-        for attempt in range(max_retries):
+        for attempt in range(max_attempts):
             try:
                 return self._client.create_commit(
                     repo_id=repo_id,
@@ -1382,17 +1390,17 @@ class UploadManager:
 
             wait = min(2**attempt, 60)
             elapsed = time.monotonic() - start_time
-            if elapsed + wait > UPLOAD_COMMIT_MAX_TOTAL_WAIT:
+            if elapsed + wait > UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS:
                 logger.error(
                     "Commit total wait time would exceed %ds (already %.1fs elapsed), aborting retries.",
-                    UPLOAD_COMMIT_MAX_TOTAL_WAIT,
+                    UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS,
                     elapsed,
                 )
                 break
             logger.warning(
                 "Commit attempt %d/%d failed: %s, retrying in %ds ...",
                 attempt + 1,
-                max_retries,
+                max_attempts,
                 last_error,
                 wait,
             )
@@ -1400,7 +1408,7 @@ class UploadManager:
 
         if isinstance(last_error, HubError):
             raise last_error
-        raise NetworkError(f"Commit failed after {max_retries} attempts: {last_error}") from last_error
+        raise NetworkError(f"Commit failed after {max_attempts} attempts: {last_error}") from last_error
 
     # ------------------------------------------------------------------
     # Internal: build operations
@@ -1510,10 +1518,10 @@ class UploadManager:
             parent = str(path.parent)
             dir_counts[parent] = dir_counts.get(parent, 0) + 1
         for dir_path, count in dir_counts.items():
-            if count > UPLOAD_MAX_FILE_COUNT_IN_DIR:
+            if count > UPLOAD_MAX_FILES_PER_DIRECTORY:
                 raise InvalidParameter(
                     f"Too many files ({count}) in directory {dir_path}, "
-                    f"max allowed per directory: {UPLOAD_MAX_FILE_COUNT_IN_DIR}"
+                    f"max allowed per directory: {UPLOAD_MAX_FILES_PER_DIRECTORY}"
                 )
 
         # File size checks
@@ -1521,21 +1529,21 @@ class UploadManager:
         normal_size = 0
         for path in all_files:
             fsize = path.stat().st_size
-            if fsize > UPLOAD_MAX_FILE_SIZE:
+            if fsize > UPLOAD_MAX_FILE_SIZE_BYTES:
                 raise InvalidParameter(
                     f"File too large: {path} ({fsize / 1024 / 1024:.1f} MB), "
-                    f"max allowed: {UPLOAD_MAX_FILE_SIZE / 1024 / 1024:.0f} MB"
+                    f"max allowed: {UPLOAD_MAX_FILE_SIZE_BYTES / 1024 / 1024:.0f} MB"
                 )
             total_size += fsize
             if not _is_lfs(str(path), fsize, repo_type):
                 normal_size += fsize
 
-        if normal_size > UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT:
+        if normal_size > UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES:
             logger.warning(
                 "Total normal (non-LFS) file size %d bytes exceeds soft "
                 "limit %d bytes. Consider using LFS for large files.",
                 normal_size,
-                UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT,
+                UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES,
             )
 
         relpath_to_abspath = {path.relative_to(folder).as_posix(): str(path) for path in all_files}
@@ -1611,14 +1619,14 @@ class UploadManager:
                 "parallel": False,
                 "workers": 1,
                 "batch_size": 8,
-                "delay": UPLOAD_REACT_ROUND2_BASE_DELAY,
+                "delay": UPLOAD_RECOVERY_SERIAL_BACKOFF_BASE_SECONDS,
             },
             {
                 "name": "Round 3 (single-file)",
                 "parallel": False,
                 "workers": 1,
                 "batch_size": 1,
-                "delay": UPLOAD_REACT_ROUND3_FILE_DELAY,
+                "delay": UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS,
             },
         ]
 
@@ -1661,11 +1669,11 @@ class UploadManager:
                 for i, ((path_in_repo_r, file_path_r), _err) in enumerate(retryable):
                     if cfg["delay"] > 0 and i > 0:
                         delay = (
-                            cfg["delay"] * (2 ** min(i, UPLOAD_REACT_BACKOFF_MAX_EXPONENT))
+                            cfg["delay"] * (2 ** min(i, UPLOAD_RECOVERY_BACKOFF_MAX_EXPONENT))
                             if round_idx == 1
                             else cfg["delay"]
                         )
-                        delay = min(delay, UPLOAD_REACT_MAX_DELAY)
+                        delay = min(delay, UPLOAD_RECOVERY_MAX_DELAY_SECONDS)
                         logger.info(
                             "[ReAct] Waiting %ds before retrying %s ...",
                             delay,
@@ -1812,13 +1820,13 @@ class UploadManager:
         disable_tqdm: bool = False,
     ) -> list[tuple]:
         total_failed_files = list(failed_files)
-        for retry_round in range(UPLOAD_FAILED_FILE_MAX_RETRIES):
+        for retry_round in range(UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS):
             if not total_failed_files:
                 break
             logger.info(
                 "Retry round %d/%d: re-uploading %d failed file(s) ...",
                 retry_round + 1,
-                UPLOAD_FAILED_FILE_MAX_RETRIES,
+                UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS,
                 len(total_failed_files),
             )
             retry_failures: list[tuple] = []

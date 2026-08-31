@@ -1224,7 +1224,7 @@ class HubApi:
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         max_workers: int | None = None,
-        use_cache: bool = True,
+        use_cache: bool | None = None,
         disable_tqdm: bool = False,
         sync_remote_repo: bool = False,
     ) -> dict | list[dict] | None:
@@ -1257,7 +1257,9 @@ class HubApi:
         max_workers : int, optional
             Concurrency for parallel uploads. Defaults to adaptive.
         use_cache : bool, optional
-            Use ``.ms_upload_cache`` for resumable uploads. Default True.
+            Use resumable upload caching. When omitted, read
+            ``MODELSCOPE_UPLOAD_CACHE_ENABLED``. Explicit ``True`` or ``False``
+            overrides the environment configuration.
         disable_tqdm : bool, optional
             Disable progress bars. Default False.
         sync_remote_repo : bool, optional
