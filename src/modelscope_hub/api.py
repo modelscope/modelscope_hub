@@ -1903,6 +1903,7 @@ class HubApi:
         search: str | None = None,
         page_number: int = 1,
         page_size: int = 10,
+        filter: Mapping[str, Any] | None = None,
         **extra: Any,
     ) -> PagedResult[dict]:
         """List MCP servers via the OpenAPI surface.
@@ -1915,6 +1916,8 @@ class HubApi:
             1-based page index. Default is 1.
         page_size : int, optional
             Items per page. Default is 10.
+        filter : Mapping, optional
+            Nested MCP filter object.
         **extra : Any
             Additional filter fields. ``None`` values are dropped.
 
@@ -1933,6 +1936,7 @@ class HubApi:
             search=search,
             page_number=page_number,
             page_size=page_size,
+            filter=filter,
             extra={k: v for k, v in extra.items() if v is not None} or None,
         )
         items, total, page, size = self._extract_paged(payload)
