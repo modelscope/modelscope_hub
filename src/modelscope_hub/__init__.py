@@ -12,7 +12,7 @@ from __future__ import annotations
 from ._download import ProgressCallback, TqdmCallback
 from .api import HubApi
 from .config import HubConfig, get_default_config, set_default_config
-from .constants import License, RepoType, Visibility
+from .constants import License, RepoType, StudioVisibility, TokenScope, Visibility
 from .errors import (
     APIError,
     AuthenticationError,
@@ -28,6 +28,7 @@ from .errors import (
     NotSupportedError,
     PermissionDeniedError,
     PermissionError,
+    QuotaExceededError,
     RateLimitError,
     RequestTimeoutError,
     ServerError,
@@ -58,6 +59,8 @@ __all__ = [
     # Enums
     "License",
     "RepoType",
+    "StudioVisibility",
+    "TokenScope",
     "Visibility",
     # Progress callbacks
     "ProgressCallback",
@@ -85,6 +88,7 @@ __all__ = [
     "NotExistError",
     "NotSupportedError",
     "PermissionDeniedError",
+    "QuotaExceededError",
     "RateLimitError",
     "RequestTimeoutError",
     "ServerError",

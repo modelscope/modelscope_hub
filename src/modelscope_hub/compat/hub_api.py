@@ -36,6 +36,30 @@ DEFAULT_DATASET_REVISION = "master"
 
 META_FILES_FORMAT = {".json", ".csv", ".jsonl", ".tsv", ".py"}
 
+# Transport/credential arguments the legacy surface accepts on almost every
+# method. They steer *how* a call is made and are never part of a request body.
+_CONTROL_KWARGS: frozenset[str] = frozenset({"token", "endpoint", "cookies", "headers", "timeout", "max_retries"})
+
+
+def _split_control_kwargs(kwargs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split legacy ``**kwargs`` into ``(control, passthrough)``.
+
+    The old ``modelscope.hub.api.HubApi`` signature let callers append
+    ``token=`` / ``endpoint=`` to any method, so shims declared ``**kwargs``
+    and forwarded it wholesale. For the Studio endpoints that turned out to be
+    actively harmful: ``update_studio_settings`` forwards its kwargs as the
+    settings payload, so the caller's API token ended up inside the ``PATCH``
+    request body (and therefore in server-side request logs), while
+    ``get_studio_logs`` forwards into a keyword-only signature and raised
+    ``TypeError: got an unexpected keyword argument 'token'``.
+
+    Splitting them apart keeps the permissive legacy signature while ensuring
+    only genuine business fields reach the wire.
+    """
+    control = {k: v for k, v in kwargs.items() if k in _CONTROL_KWARGS}
+    passthrough = {k: v for k, v in kwargs.items() if k not in _CONTROL_KWARGS}
+    return control, passthrough
+
 
 class _AigcUploadAdapter:
     """Expose model-only upload methods expected by legacy ``AigcModel``."""
@@ -529,33 +553,90 @@ class LegacyHubApi:
     # ------------------------------------------------------------------
     # Studio operations
     # ------------------------------------------------------------------
+    def _api_for(self, control: dict[str, Any]) -> HubApi:
+        """Resolve the :class:`HubApi` a single legacy call should run against.
+
+        The legacy surface treats ``token`` / ``endpoint`` as per-call
+        overrides. Honouring them requires a separate client, because the
+        ambient one is bound to the credential it was constructed with -- which
+        is why passing ``token=`` used to be silently ignored here.
+        """
+        token = control.get("token")
+        endpoint = control.get("endpoint")
+        config = self._api._config
+        if (token and token != config.token) or (endpoint and endpoint != config.endpoint):
+            return HubApi(token=token or config.token, endpoint=endpoint or config.endpoint)
+        return self._api
+
     def deploy_studio(self, studio_id: str, **kwargs: Any) -> dict:
-        return self._api.deploy_repo(
+        control, passthrough = _split_control_kwargs(kwargs)
+        return self._api_for(control).deploy_repo(
             studio_id,
             RepoType.STUDIO,
-            payload=kwargs.get("payload"),
+            payload=passthrough.get("payload"),
         )
 
     def stop_studio(self, studio_id: str, **kwargs: Any) -> dict:
-        return self._api.stop_repo(studio_id, RepoType.STUDIO)
+        control, _ = _split_control_kwargs(kwargs)
+        return self._api_for(control).stop_repo(studio_id, RepoType.STUDIO)
 
     def get_studio_logs(self, studio_id: str, **kwargs: Any) -> dict:
-        return self._api.get_repo_logs(studio_id, RepoType.STUDIO, **kwargs)
+        control, passthrough = _split_control_kwargs(kwargs)
+        return self._api_for(control).get_repo_logs(studio_id, RepoType.STUDIO, **passthrough)
 
     def update_studio_settings(self, studio_id: str, **kwargs: Any) -> dict:
-        return self._api.update_repo_settings(studio_id, RepoType.STUDIO, **kwargs)
+        control, settings = _split_control_kwargs(kwargs)
+        return self._api_for(control).update_repo_settings(studio_id, RepoType.STUDIO, **settings)
 
     def list_studio_secrets(self, studio_id: str, **kwargs: Any) -> list:
-        return self._api.list_secrets(studio_id, RepoType.STUDIO)
+        control, _ = _split_control_kwargs(kwargs)
+        return self._api_for(control).list_secrets(studio_id, RepoType.STUDIO)
 
     def add_studio_secret(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
-        self._api.add_secret(studio_id, key, value, RepoType.STUDIO)
+        control, _ = _split_control_kwargs(kwargs)
+        self._api_for(control).add_secret(studio_id, key, value, RepoType.STUDIO)
 
     def update_studio_secret(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
-        self._api.update_secret(studio_id, key, value, RepoType.STUDIO)
+        control, _ = _split_control_kwargs(kwargs)
+        self._api_for(control).update_secret(studio_id, key, value, RepoType.STUDIO)
 
     def delete_studio_secret(self, studio_id: str, key: str, **kwargs: Any) -> None:
-        self._api.delete_secret(studio_id, key, RepoType.STUDIO)
+        control, _ = _split_control_kwargs(kwargs)
+        self._api_for(control).delete_secret(studio_id, key, RepoType.STUDIO)
+
+    def list_studios(self, **kwargs: Any) -> dict:
+        """List Studio spaces as a raw paginated dict."""
+        control, passthrough = _split_control_kwargs(kwargs)
+        result = self._api_for(control).list_repos(RepoType.STUDIO, **passthrough)
+        return result.to_dict()
+
+    def list_studio_variables(self, studio_id: str, **kwargs: Any) -> list:
+        control, _ = _split_control_kwargs(kwargs)
+        return self._api_for(control).list_variables(studio_id, RepoType.STUDIO)
+
+    def add_studio_variable(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
+        control, _ = _split_control_kwargs(kwargs)
+        self._api_for(control).add_variable(studio_id, key, value, RepoType.STUDIO)
+
+    def update_studio_variable(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
+        control, _ = _split_control_kwargs(kwargs)
+        self._api_for(control).update_variable(studio_id, key, value, RepoType.STUDIO)
+
+    def delete_studio_variable(self, studio_id: str, key: str, **kwargs: Any) -> None:
+        control, _ = _split_control_kwargs(kwargs)
+        self._api_for(control).delete_variable(studio_id, key, RepoType.STUDIO)
+
+    def list_studio_hardware(self, **kwargs: Any) -> list:
+        control, passthrough = _split_control_kwargs(kwargs)
+        return self._api_for(control).list_studio_hardware(**passthrough)
+
+    def list_studio_base_images(self, **kwargs: Any) -> list:
+        control, _ = _split_control_kwargs(kwargs)
+        return self._api_for(control).list_studio_base_images()
+
+    def list_studio_sdk_versions(self, **kwargs: Any) -> list:
+        control, passthrough = _split_control_kwargs(kwargs)
+        return self._api_for(control).list_studio_sdk_versions(**passthrough)
 
     # ------------------------------------------------------------------
     # Revision resolution
