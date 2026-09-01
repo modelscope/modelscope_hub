@@ -29,9 +29,11 @@ import requests
 from .config import HubConfig, get_default_config
 from .constants import API_CONNECT_TIMEOUT, API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX
 from .errors import (
+    APIError,
     AuthenticationError,
     InvalidParameter,
     NetworkError,
+    PermissionDeniedError,
     RateLimitError,
     RequestTimeoutError,
     ServerError,
@@ -262,6 +264,7 @@ class OpenAPIClient:
         files: Any | None = None,
         headers: Mapping[str, str] | None = None,
         require_token: bool = True,
+        anonymous: bool = False,
         unwrap: bool = True,
         timeout: float | None = None,
     ) -> Any:
@@ -277,7 +280,7 @@ class OpenAPIClient:
         # Only attach our credentials when the target is our own host. Absolute
         # URLs to a foreign host (e.g. signed OSS upload URLs) must not receive
         # the Authorization header or session cookies, which carry the token.
-        if self._same_host_as_endpoint(final_url):
+        if self._same_host_as_endpoint(final_url) and not anonymous:
             merged_headers = dict(self._auth_headers(require_token=require_token))
             request_cookies = self._auth_cookies()
         else:
@@ -678,6 +681,26 @@ class OpenAPIClient:
     # ==================================================================
     # MCP (Model Context Protocol) servers
     # ==================================================================
+    @staticmethod
+    def _flatten_mcp_list_params(body: Mapping[str, Any]) -> QueryParams:
+        params: QueryParams = []
+        for key, value in body.items():
+            if key == "filter" and isinstance(value, Mapping):
+                for filter_key, filter_value in value.items():
+                    params.append(
+                        (
+                            f"filter.{filter_key}",
+                            str(filter_value).lower() if isinstance(filter_value, bool) else str(filter_value),
+                        )
+                    )
+            else:
+                params.append((key, str(value).lower() if isinstance(value, bool) else str(value)))
+        return params
+
+    @staticmethod
+    def _is_method_or_route_unsupported(exc: APIError) -> bool:
+        return exc.status_code in (404, 405, 501)
+
     def list_mcp_servers(
         self,
         *,
@@ -687,7 +710,12 @@ class OpenAPIClient:
         filter: Mapping[str, Any] | None = None,
         extra: Mapping[str, Any] | None = None,
     ) -> JSON:
-        """``PUT /mcp/servers`` — discover MCP servers (JSON body, not query).
+        """``GET /mcp/servers`` — discover MCP servers.
+
+        Falls back to the historical ``PUT /mcp/servers`` endpoint while the
+        service rolls out GET support. If an optional token is rejected by the
+        legacy PUT list endpoint, retry anonymously so readonly or stale tokens
+        do not block public MCP discovery.
 
         Parameters
         ----------
@@ -708,7 +736,26 @@ class OpenAPIClient:
         if extra:
             body.update(extra)
         body = {k: v for k, v in body.items() if v is not None}
-        return self._request("PUT", "/mcp/servers", json_body=body, require_token=False)
+        params = self._flatten_mcp_list_params(body)
+        has_token = self._resolve_token() is not None
+        try:
+            return self._request("GET", "/mcp/servers", params=params, require_token=False)
+        except APIError as exc:
+            if not self._is_method_or_route_unsupported(exc):
+                raise
+
+        try:
+            return self._request("PUT", "/mcp/servers", json_body=body, require_token=False)
+        except (AuthenticationError, PermissionDeniedError):
+            if not has_token:
+                raise
+            return self._request(
+                "PUT",
+                "/mcp/servers",
+                json_body=body,
+                require_token=False,
+                anonymous=True,
+            )
 
     def list_operational_mcp_servers(self) -> JSON:
         """``GET /mcp/servers/operational`` — list servers deployed by the caller."""

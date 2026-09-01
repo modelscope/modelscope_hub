@@ -9,7 +9,10 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
 from modelscope_hub.compat import LegacyHubApi
+from modelscope_hub.errors import InvalidParameter, RequestTimeoutError
 
 
 class _FakeAigcModel:
@@ -27,6 +30,7 @@ class _FakeAigcModel:
     model_source = "USER_UPLOAD"
     base_model_sub_type = "SD_XL"
     official_tags = ["photography"]
+    readme_content = None
 
     def __init__(self):
         self.preupload_weights = mock.MagicMock()
@@ -141,6 +145,31 @@ class TestCreateModelLegacyCompat:
         assert model_id == "owner/aigc-model"
         assert token is None
 
+    def test_aigc_model_uploads_optional_readme_after_creation(self):
+        api = LegacyHubApi(endpoint="https://modelscope.cn", token="ms-test")
+        aigc_model = _FakeAigcModel()
+
+        with mock.patch.object(api._api.legacy, "_request", return_value=_response()) as request:
+            api.create_model(
+                "owner/aigc-model",
+                aigc_model=aigc_model,
+                readme_content="# Initial AIGC README\n",
+            )
+
+        assert request.call_count == 3
+        create_call, ensure_repo_call, readme_commit_call = request.call_args_list
+        assert create_call.args == ("POST", "models/aigc")
+        assert ensure_repo_call.args == ("POST", "models")
+        assert readme_commit_call.args == (
+            "POST",
+            "repos/models/owner/aigc-model/commit/master",
+        )
+        commit_body = readme_commit_call.kwargs["json_body"]
+        assert commit_body["commit_message"] == "Update README.md for AIGC version v1.0"
+        operation = commit_body["actions"][0]
+        assert operation["path"] == "README.md"
+        assert operation["content"] == "IyBJbml0aWFsIEFJR0MgUkVBRE1FCg=="
+
     def test_plain_model_keeps_generic_create_repo_path(self):
         api = LegacyHubApi(endpoint="https://modelscope.cn", token="ms-test")
 
@@ -192,6 +221,83 @@ class TestCreateModelLegacyCompat:
         aigc_model.preupload_weights.assert_called_once()
         assert url == "https://modelscope.cn/models/owner/aigc-model/tags/v1.1"
 
+    def test_aigc_model_tag_reconciles_timeout_with_remote_state(self):
+        api = LegacyHubApi(endpoint="https://modelscope.cn", token="ms-test")
+        aigc_model = _FakeAigcModel()
+        revisions = _response(
+            {
+                "RevisionMap": {
+                    "Branches": [{"Revision": "master", "ShowName": ""}],
+                    "Tags": [{"Revision": "20260829162320", "ShowName": "v1.3"}],
+                }
+            }
+        )
+
+        with mock.patch.object(
+            api._api.legacy,
+            "_request",
+            side_effect=[RequestTimeoutError("timed out"), revisions],
+        ) as request:
+            url = api.create_model_tag(
+                "owner/aigc-model",
+                "v1.3",
+                aigc_model=aigc_model,
+            )
+
+        assert request.call_count == 2
+        assert request.call_args_list[0].args == ("POST", "models/aigc/repo/tag")
+        assert request.call_args_list[1].args == (
+            "GET",
+            "models/owner/aigc-model/revisions",
+        )
+        assert url == "https://modelscope.cn/models/owner/aigc-model/tags/v1.3"
+
+    def test_aigc_model_tag_uploads_readme_before_snapshot(self):
+        api = LegacyHubApi(endpoint="https://modelscope.cn", token="ms-test")
+        aigc_model = _FakeAigcModel()
+        aigc_model.readme_content = "# Version v1.3\n\nCustom README content.\n"
+
+        with mock.patch.object(api._api.legacy, "_request", return_value=_response()) as request:
+            api.create_model_tag(
+                "owner/aigc-model",
+                "v1.3",
+                aigc_model=aigc_model,
+            )
+
+        assert request.call_count == 3
+        create_repo_call, readme_commit_call, tag_call = request.call_args_list
+        assert create_repo_call.args == ("POST", "models")
+        assert readme_commit_call.args == (
+            "POST",
+            "repos/models/owner/aigc-model/commit/master",
+        )
+        commit_body = readme_commit_call.kwargs["json_body"]
+        assert commit_body["commit_message"] == "Update README.md for AIGC version v1.3"
+        operation = commit_body["actions"][0]
+        assert operation["path"] == "README.md"
+        assert operation["type"] == "normal"
+        assert operation["encoding"] == "base64"
+        assert operation["content"] == "IyBWZXJzaW9uIHYxLjMKCkN1c3RvbSBSRUFETUUgY29udGVudC4K"
+        assert tag_call.args == ("POST", "models/aigc/repo/tag")
+        assert tag_call.kwargs["json_body"]["TagShowName"] == "v1.3"
+
+    def test_explicit_readme_content_overrides_aigc_model_value(self):
+        api = LegacyHubApi(endpoint="https://modelscope.cn", token="ms-test")
+        aigc_model = _FakeAigcModel()
+        aigc_model.readme_content = "model value"
+
+        with mock.patch.object(api._api.legacy, "_request", return_value=_response()) as request:
+            api.create_model_tag(
+                "owner/aigc-model",
+                "v1.3",
+                aigc_model=aigc_model,
+                readme_content="explicit value",
+            )
+
+        commit_body = request.call_args_list[1].kwargs["json_body"]
+        operation = commit_body["actions"][0]
+        assert operation["content"] == "ZXhwbGljaXQgdmFsdWU="
+
     def test_plain_model_tag_keeps_generic_endpoint(self):
         api = LegacyHubApi(endpoint="https://modelscope.cn", token="ms-test")
 
@@ -206,3 +312,18 @@ class TestCreateModelLegacyCompat:
             "Ref": "master",
         }
         assert url == "https://modelscope.cn/models/owner/plain-model/tags/v1.1"
+
+    def test_plain_model_tag_rejects_aigc_readme_content(self):
+        api = LegacyHubApi(endpoint="https://modelscope.cn", token="ms-test")
+
+        with mock.patch.object(api._api.legacy, "_request") as request:
+            with pytest.raises(
+                InvalidParameter,
+                match="readme_content is only supported for AIGC model tags",
+            ):
+                api.create_model_tag(
+                    "owner/plain-model",
+                    "v1.1",
+                    readme_content="# AIGC only",
+                )
+        request.assert_not_called()

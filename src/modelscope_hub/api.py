@@ -1224,7 +1224,7 @@ class HubApi:
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         max_workers: int | None = None,
-        use_cache: bool = True,
+        use_cache: bool | None = None,
         disable_tqdm: bool = False,
         sync_remote_repo: bool = False,
     ) -> dict | list[dict] | None:
@@ -1257,7 +1257,9 @@ class HubApi:
         max_workers : int, optional
             Concurrency for parallel uploads. Defaults to adaptive.
         use_cache : bool, optional
-            Use ``.ms_upload_cache`` for resumable uploads. Default True.
+            Use resumable upload caching. When omitted, read
+            ``MODELSCOPE_UPLOAD_CACHE_ENABLED``. Explicit ``True`` or ``False``
+            overrides the environment configuration.
         disable_tqdm : bool, optional
             Disable progress bars. Default False.
         sync_remote_repo : bool, optional
@@ -1901,6 +1903,7 @@ class HubApi:
         search: str | None = None,
         page_number: int = 1,
         page_size: int = 10,
+        filter: Mapping[str, Any] | None = None,
         **extra: Any,
     ) -> PagedResult[dict]:
         """List MCP servers via the OpenAPI surface.
@@ -1913,6 +1916,8 @@ class HubApi:
             1-based page index. Default is 1.
         page_size : int, optional
             Items per page. Default is 10.
+        filter : Mapping, optional
+            Nested MCP filter object.
         **extra : Any
             Additional filter fields. ``None`` values are dropped.
 
@@ -1931,6 +1936,7 @@ class HubApi:
             search=search,
             page_number=page_number,
             page_size=page_size,
+            filter=filter,
             extra={k: v for k, v in extra.items() if v is not None} or None,
         )
         items, total, page, size = self._extract_paged(payload)
