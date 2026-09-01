@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import warnings
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 
@@ -139,6 +140,22 @@ _REGISTERED_NAMES: set[str] = set()
 _DEPRECATED_LOOKUP: dict[str, tuple[str, ...]] = {}
 
 
+def _warn_deprecated_env(
+    old: str,
+    name: str,
+    *,
+    expects_mb: bool = False,
+    stacklevel: int = 3,
+) -> None:
+    """Warn that a legacy environment variable remains temporarily supported."""
+    message = (
+        f"Environment variable {old!r} is deprecated and will be removed in a future version. Use {name!r} instead."
+    )
+    if expects_mb:
+        message += f" {name!r} expects a value in MB."
+    warnings.warn(message, FutureWarning, stacklevel=stacklevel)
+
+
 def _env(name: str, *deprecated_names: str) -> str | None:
     """Read an env var, falling back to deprecated names with a warning."""
     value = os.environ.get(name)
@@ -147,13 +164,7 @@ def _env(name: str, *deprecated_names: str) -> str | None:
     for old in deprecated_names:
         value = os.environ.get(old)
         if value is not None:
-            import warnings
-
-            warnings.warn(
-                f"Environment variable {old!r} is deprecated, use {name!r} instead.",
-                FutureWarning,
-                stacklevel=4,
-            )
+            _warn_deprecated_env(old, name, stacklevel=4)
             return value
     return None
 
@@ -207,14 +218,7 @@ def _env_int_mb(
     for old in all_deprecated:
         raw = os.environ.get(old)
         if raw is not None and raw.strip():
-            import warnings
-
-            warnings.warn(
-                f"Environment variable {old!r} is deprecated, "
-                f"use {name!r} instead. Note: {name!r} expects a value in MB.",
-                FutureWarning,
-                stacklevel=2,
-            )
+            _warn_deprecated_env(old, name, expects_mb=True, stacklevel=2)
             try:
                 value = int(raw)
             except ValueError:
@@ -245,16 +249,10 @@ def _env_int_mb_with_deprecated_units(
             return default_bytes
         return value * 1024 * 1024 if value > 0 else default_bytes
 
-    import warnings
-
     for old in deprecated_mb_names:
         raw = os.environ.get(old)
         if raw is not None and raw.strip():
-            warnings.warn(
-                f"Environment variable {old!r} is deprecated, use {name!r} instead.",
-                FutureWarning,
-                stacklevel=2,
-            )
+            _warn_deprecated_env(old, name, stacklevel=2)
             try:
                 value = int(raw)
             except ValueError:
@@ -264,12 +262,7 @@ def _env_int_mb_with_deprecated_units(
     for old in deprecated_byte_names:
         raw = os.environ.get(old)
         if raw is not None and raw.strip():
-            warnings.warn(
-                f"Environment variable {old!r} is deprecated, use {name!r} instead. "
-                f"Note: {name!r} expects a value in MB.",
-                FutureWarning,
-                stacklevel=2,
-            )
+            _warn_deprecated_env(old, name, expects_mb=True, stacklevel=2)
             try:
                 value = int(raw)
             except ValueError:
@@ -655,6 +648,20 @@ UPLOAD_CACHE_ENABLED: bool = _env_bool(
     "MODELSCOPE_UPLOAD_CACHE",
     "UPLOAD_USE_CACHE",
 )
+_env_register(
+    "MODELSCOPE_UPLOAD_IGNORE_FILE_PATTERN",
+    "-",
+    "File pattern excluded by legacy push_to_hub uploads",
+    "Upload",
+    deprecated_names=("UPLOAD_IGNORE_FILE_PATTERN",),
+)
+
+
+def get_upload_ignore_file_pattern() -> str | None:
+    """Return the optional ignore pattern used by legacy ``push_to_hub`` calls."""
+    return _env("MODELSCOPE_UPLOAD_IGNORE_FILE_PATTERN", "UPLOAD_IGNORE_FILE_PATTERN")
+
+
 UPLOAD_CACHE_FILE: str = ".ms_upload_cache"
 UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 
@@ -887,6 +894,7 @@ __all__ = [
     "ENV_REGISTRY",
     "EnvVar",
     "FILE_HASH_FIELD",
+    "get_upload_ignore_file_pattern",
     "LEGACY_API_PREFIX",
     "License",
     "MODEL_LFS_SUFFIX",

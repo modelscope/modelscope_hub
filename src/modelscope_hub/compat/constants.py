@@ -25,6 +25,7 @@ from ..constants import (
     UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS,
     RepoType,
     Visibility,
+    get_upload_ignore_file_pattern,  # noqa: F401
 )
 from ..constants import (
     UPLOAD_LFS_THRESHOLD as _UPLOAD_LFS_THRESHOLD,

@@ -710,12 +710,13 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MODELSCOPE_UPLOAD_MAX_WORKERS` | `min(8, cpu+4)` | Default parallel worker threads |
-| `MODELSCOPE_UPLOAD_CACHE` | `true` | Enable resumable upload cache |
+| `MODELSCOPE_UPLOAD_MAX_CONCURRENT_WORKERS` | `min(8, cpu+4)` | Default parallel worker threads |
+| `MODELSCOPE_UPLOAD_CACHE_ENABLED` | `true` | Enable resumable upload cache |
+| `MODELSCOPE_UPLOAD_IGNORE_FILE_PATTERN` | — | File pattern excluded by legacy `push_to_hub` uploads |
 | `MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB` | `102400` | Max single file size (MB, default 100 GB) |
 | `MODELSCOPE_UPLOAD_MAX_FILE_COUNT` | `100000` | Max total files per upload |
-| `MODELSCOPE_UPLOAD_CONNECT_TIMEOUT` | `30` | Upload connect timeout (seconds) |
-| `MODELSCOPE_UPLOAD_READ_TIMEOUT` | `3600` | Upload read timeout (seconds) |
+| `MODELSCOPE_UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS` | `30` | Blob upload connect timeout (seconds) |
+| `MODELSCOPE_UPLOAD_BLOB_READ_TIMEOUT_SECONDS` | `3600` | Blob upload read timeout (seconds) |
 
 **Logging:**
 
@@ -725,8 +726,9 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | `MODELSCOPE_NO_DEPRECATION_WARNINGS` | — | Suppress deprecation warnings |
 
 > Old variable names (e.g. `API_TIMEOUT`, `DOWNLOAD_RETRY_TIMES`, `UPLOAD_USE_CACHE`) are
-> still accepted but emit a `FutureWarning`. Run `ms-hub list --envs` to see which deprecated
-> names are active in your environment.
+> deprecated and remain temporarily supported. They emit a `FutureWarning` and will be removed
+> in a future version. Run `ms-hub list --envs` to see which deprecated names are active in your
+> environment.
 
 </details>
 

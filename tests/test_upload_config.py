@@ -16,17 +16,22 @@ from modelscope_hub.config import HubConfig
 _SRC = str(Path(__file__).parents[1] / "src")
 
 
-def _run_constants(*names: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def _run_constants(
+    *names: str,
+    env: dict[str, str] | None = None,
+    call: str | None = None,
+) -> subprocess.CompletedProcess[str]:
     child_env = os.environ.copy()
     for name in list(child_env):
         if name.startswith(("MODELSCOPE_UPLOAD_", "UPLOAD_")):
             child_env.pop(name)
     child_env.update(env or {})
     child_env["PYTHONPATH"] = _SRC
+    result = f"getattr(c, {call!r})()" if call is not None else f"{{name: getattr(c, name) for name in {names!r}}}"
     script = (
         "from dataclasses import asdict, is_dataclass; import json; "
         "import modelscope_hub.constants as c; "
-        f"print(json.dumps({{name: getattr(c, name) for name in {names!r}}}, "
+        f"print(json.dumps({result}, "
         "default=lambda value: asdict(value) if is_dataclass(value) else sorted(value)))"
     )
     return subprocess.run(
@@ -82,6 +87,27 @@ def test_legacy_timeout_seconds_only_controls_read_timeout() -> None:
     }
     assert "UPLOAD_BLOB_TIMEOUT_SECONDS" in result.stderr
     assert "FutureWarning" in result.stderr
+    assert "will be removed in a future version" in result.stderr
+
+
+def test_upload_ignore_file_pattern_env_migration() -> None:
+    legacy = _run_constants(
+        env={"UPLOAD_IGNORE_FILE_PATTERN": "*.legacy"},
+        call="get_upload_ignore_file_pattern",
+    )
+    assert json.loads(legacy.stdout) == "*.legacy"
+    assert "UPLOAD_IGNORE_FILE_PATTERN" in legacy.stderr
+    assert "will be removed in a future version" in legacy.stderr
+
+    canonical = _run_constants(
+        env={
+            "MODELSCOPE_UPLOAD_IGNORE_FILE_PATTERN": "*.canonical",
+            "UPLOAD_IGNORE_FILE_PATTERN": "*.legacy",
+        },
+        call="get_upload_ignore_file_pattern",
+    )
+    assert json.loads(canonical.stdout) == "*.canonical"
+    assert "FutureWarning" not in canonical.stderr
 
 
 def test_size_units_and_http_method_normalization() -> None:
@@ -231,6 +257,7 @@ def test_deprecated_upload_env_aliases(
     assert json.loads(result.stdout)[constant] == expected
     assert legacy_env in result.stderr
     assert "FutureWarning" in result.stderr
+    assert "will be removed in a future version" in result.stderr
 
 
 def test_deprecated_http_retry_methods_are_normalized() -> None:
@@ -244,14 +271,12 @@ def test_deprecated_http_retry_methods_are_normalized() -> None:
         "PATCH",
     ]
     assert "UPLOAD_RETRY_ALLOWED_METHODS" in result.stderr
+    assert "will be removed in a future version" in result.stderr
 
 
 def test_dead_lfs_threshold_is_not_registered() -> None:
     result = _run_constants("ENV_REGISTRY")
-    names = {
-        item["name"]
-        for item in json.loads(result.stdout)["ENV_REGISTRY"]
-    }
+    names = {item["name"] for item in json.loads(result.stdout)["ENV_REGISTRY"]}
     assert "UPLOAD_LFS_THRESHOLD" not in names
 
 
