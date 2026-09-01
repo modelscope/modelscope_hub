@@ -734,9 +734,7 @@ class UploadManager:
             )
         else:
             commit_batch_size = (
-                UPLOAD_COMMIT_BATCH_MAX_OPERATIONS
-                if UPLOAD_COMMIT_BATCH_MAX_OPERATIONS > 0
-                else len(sorted_files)
+                UPLOAD_COMMIT_BATCH_MAX_OPERATIONS if UPLOAD_COMMIT_BATCH_MAX_OPERATIONS > 0 else len(sorted_files)
             )
 
         # Initialize tracker

@@ -240,9 +240,7 @@ class LegacyHubApi:
         chinese_name = kwargs.pop("chinese_name", None)
         original_model_id = kwargs.pop("original_model_id", "")
         gated_mode = kwargs.pop("gated_mode", None)
-        readme_content = _resolve_aigc_readme_content(
-            aigc_model, kwargs.pop("readme_content", None)
-        )
+        readme_content = _resolve_aigc_readme_content(aigc_model, kwargs.pop("readme_content", None))
         if kwargs:
             unexpected = ", ".join(sorted(kwargs))
             raise TypeError(f"create_model() got unexpected keyword argument(s): {unexpected}")
@@ -319,7 +317,7 @@ class LegacyHubApi:
             raise InvalidParameter(
                 f'tag_name "{tag_name}" is not allowed. '
                 'Please use a different tag name (e.g., "v1.0", "v1.1", "latest"). '
-                'Reserved names: main, master'
+                "Reserved names: main, master"
             )
 
         api = self._api
@@ -358,10 +356,7 @@ class LegacyHubApi:
                 for attempt in range(5):
                     try:
                         _, tags = api.legacy.list_revisions_detail(model_id, "model")
-                        if any(
-                            item.get("ShowName") == tag_name or item.get("Revision") == tag_name
-                            for item in tags
-                        ):
+                        if any(item.get("ShowName") == tag_name or item.get("Revision") == tag_name for item in tags):
                             break
                     except (NetworkError, RequestTimeoutError):
                         pass

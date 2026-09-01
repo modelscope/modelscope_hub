@@ -690,14 +690,11 @@ class OpenAPIClient:
                     params.append(
                         (
                             f"filter.{filter_key}",
-                            str(filter_value).lower()
-                            if isinstance(filter_value, bool) else str(filter_value),
+                            str(filter_value).lower() if isinstance(filter_value, bool) else str(filter_value),
                         )
                     )
             else:
-                params.append(
-                    (key, str(value).lower() if isinstance(value, bool) else str(value))
-                )
+                params.append((key, str(value).lower() if isinstance(value, bool) else str(value)))
         return params
 
     @staticmethod

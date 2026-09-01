@@ -805,8 +805,7 @@ class LegacyClient:
                 upload_url,
                 data=data,
                 headers=upload_headers,
-                timeout=timeout
-                or (UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS, UPLOAD_BLOB_READ_TIMEOUT_SECONDS),
+                timeout=timeout or (UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS, UPLOAD_BLOB_READ_TIMEOUT_SECONDS),
             )
         except requests.ConnectionError as exc:
             raise NetworkError(f"Blob upload connection failed: {exc}") from exc
