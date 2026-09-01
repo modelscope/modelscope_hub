@@ -33,15 +33,11 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
-**v0.5.0** (2026-09-02)
-- **Feature**: complete Agent-IDP OpenAPI support for Ed25519 identity management, OIDC discovery/JWKS, and signed JWT issuance through `HubApi` and `ms-hub agent-idp`
-- **Security**: private JWKs are never stored automatically; `keygen` writes only an explicitly requested owner-only file, while token issuance prints only the credential
-
 **v0.4.0** (2026-09-01)
-- **Feature**: full MCP/Studios OpenAPI coverage: Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier
+- **Feature**: complete OpenAPI coverage for Agent-IDP, MCP, and Studios — Agent Ed25519 identities, OIDC discovery/JWKS and signed JWT issuance (`HubApi`, `ms-hub agent-idp`); Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier. Agent private JWKs are only written to an explicitly requested owner-only file.
 - **Fix**: Studio compat calls no longer leak connection options or API tokens, or drop cover images; errors distinguish permission, quota and conflicts; anonymous Studio info and log pagination work
 - **Enhance**: MCP verb negotiation and Studio-owner listings adapt to endpoint behaviour
-- **Quality**: the vendored OpenAPI spec and operation registry flag unimplemented published MCP/Studios endpoints
+- **Quality**: the vendored OpenAPI spec and operation registry flag unimplemented published Agent-IDP, MCP, and Studios endpoints
 
 **v0.3.1** (2026-09-01)
 - **Refactor**: upload environment variables now state their units and semantics; deprecated names remain supported with warnings
