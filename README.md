@@ -34,25 +34,22 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 ## News
 
 **v0.4.0** (2026-09-01)
-- **Feature**: complete OpenAPI coverage for MCP and Studios — `ms-hub studio list` / `ms-hub list --repo-type studio`, `ms-hub studio variable` (plaintext env vars), `ms-hub studio hardware` / `base-images` / `sdk-versions` so valid `--hardware` / `--base-image` / `--sdk-version` values no longer have to be guessed, and `ms-hub mcp list --hosted`
-- **Feature**: Studio `--visibility protected` (app public, code hidden), previously inexpressible; `RepoInfo` now carries the Studio runtime fields (`sdk_type`, `hardware`, `runtime`, …) instead of discarding them
+- **Feature**: complete OpenAPI coverage for MCP and Studios — `studio list` / `list --repo-type studio`, `studio variable` (plaintext env vars), `studio hardware` / `base-images` / `sdk-versions` so valid option values no longer have to be guessed, `mcp list --hosted`; `--visibility protected` (app public, code hidden); `RepoInfo` carries the Studio runtime fields instead of discarding them
 - **Feature**: permission-tiered tokens — a read-only token can `login` (warning that writes need a higher tier), and a rejected write names the tier it requires
-- **Fix**: the compat layer forwarded `token` / `endpoint` as business fields, so `update_studio_settings(..., token=...)` serialised your **API token into the `PATCH` body**, `get_studio_logs(..., token=...)` raised `TypeError`, and a per-call `token=` was silently ignored
-- **Fix**: `cover_image` was renamed to `coverImage` on the way out and dropped by the server, so Studio cover images never applied
-- **Fix**: HTTP 403 now separates insufficient permission (`PermissionDeniedError`) from an exhausted quota (new `QuotaExceededError`, never retried); 409 maps to `AlreadyExistsError`; the OpenAPI string error codes are recognised at last
-- **Fix**: `ms-hub info --repo-type studio` works anonymously for public spaces; `ms-hub studio logs` prints its pagination footer again
-- **Enhance**: MCP discovery sends `PUT` first (the only verb the spec defines) and remembers which verb a deployment serves; listing a Studio owner asks for every status, since the endpoint otherwise answers "list my spaces" with nothing
+- **Fix**: the compat layer forwarded `token` / `endpoint` as business fields (your **API token was serialised into the `PATCH` body**, and per-call `token=` raised or was silently ignored); `cover_image` reached the server as `coverImage` and was dropped, so cover images never applied
+- **Fix**: HTTP 403 now separates insufficient permission (`PermissionDeniedError`) from an exhausted quota (`QuotaExceededError`, never retried); 409 maps to `AlreadyExistsError`; the OpenAPI string error codes are recognised; `info --repo-type studio` works anonymously; `studio logs` prints its pagination footer again
+- **Enhance**: MCP discovery sends `PUT` first and remembers which verb a deployment serves; listing a Studio owner asks for every status instead of answering with nothing
 - **Quality**: the OpenAPI spec is vendored under `tests/data/` and checked against an operation registry, so a newly published MCP/Studios endpoint fails the suite by name
 
 **v0.3.1** (2026-09-01)
-- **Refactor**: upload environment variables renamed to carry their units and semantics (`UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS`, `UPLOAD_BLOB_MAX_ATTEMPTS`, `UPLOAD_BLOB_PROGRESS_THRESHOLD_BYTES`, …); the previous names keep working and emit a deprecation warning
+- **Refactor**: upload environment variables renamed to carry their units and semantics (`UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS`, `UPLOAD_BLOB_MAX_ATTEMPTS`, …); the previous names keep working with a deprecation warning
 - **Fix**: `ms-hub logout` is wired up (the API supported it but the CLI never exposed it); download lock filenames hash the remote path, so files sharing a basename no longer contend for one lock
-- **Fix**: `whoami` and `UserInfo` map the pre-production field names to their canonical ones; `get_model_files` and other legacy compat paths align with the current server responses
+- **Fix**: `whoami` and legacy compat paths (`get_model_files`, …) map the pre-production field names to their canonical ones and align with the current server responses
 
 **v0.3.0** (2026-08-19)
-- **Feature**: this package now installs all four console scripts — `modelscope`, `ms`, `modelscope-hub`, `ms-hub` — so exactly one distribution owns them and neither package can strand the other's CLI on upgrade; the umbrella SDK contributes its commands as plugins instead
-- **Fix**: the server truncates `repo/files` at a fixed entry count with no marker and ignores pagination, silently hiding files in large repos; listings that land on the cap are now re-enumerated per directory
+- **Feature**: this package now installs all four console scripts — `modelscope`, `ms`, `modelscope-hub`, `ms-hub` — so one distribution owns them and neither package can strand the other's CLI on upgrade; the umbrella SDK contributes its commands as plugins
 - **Feature**: `HubApi.get_current_username()`; agent visibility reads the API's new boolean `private` field while still accepting the legacy `visibility` string
+- **Fix**: the server truncates `repo/files` at a fixed entry count with no marker and ignores pagination, silently hiding files in large repos; listings that land on the cap are now re-enumerated per directory
 
 <details>
 <summary>Older releases</summary>
