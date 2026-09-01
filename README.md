@@ -33,6 +33,10 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.5.0** (2026-09-02)
+- **Feature**: complete Agent-IDP OpenAPI support for Ed25519 identity management, OIDC discovery/JWKS, and signed JWT issuance through `HubApi` and `ms-hub agent-idp`
+- **Security**: private JWKs are never stored automatically; `keygen` writes only an explicitly requested owner-only file, while token issuance prints only the credential
+
 **v0.4.0** (2026-09-01)
 - **Feature**: full MCP/Studios OpenAPI coverage: Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier
 - **Fix**: Studio compat calls no longer leak connection options or API tokens, or drop cover images; errors distinguish permission, quota and conflicts; anonymous Studio info and log pagination work
@@ -685,6 +689,32 @@ ms-hub agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 
 </details>
 
+### `ms-hub agent-idp`
+
+Agent-IDP manages an Agent's **identity and signing key**, not its repository files. Use `ms-hub agent` for raw Agent repository transfer; use `ms-hub agent-idp` to register an Ed25519 public key, inspect OIDC metadata, and issue a short-lived JWT.
+
+```bash
+# Private JWK storage is always explicit; the command prints only its public JWK.
+ms-hub agent-idp keygen --private-key-out ./agent.jwk
+ms-hub agent-idp create --agent-name my-agent --private-key-file ./agent.jwk
+ms-hub agent-idp issue-token --agent-id agent_id:modelscope:agent_xxx --audience my-hub --private-key-file ./agent.jwk
+
+# These discovery endpoints are public and do not require login.
+ms-hub agent-idp configuration
+ms-hub agent-idp jwks
+```
+
+Protect the private JWK file: it is created with mode `0600` on POSIX, never copied into the SDK configuration or cache, and must not be committed. External key stores can pass a public JWK with `--public-jwk-file` for registration or rotation.
+
+```python
+from modelscope_hub import HubApi, generate_agent_key_pair
+
+api = HubApi(token="ms-write-token")
+private_jwk, public_jwk = generate_agent_key_pair()
+identity = api.create_agent_identity({"agent_name": "my-agent", "public_key": public_jwk.to_dict()})
+token = api.issue_agent_token_with_private_key(private_jwk, agent_id=identity.agent_id, audience="my-hub")
+```
+
 ---
 
 ## SDK API Overview
@@ -742,6 +772,12 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `get_mcp_server(server_id)` | Get server details |
 | | `deploy_mcp_server(server_id)` | Deploy an MCP server |
 | | `undeploy_mcp_server(server_id)` | Undeploy an MCP server |
+| **Agent-IDP** | `create_agent_identity(payload)` | Register an Agent Ed25519 public key |
+| | `get_agent_identity(agent_id)` / `update_agent_identity(...)` / `delete_agent_identity(agent_id)` | Manage identity metadata |
+| | `reset_agent_key_pair(agent_id, payload)` / `pause_agent(agent_id, paused=...)` | Rotate a key or control token issuance |
+| | `list_user_agent_identities(...)` / `list_agent_token_records(...)` | List identities and non-sensitive issuance records |
+| | `issue_agent_token_with_private_key(...)` | Locally sign and exchange a short-lived JWT |
+| | `get_agent_id_configuration()` / `get_agent_id_jwks()` | Anonymous OIDC discovery and JWT verification keys |
 | **Cache** | `scan_cache(cache_dir)` | Inspect local cache |
 | | `clear_cache(cache_dir, ...)` | Free disk space |
 

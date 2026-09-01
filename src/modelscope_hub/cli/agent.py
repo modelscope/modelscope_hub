@@ -2,9 +2,10 @@
 """``ms agent`` command -- low-level raw file transfer for agent repositories.
 
 This is the *slim* Hub CLI. It supports only ``download``/``upload``/``list``
-for raw file transfer to and from remote agent repositories, with no framework
-awareness.  Framework-aware operations (convert, watch/sync, status, backups,
-restore, stop) live in **modelscope-agent** -- use ``ms-agent agent ...``.
+for raw file transfer to and from remote agent repositories; Agent-IDP identity,
+Ed25519-key, and token operations live in ``ms agent-idp``. Framework-aware
+operations (convert, watch/sync, status, backups, restore, stop) live in
+**modelscope-agent** -- use ``ms-agent agent ...``.
 """
 
 from __future__ import annotations

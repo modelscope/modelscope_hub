@@ -34,6 +34,7 @@ from .. import __version__
 from ..constants import MODELSCOPE_ASCII
 from ..errors import HubError, InvalidParameter, NotSupportedError
 from .agent import AgentCommand
+from .agent_idp import AgentIdpCommand
 from .base import CLICommand, error, info
 from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
@@ -66,6 +67,7 @@ _COMMANDS = [
     McpCommand,
     CacheCommand,
     AgentCommand,
+    AgentIdpCommand,
 ]
 
 # Plugin entry-point group name

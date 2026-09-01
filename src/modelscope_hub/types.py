@@ -148,6 +148,119 @@ class UserInfo(_FromDictMixin):
 
 
 # ---------------------------------------------------------------------------
+# Agent-IDP
+# ---------------------------------------------------------------------------
+@dataclass(slots=True)
+class AgentJWK(_FromDictMixin):
+    """An Ed25519 JSON Web Key used by the Agent-IDP protocol.
+
+    ``d`` exists only in local private-key material. Server responses and public
+    request payloads contain the other fields only; :meth:`to_dict` therefore
+    excludes it unless explicitly requested.
+    """
+
+    kty: str = "OKP"
+    crv: str = "Ed25519"
+    x: str = ""
+    kid: str = ""
+    alg: str | None = None
+    use: str | None = None
+    d: str | None = field(default=None, repr=False)
+
+    def to_dict(self, *, include_private: bool = False) -> dict[str, str]:
+        """Return the public JWK, optionally including the private ``d`` value."""
+        result = {"kty": self.kty, "crv": self.crv, "x": self.x, "kid": self.kid}
+        if self.alg is not None:
+            result["alg"] = self.alg
+        if self.use is not None:
+            result["use"] = self.use
+        if include_private and self.d is not None:
+            result["d"] = self.d
+        return result
+
+
+@dataclass(slots=True)
+class AgentIdentity(_FromDictMixin):
+    """A registered Agent-IDP identity returned by the OpenAPI service."""
+
+    agent_id: str = ""
+    agent_name: str = ""
+    description: str | None = None
+    token_expire_time: int | None = None
+    principal: dict[str, Any] | None = None
+    kid: str | None = None
+    public_key: AgentJWK | None = None
+    status: str | None = None
+    create_time: str | None = None
+    update_time: str | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any] | None) -> AgentIdentity:
+        if not isinstance(data, Mapping):
+            return cls()
+        raw_key = data.get("public_key")
+        principal = data.get("principal")
+        return cls(
+            agent_id=str(data.get("agent_id") or ""),
+            agent_name=str(data.get("agent_name") or ""),
+            description=data.get("description"),
+            token_expire_time=data.get("token_expire_time"),
+            principal=dict(principal) if isinstance(principal, Mapping) else None,
+            kid=data.get("kid"),
+            public_key=AgentJWK.from_dict(raw_key) if isinstance(raw_key, Mapping) else None,
+            status=data.get("status"),
+            create_time=data.get("create_time"),
+            update_time=data.get("update_time"),
+        )
+
+
+@dataclass(slots=True)
+class AgentIdentitySummary(_FromDictMixin):
+    """The paginated, non-sensitive projection of an Agent-IDP identity."""
+
+    agent_id: str = ""
+    agent_name: str = ""
+    kid: str | None = None
+    status: str | None = None
+    token_expire_time: int | None = None
+    create_time: str | None = None
+
+
+@dataclass(slots=True)
+class AgentTokenRecord(_FromDictMixin):
+    """One issued Agent JWT record returned by the service."""
+
+    token_id: str = ""
+    audience: str = ""
+    issued_at: str | None = None
+    expire_at: str | None = None
+    status: str | None = None
+    jwt: str | None = field(default=None, repr=False)
+
+
+@dataclass(slots=True)
+class AgentToken(_FromDictMixin):
+    """A short-lived JWT issued by ``POST /agent_id/token``."""
+
+    access_token: str = field(default="", repr=False)
+    token_type: str = "Bearer"
+    expire_at: int | None = None
+    jti: str | None = None
+
+
+@dataclass(slots=True)
+class AgentIdConfiguration(_FromDictMixin):
+    """OIDC discovery metadata served by Agent-IDP."""
+
+    issuer: str | None = None
+    token_endpoint: str | None = None
+    jwks_uri: str | None = None
+    registration_endpoint: str | None = None
+    activity_endpoint: str | None = None
+    id_token_signing_alg_values_supported: str | None = None
+
+
+# ---------------------------------------------------------------------------
 # Repository
 # ---------------------------------------------------------------------------
 @dataclass(slots=True)
@@ -439,17 +552,82 @@ class DeployMcpServerPayload(TypedDict, total=False):
     env_info: dict[str, str]
 
 
+class JWKPayload(TypedDict, total=False):
+    """Public or private Ed25519 JSON Web Key wire shape."""
+
+    kty: str
+    crv: str
+    x: str
+    kid: str
+    alg: str
+    use: str
+    d: str
+
+
+class CreateAgentIdentityPayload(TypedDict, total=False):
+    """Payload for POST /agent_ids."""
+
+    agent_name: str
+    description: str
+    public_key: JWKPayload
+    key_alg_type: str
+    token_expire_time: int
+
+
+class UpdateAgentIdentityPayload(TypedDict, total=False):
+    """Payload for PATCH /agent_ids/{agent_id}."""
+
+    agent_name: str
+    description: str
+    token_expire_time: int
+
+
+class ResetAgentKeyPairPayload(TypedDict, total=False):
+    """Payload for PUT /agent_ids/{agent_id}/key_pairs."""
+
+    public_key: JWKPayload
+    key_alg_type: str
+
+
+class PauseAgentPayload(TypedDict):
+    """Payload for POST /agent_ids/{agent_id}/paused."""
+
+    paused: bool
+
+
+class TokenSignPayload(TypedDict):
+    """Signed request body for anonymous POST /agent_id/token."""
+
+    agent_id: str
+    kid: str
+    audience: str
+    timestamp: int
+    signature: str
+
+
 __all__ = [
+    "AgentIdentity",
+    "AgentIdentitySummary",
+    "AgentIdConfiguration",
+    "AgentJWK",
+    "AgentToken",
+    "AgentTokenRecord",
     "CacheVerification",
     "CacheInfo",
     "CachedRepoInfo",
     "CommitInfo",
+    "CreateAgentIdentityPayload",
     "CreateSkillPayload",
     "CreateStudioPayload",
     "DeployMcpServerPayload",
     "FileInfo",
+    "JWKPayload",
     "PagedResult",
+    "PauseAgentPayload",
     "RepoInfo",
+    "ResetAgentKeyPairPayload",
+    "TokenSignPayload",
+    "UpdateAgentIdentityPayload",
     "UpdateSkillSettingsPayload",
     "UpdateStudioSettingsPayload",
     "UserInfo",

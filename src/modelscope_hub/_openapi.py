@@ -45,9 +45,14 @@ from .errors import (
     raise_for_status,
 )
 from .types import (
+    CreateAgentIdentityPayload,
     CreateSkillPayload,
     CreateStudioPayload,
     DeployMcpServerPayload,
+    PauseAgentPayload,
+    ResetAgentKeyPairPayload,
+    TokenSignPayload,
+    UpdateAgentIdentityPayload,
     UpdateSkillSettingsPayload,
     UpdateStudioSettingsPayload,
 )
@@ -83,6 +88,10 @@ _STUDIO_LOG_TYPES: tuple[str, ...] = ("build", "run")
 
 # ``GET /studios/{owner}/{repo}/logs/{type}`` caps page_size at 500.
 _STUDIO_LOG_MAX_PAGE_SIZE = 500
+
+# Agent-IDP declares these closed sets in its OpenAPI request schemas.
+_AGENT_IDP_TOKEN_EXPIRIES: frozenset[int] = frozenset({300, 600, 1800, 3600})
+_AGENT_IDENTITY_STATUSES: frozenset[str] = frozenset({"active", "paused"})
 
 JSON = dict[str, Any]
 QueryParams = list[tuple[str, str]]
@@ -123,6 +132,18 @@ def _as_wire_bool(value: bool | None) -> str | None:
 # deferred in that test.
 # ---------------------------------------------------------------------------
 OPERATION_REGISTRY: dict[str, tuple[str, TokenScope]] = {
+    # -- Agent-IDP ----------------------------------------------------------
+    "createAgentIdentity": ("create_agent_identity", TokenScope.WRITE),
+    "getAgentIdentity": ("get_agent_identity", TokenScope.READ),
+    "updateAgentIdentity": ("update_agent_identity", TokenScope.WRITE),
+    "deleteAgentIdentity": ("delete_agent_identity", TokenScope.WRITE),
+    "resetAgentKeyPair": ("reset_agent_key_pair", TokenScope.WRITE),
+    "pauseAgent": ("pause_agent", TokenScope.WRITE),
+    "listAgentTokenRecords": ("list_agent_token_records", TokenScope.READ),
+    "listUserAgentIdentities": ("list_user_agent_identities", TokenScope.READ),
+    "issueAgentToken": ("issue_agent_token", TokenScope.READ),
+    "getAgentIdConfiguration": ("get_agent_id_configuration", TokenScope.READ),
+    "getAgentIdJWKS": ("get_agent_id_jwks", TokenScope.READ),
     # -- MCP ----------------------------------------------------------------
     "listMcpServers": ("list_mcp_servers", TokenScope.READ),
     "listOperationalMcpServers": ("list_operational_mcp_servers", TokenScope.READ),
@@ -1067,6 +1088,203 @@ class OpenAPIClient:
     def _is_method_or_route_unsupported(exc: APIError) -> bool:
         return exc.status_code in (404, 405, 501)
 
+    # ==================================================================
+    # Agent-IDP
+    # ==================================================================
+    @staticmethod
+    def _validate_agent_idp_page(page: int, page_size: int) -> None:
+        """Validate the common Agent-IDP pagination contract (1-based, max 50)."""
+        if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+            raise InvalidParameter("page must be an integer >= 1.")
+        if isinstance(page_size, bool) or not isinstance(page_size, int) or not 1 <= page_size <= 50:
+            raise InvalidParameter("page_size must be an integer between 1 and 50.")
+
+    @staticmethod
+    def _validate_agent_public_jwk(value: Any) -> dict[str, Any]:
+        """Validate the public-only Ed25519 JWK accepted by registration routes."""
+        if not isinstance(value, Mapping):
+            raise InvalidParameter("public_key must be an Ed25519 JWK object.")
+        key = dict(value)
+        if "d" in key:
+            raise InvalidParameter("public_key must not contain private JWK material ('d').")
+        required = {"kty", "crv", "x", "kid"}
+        missing = sorted(name for name in required if not isinstance(key.get(name), str) or not key[name])
+        if missing:
+            raise InvalidParameter(f"public_key is missing required JWK field(s): {', '.join(missing)}.")
+        if key["kty"] != "OKP" or key["crv"] != "Ed25519":
+            raise InvalidParameter("public_key must use kty='OKP' and crv='Ed25519'.")
+        for field in ("alg", "use"):
+            if field in key and key[field] is not None and not isinstance(key[field], str):
+                raise InvalidParameter(f"public_key.{field} must be a string.")
+        return {field: value for field, value in key.items() if value is not None}
+
+    @staticmethod
+    def _validate_agent_token_expiry(value: Any) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or value not in _AGENT_IDP_TOKEN_EXPIRIES:
+            allowed = ", ".join(str(item) for item in sorted(_AGENT_IDP_TOKEN_EXPIRIES))
+            raise InvalidParameter(f"token_expire_time must be one of {allowed} seconds.")
+        return value
+
+    def create_agent_identity(self, payload: CreateAgentIdentityPayload | Mapping[str, Any]) -> JSON:
+        """``POST /agent_ids`` — register an Agent-IDP public Ed25519 identity."""
+        body = {key: value for key, value in dict(payload).items() if value is not None}
+        allowed = {"agent_name", "description", "public_key", "key_alg_type", "token_expire_time"}
+        unknown = sorted(set(body) - allowed)
+        if unknown:
+            raise InvalidParameter(f"Unsupported create Agent-IDP field(s): {', '.join(unknown)}.")
+        if not isinstance(body.get("agent_name"), str) or not body["agent_name"].strip():
+            raise InvalidParameter("agent_name must be a non-empty string.")
+        body["public_key"] = self._validate_agent_public_jwk(body.get("public_key"))
+        if "key_alg_type" in body and body["key_alg_type"] != "Ed25519":
+            raise InvalidParameter("key_alg_type must be 'Ed25519'.")
+        if "token_expire_time" in body:
+            body["token_expire_time"] = self._validate_agent_token_expiry(body["token_expire_time"])
+        return self._request("POST", "/agent_ids", json_body=body, required_scope=TokenScope.WRITE)
+
+    def get_agent_identity(self, agent_id: str) -> JSON:
+        """``GET /agent_ids/{agent_id}`` — fetch one Agent-IDP identity."""
+        if not agent_id:
+            raise InvalidParameter("agent_id must not be empty.")
+        return self._request("GET", f"/agent_ids/{agent_id}", required_scope=TokenScope.READ)
+
+    def update_agent_identity(
+        self,
+        agent_id: str,
+        payload: UpdateAgentIdentityPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``PATCH /agent_ids/{agent_id}`` — update mutable Agent-IDP metadata."""
+        if not agent_id:
+            raise InvalidParameter("agent_id must not be empty.")
+        body = {key: value for key, value in dict(payload).items() if value is not None}
+        allowed = {"agent_name", "description", "token_expire_time"}
+        unknown = sorted(set(body) - allowed)
+        if unknown:
+            raise InvalidParameter(f"Unsupported Agent-IDP update field(s): {', '.join(unknown)}.")
+        if not body:
+            raise InvalidParameter("update_agent_identity requires at least one field.")
+        if "agent_name" in body and (not isinstance(body["agent_name"], str) or not body["agent_name"].strip()):
+            raise InvalidParameter("agent_name must be a non-empty string.")
+        if "description" in body and not isinstance(body["description"], str):
+            raise InvalidParameter("description must be a string.")
+        if "token_expire_time" in body:
+            body["token_expire_time"] = self._validate_agent_token_expiry(body["token_expire_time"])
+        return self._request("PATCH", f"/agent_ids/{agent_id}", json_body=body, required_scope=TokenScope.WRITE)
+
+    def delete_agent_identity(self, agent_id: str) -> JSON:
+        """``DELETE /agent_ids/{agent_id}`` — delete an Agent-IDP identity."""
+        if not agent_id:
+            raise InvalidParameter("agent_id must not be empty.")
+        return self._request("DELETE", f"/agent_ids/{agent_id}", required_scope=TokenScope.WRITE)
+
+    def reset_agent_key_pair(
+        self,
+        agent_id: str,
+        payload: ResetAgentKeyPairPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``PUT /agent_ids/{agent_id}/key_pairs`` — replace an identity public key."""
+        if not agent_id:
+            raise InvalidParameter("agent_id must not be empty.")
+        body = {key: value for key, value in dict(payload).items() if value is not None}
+        allowed = {"public_key", "key_alg_type"}
+        unknown = sorted(set(body) - allowed)
+        if unknown:
+            raise InvalidParameter(f"Unsupported Agent-IDP key-reset field(s): {', '.join(unknown)}.")
+        body["public_key"] = self._validate_agent_public_jwk(body.get("public_key"))
+        if "key_alg_type" in body and body["key_alg_type"] != "Ed25519":
+            raise InvalidParameter("key_alg_type must be 'Ed25519'.")
+        return self._request(
+            "PUT",
+            f"/agent_ids/{agent_id}/key_pairs",
+            json_body=body,
+            required_scope=TokenScope.WRITE,
+        )
+
+    def pause_agent(self, agent_id: str, payload: PauseAgentPayload | Mapping[str, Any]) -> JSON:
+        """``POST /agent_ids/{agent_id}/paused`` — enable or pause token issuance."""
+        if not agent_id:
+            raise InvalidParameter("agent_id must not be empty.")
+        body = dict(payload)
+        if set(body) != {"paused"} or not isinstance(body.get("paused"), bool):
+            raise InvalidParameter("pause_agent requires exactly a boolean 'paused' field.")
+        return self._request(
+            "POST",
+            f"/agent_ids/{agent_id}/paused",
+            json_body=body,
+            required_scope=TokenScope.WRITE,
+        )
+
+    def list_agent_token_records(self, agent_id: str, *, page: int = 1, page_size: int = 20) -> JSON:
+        """``GET /agent_ids/{agent_id}/jwt_id_tokens`` — list issued-token records."""
+        if not agent_id:
+            raise InvalidParameter("agent_id must not be empty.")
+        self._validate_agent_idp_page(page, page_size)
+        return self._request(
+            "GET",
+            f"/agent_ids/{agent_id}/jwt_id_tokens",
+            params=self._merge_params({"page": page, "page_size": page_size}),
+            required_scope=TokenScope.READ,
+        )
+
+    def list_user_agent_identities(
+        self,
+        username: str,
+        *,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> JSON:
+        """``GET /users/{username}/agent_ids`` — list a user's Agent-IDP identities."""
+        if not username:
+            raise InvalidParameter("username must not be empty.")
+        if status is not None and status not in _AGENT_IDENTITY_STATUSES:
+            allowed = ", ".join(sorted(_AGENT_IDENTITY_STATUSES))
+            raise InvalidParameter(f"status must be one of {allowed}.")
+        self._validate_agent_idp_page(page, page_size)
+        return self._request(
+            "GET",
+            f"/users/{username}/agent_ids",
+            params=self._merge_params({"status": status, "page": page, "page_size": page_size}),
+            required_scope=TokenScope.READ,
+        )
+
+    def issue_agent_token(self, payload: TokenSignPayload | Mapping[str, Any]) -> JSON:
+        """``POST /agent_id/token`` — exchange a locally signed request for a JWT.
+
+        The signature itself authenticates this public endpoint. Explicit
+        anonymous transport ensures an ambient Hub token is never attached.
+        """
+        body = dict(payload)
+        required = {"agent_id", "kid", "audience", "timestamp", "signature"}
+        if set(body) != required:
+            raise InvalidParameter("issue_agent_token requires agent_id, kid, audience, timestamp and signature.")
+        for field in ("agent_id", "kid", "audience", "signature"):
+            if not isinstance(body[field], str) or not body[field]:
+                raise InvalidParameter(f"{field} must be a non-empty string.")
+        if isinstance(body["timestamp"], bool) or not isinstance(body["timestamp"], int) or body["timestamp"] <= 0:
+            raise InvalidParameter("timestamp must be a positive Unix timestamp in seconds.")
+        return self._request("POST", "/agent_id/token", json_body=body, require_token=False, anonymous=True)
+
+    def get_agent_id_configuration(self) -> JSON:
+        """Fetch anonymous Agent-IDP OIDC discovery metadata."""
+        return self._request(
+            "GET",
+            "/agent_id/.well-known/agentid-configuration",
+            require_token=False,
+            anonymous=True,
+        )
+
+    def get_agent_id_jwks(self) -> JSON:
+        """Fetch the anonymous Agent-IDP JWT validation key set."""
+        return self._request(
+            "GET",
+            "/agent_id/.well-known/agentid-jwks",
+            require_token=False,
+            anonymous=True,
+        )
+
+    # ==================================================================
+    # MCP
+    # ==================================================================
     def list_mcp_servers(
         self,
         *,
