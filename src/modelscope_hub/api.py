@@ -39,7 +39,7 @@ from ._legacy_api import LegacyClient
 from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .config import HubConfig, get_default_config
-from .constants import DEFAULT_ENDPOINT, RepoType, Visibility
+from .constants import DEFAULT_ENDPOINT, RepoType, StudioVisibility, Visibility
 from .errors import (
     AuthenticationError,
     HubError,
@@ -47,6 +47,7 @@ from .errors import (
     NetworkError,
     NotExistError,
     NotSupportedError,
+    PermissionDeniedError,
 )
 from .types import CacheInfo, CacheVerification, FileInfo, PagedResult, RepoInfo, UserInfo
 from .utils.logger import get_logger
@@ -87,13 +88,47 @@ _LICENSE_DISPLAY_TO_SPDX: dict[str, str] = {
 }
 
 
-_STUDIO_FIELD_RENAMES: dict[str, str] = {
-    "cover_image": "coverImage",
+# Studio payload keys the SDK once renamed on the way out. The specification
+# spells the field ``cover_image``, so the old outbound rename silently dropped
+# every cover image the caller supplied; the mapping now runs the other way, to
+# normalise callers still passing the camelCase spelling.
+_STUDIO_FIELD_ALIASES: dict[str, str] = {
+    "coverImage": "cover_image",
 }
 
 # Reserved fields that are controlled by create_repo method parameters.
 # These MUST NOT be overridden via extra kwargs to avoid silent conflicts.
 _RESERVED_EXTRA_FIELDS: frozenset[str] = frozenset({"Path", "Owner", "Name"})
+
+
+def _unwrap_list(payload: Any, keys: tuple[str, ...]) -> list[dict]:
+    """Pull a list out of an OpenAPI payload, tolerating either shape.
+
+    Some endpoints answer with the collection at the top level and others nest it
+    under a resource-specific key, so both are accepted rather than assuming one.
+    """
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in keys:
+            if isinstance(payload.get(key), list):
+                return payload[key]
+    return []
+
+
+def _normalise_studio_fields(fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Map legacy Studio field spellings onto the ones the endpoint accepts.
+
+    Also expands ``visibility`` into the ``private`` companion flag so a caller
+    who reaches the Studio endpoints through ``**settings`` gets the same
+    treatment as one who passes ``visibility=`` explicitly.
+    """
+    normalised = {_STUDIO_FIELD_ALIASES.get(key, key): value for key, value in fields.items()}
+    studio_visibility = StudioVisibility.parse(normalised.get("visibility"))
+    if studio_visibility is not None:
+        normalised["visibility"] = studio_visibility.value
+        normalised.setdefault("private", studio_visibility is StudioVisibility.PRIVATE)
+    return normalised
 
 
 class HubApi:
@@ -269,6 +304,8 @@ class HubApi:
         "models",
         "datasets",
         "skills",
+        "studios",
+        "variables",
         "servers",
         "mcp_server_list",
         "Models",
@@ -367,7 +404,20 @@ class HubApi:
 
         # The OpenAPI surface uses ``private`` bool for visibility.
         # gated is orthogonal and does not affect visibility mapping.
-        if normalised.get("visibility") is None:
+        raw_visibility = normalised.get("visibility")
+        if isinstance(raw_visibility, str):
+            # Studio payloads report visibility as a string enum. ``public`` and
+            # ``private`` have integer equivalents; ``protected`` (app public,
+            # code hidden) does not, so it is preserved verbatim rather than
+            # forced into a value that would misrepresent it.
+            studio_visibility = StudioVisibility.parse(raw_visibility)
+            if studio_visibility is StudioVisibility.PUBLIC:
+                normalised["visibility"] = Visibility.PUBLIC
+            elif studio_visibility is StudioVisibility.PRIVATE:
+                normalised["visibility"] = Visibility.PRIVATE
+            elif studio_visibility is not None:
+                normalised["visibility"] = studio_visibility.value
+        elif raw_visibility is None:
             private_flag = normalised.get("private")
             if isinstance(private_flag, bool):
                 if private_flag:
@@ -499,6 +549,15 @@ class HubApi:
         caller's only working one, so revoking it on failure would turn a
         mistyped token into an unintended logout.
 
+        Tokens are issued with a permission tier (read / write / admin). The
+        legacy login endpoint exists to mint git credentials, which a read-only
+        token is not entitled to -- yet such a token authenticates fine and is
+        all a caller needs in order to browse and download. So when that
+        endpoint rejects the credential, the token is re-checked against
+        ``GET /users/me`` before concluding it is bad: if that succeeds the
+        login completes without cookies or a git token, and warns that write
+        operations will need a higher tier.
+
         Examples
         --------
         >>> api = HubApi()
@@ -520,6 +579,15 @@ class HubApi:
 
         try:
             data, cookies = self.legacy.login(token)
+        except (AuthenticationError, PermissionDeniedError) as exc:
+            scoped = self._login_with_scoped_token(token)
+            if scoped is not None:
+                return scoped
+            self._restore_credential_state(previous_token, previous_logged_out)
+            explained = self._explain_login_failure(token, exc)
+            if explained is exc:
+                raise
+            raise explained from exc
         except HubError as exc:
             self._restore_credential_state(previous_token, previous_logged_out)
             explained = self._explain_login_failure(token, exc)
@@ -534,10 +602,53 @@ class HubApi:
         self._config.save_cookies(cookies)
         if git_token:
             self._config.save_git_token(git_token)
+        else:
+            logger.debug("Login returned no git access token; git-based operations will be unavailable.")
         if username:
             self._config.save_user_info(username, email or "")
 
         return self.whoami()
+
+    def _login_with_scoped_token(self, token: str) -> UserInfo | None:
+        """Complete a reduced-capability login, or return ``None`` if impossible.
+
+        Called only when the legacy login endpoint refused the credential, at
+        which point *token* is already installed on the config -- so a successful
+        ``GET /users/me`` proves the token itself is valid, and the refusal was
+        about the permission tier rather than the token. Reporting that as
+        "invalid token" would send the caller after the wrong remedy.
+
+        The token has to be persisted explicitly here. On the normal path it is
+        stored as a side effect of saving the server-issued session cookies,
+        which this tier does not receive -- without this the login would appear
+        to succeed yet leave nothing on disk for the next process to find.
+
+        Like :meth:`_token_valid_on`, the probe is advisory: retries are disabled
+        so a dead network cannot stall the error report, and any exception simply
+        means "cannot confirm", which hands the original rejection back untouched.
+        """
+        from .constants import API_CONNECT_TIMEOUT
+
+        probe = OpenAPIClient(self._config, timeout=API_CONNECT_TIMEOUT, max_retries=0)
+        try:
+            payload = probe.get_current_user()
+        except Exception:  # advisory only -- never mask the original failure
+            return None
+        finally:
+            probe.close()
+
+        profile = UserInfo.from_dict(payload if isinstance(payload, dict) else {})
+        if not profile.username:
+            return None
+        logger.warning(
+            "Token accepted with reduced permissions: signed in as %s, but git and session "
+            "credentials were not issued. Uploads, pushes and other write operations need a "
+            "token with 'write' permission or higher.",
+            profile.username,
+        )
+        self._config.save_token(token)
+        self._config.save_user_info(profile.username, profile.email or "")
+        return profile
 
     def _restore_credential_state(self, token: str | None, logged_out: bool) -> None:
         """Roll the in-memory credential back to its pre-login value.
@@ -749,7 +860,8 @@ class HubApi:
                 f"create_repo does not support repo_type={rt.value!r}. Supported types: {supported}."
             )
         owner, name = self._parse_repo_id(repo_id)
-        vis = self._normalize_visibility(visibility)
+        studio_visibility = StudioVisibility.parse(visibility) if rt is RepoType.STUDIO else None
+        vis = None if studio_visibility is not None else self._normalize_visibility(visibility)
         if license is not None:
             license = _LICENSE_DISPLAY_TO_SPDX.get(license, license)
 
@@ -760,7 +872,14 @@ class HubApi:
                     "owner": owner,
                     "repo_name": name,
                 }
-                if vis is not None:
+                if studio_visibility is not None:
+                    # ``visibility`` is the expressive form (it is the only way to
+                    # ask for ``protected``); ``private`` is sent alongside it for
+                    # servers that predate the tri-state field. The two are
+                    # consistent by construction, so they cannot disagree.
+                    payload["visibility"] = studio_visibility.value
+                    payload["private"] = studio_visibility is StudioVisibility.PRIVATE
+                elif vis is not None:
                     payload["private"] = is_private
                 if chinese_name is not None:
                     payload["display_name"] = chinese_name
@@ -777,10 +896,10 @@ class HubApi:
                 payload["license"] = license
             if description is not None:
                 payload["description"] = description
-            for old_key, new_key in _STUDIO_FIELD_RENAMES.items():
-                if old_key in extra:
-                    extra[new_key] = extra.pop(old_key)
-            payload.update(extra)
+            # Only Studios get the Studio field normalisation: a Skill has no
+            # cover image and no visibility field, so rewriting those keys on a
+            # Skill payload would invent fields its endpoint does not accept.
+            payload.update(_normalise_studio_fields(extra) if rt is RepoType.STUDIO else extra)
             data = self.openapi.create_studio(payload) if rt is RepoType.STUDIO else self.openapi.create_skill(payload)
             return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
 
@@ -915,8 +1034,7 @@ class HubApi:
         Parameters
         ----------
         repo_type : str or RepoType
-            One of ``"model"``, ``"dataset"``, ``"skill"``, ``"mcp"``.
-            ``"studio"`` raises :class:`NotSupportedError` (no list endpoint).
+            One of ``"model"``, ``"dataset"``, ``"studio"``, ``"skill"``, ``"mcp"``.
         owner : str, optional
             Restrict results to repositories owned by this user/org.
         search : str, optional
@@ -938,7 +1056,7 @@ class HubApi:
         Raises
         ------
         NotSupportedError
-            When ``repo_type`` is ``"studio"`` (no list endpoint yet).
+            When ``repo_type`` is not one of the listed values.
 
         Examples
         --------
@@ -992,7 +1110,14 @@ class HubApi:
                 filter=clean_filters or None,
             )
         elif rt is RepoType.STUDIO:
-            raise NotSupportedError("Listing studios is not supported by the OpenAPI surface yet.")
+            payload = self.openapi.list_studios(
+                search=search,
+                owner=owner,
+                sort=sort,
+                page_number=page_number,
+                page_size=page_size,
+                **clean_filters,
+            )
         else:  # pragma: no cover - defensive
             raise NotSupportedError(f"list_repos not supported for {rt}")
 
@@ -1007,6 +1132,7 @@ class HubApi:
             RepoType.MODEL: "models",
             RepoType.DATASET: "datasets",
             RepoType.SKILL: "skills",
+            RepoType.STUDIO: "studios",
             RepoType.MCP: "servers",
         }
         key = _COLLECTION_KEYS.get(rt, "items")
@@ -1805,11 +1931,8 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
-        for old_key, new_key in _STUDIO_FIELD_RENAMES.items():
-            if old_key in settings:
-                settings[new_key] = settings.pop(old_key)
         if rt is RepoType.STUDIO:
-            return self.openapi.update_studio_settings(owner, name, settings)
+            return self.openapi.update_studio_settings(owner, name, _normalise_studio_fields(settings))
         if rt is RepoType.SKILL:
             return self.openapi.update_skill_settings(owner, name, settings)
         raise NotSupportedError(f"update_repo_settings is not supported for repo_type={rt.value!r}.")
@@ -1818,25 +1941,22 @@ class HubApi:
     # Secrets
     # ==================================================================
     def list_secrets(self, repo_id: str, repo_type: RepoTypeLike = RepoType.STUDIO) -> list[dict]:
-        """List secrets attached to a Studio.
+        """List the keys of the secrets attached to a Studio.
+
+        Values are never disclosed by the endpoint. Use :meth:`list_variables`
+        for the plaintext counterpart, whose values are returned.
 
         Examples
         --------
         >>> api.list_secrets("alice/chat-demo")
-        [{'key': 'OPENAI_API_KEY', 'updated_at': 1712345678}, ...]
+        [{'key': 'OPENAI_API_KEY'}, ...]
         """
         rt = self._normalize_repo_type(repo_type)
         if rt is not RepoType.STUDIO:
             raise NotSupportedError(f"Secret management is only supported for studio (got {rt.value!r}).")
         owner, name = self._parse_repo_id(repo_id)
         data = self.openapi.list_studio_secrets(owner, name)
-        if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            for key in ("items", "secrets", "list"):
-                if isinstance(data.get(key), list):
-                    return data[key]
-        return []
+        return _unwrap_list(data, ("secrets", "items", "list"))
 
     def add_secret(
         self,
@@ -1895,6 +2015,144 @@ class HubApi:
         return self.openapi.delete_studio_secret(owner, name, key)
 
     # ==================================================================
+    # Plaintext variables
+    #
+    # The counterpart to the secrets block above. Same shape, different
+    # disclosure: a variable's value is publicly readable, a secret's is not.
+    # ==================================================================
+    def list_variables(self, repo_id: str, repo_type: RepoTypeLike = RepoType.STUDIO) -> list[dict]:
+        """List plaintext environment variables attached to a Studio.
+
+        Unlike :meth:`list_secrets`, the values are returned too -- plaintext
+        variables are publicly visible by design.
+
+        Examples
+        --------
+        >>> api.list_variables("alice/chat-demo")
+        [{'key': 'MODEL_NAME', 'value': 'Qwen2.5-7B'}, ...]
+        """
+        rt = self._normalize_repo_type(repo_type)
+        if rt is not RepoType.STUDIO:
+            raise NotSupportedError(f"Variable management is only supported for studio (got {rt.value!r}).")
+        owner, name = self._parse_repo_id(repo_id)
+        data = self.openapi.list_studio_variables(owner, name)
+        return _unwrap_list(data, ("variables", "items", "list"))
+
+    def add_variable(
+        self,
+        repo_id: str,
+        key: str,
+        value: str,
+        repo_type: RepoTypeLike = RepoType.STUDIO,
+    ) -> dict:
+        """Add a plaintext environment variable to a Studio.
+
+        Both key and value are publicly visible; use :meth:`add_secret` for
+        anything sensitive.
+
+        Examples
+        --------
+        >>> api.add_variable("alice/chat-demo", "MODEL_NAME", "Qwen2.5-7B")
+        """
+        rt = self._normalize_repo_type(repo_type)
+        if rt is not RepoType.STUDIO:
+            raise NotSupportedError("Only studio variables are supported.")
+        owner, name = self._parse_repo_id(repo_id)
+        return self.openapi.add_studio_variable(owner, name, key, value)
+
+    def update_variable(
+        self,
+        repo_id: str,
+        key: str,
+        value: str,
+        repo_type: RepoTypeLike = RepoType.STUDIO,
+    ) -> dict:
+        """Update an existing plaintext variable's value.
+
+        Examples
+        --------
+        >>> api.update_variable("alice/chat-demo", "MODEL_NAME", "Qwen2.5-14B")
+        """
+        rt = self._normalize_repo_type(repo_type)
+        if rt is not RepoType.STUDIO:
+            raise NotSupportedError("Only studio variables are supported.")
+        owner, name = self._parse_repo_id(repo_id)
+        return self.openapi.update_studio_variable(owner, name, key, value)
+
+    def delete_variable(
+        self,
+        repo_id: str,
+        key: str,
+        repo_type: RepoTypeLike = RepoType.STUDIO,
+    ) -> dict:
+        """Delete a plaintext variable from a Studio.
+
+        Examples
+        --------
+        >>> api.delete_variable("alice/chat-demo", "MODEL_NAME")
+        """
+        rt = self._normalize_repo_type(repo_type)
+        if rt is not RepoType.STUDIO:
+            raise NotSupportedError("Only studio variables are supported.")
+        owner, name = self._parse_repo_id(repo_id)
+        return self.openapi.delete_studio_variable(owner, name, key)
+
+    # ==================================================================
+    # Studio resource discovery
+    # ==================================================================
+    def list_studio_hardware(
+        self,
+        *,
+        sdk_type: str | None = None,
+        repo_id: str | None = None,
+    ) -> list[dict]:
+        """List the hardware tiers a Studio may be deployed on.
+
+        Answers the question ``--hardware`` used to leave to guesswork. Anonymous
+        callers see the default free tier; authenticated callers also see paid
+        tiers with prices, which are selected as ``paid/<instance_type>``.
+
+        Parameters
+        ----------
+        sdk_type : str, optional
+            Keep only tiers supporting this SDK type.
+        repo_id : str, optional
+            Scope the free tiers to what this ``owner/name`` space may use.
+
+        Examples
+        --------
+        >>> [h["name"] for h in api.list_studio_hardware(sdk_type="gradio")]
+        ['CPU basic 2 vCPU 16GB', ...]
+        """
+        data = self.openapi.list_studio_hardware(sdk_type=sdk_type, studio=repo_id)
+        return _unwrap_list(data, ("hardware", "items", "list"))
+
+    def list_studio_base_images(self) -> list[dict]:
+        """List the base images available to Studio spaces.
+
+        Examples
+        --------
+        >>> api.list_studio_base_images()
+        [{'name': 'ubuntu22.04-py311-torch2.3.1', 'tag': '...'}, ...]
+        """
+        data = self.openapi.list_studio_base_images()
+        return _unwrap_list(data, ("base_images", "items", "list"))
+
+    def list_studio_sdk_versions(self, *, sdk_type: str | None = None) -> list[dict]:
+        """List the SDK versions available to Studio spaces.
+
+        Only ``sdk_type="gradio"`` yields versions; the other SDK types (and
+        omitting it) return an empty list.
+
+        Examples
+        --------
+        >>> [v["version"] for v in api.list_studio_sdk_versions(sdk_type="gradio")]
+        ['4.44.1', ...]
+        """
+        data = self.openapi.list_studio_sdk_versions(sdk_type=sdk_type)
+        return _unwrap_list(data, ("sdk_versions", "items", "list"))
+
+    # ==================================================================
     # MCP convenience wrappers
     # ==================================================================
     def list_mcp_servers(
@@ -1939,6 +2197,26 @@ class HubApi:
             filter=filter,
             extra={k: v for k, v in extra.items() if v is not None} or None,
         )
+        items, total, page, size = self._extract_paged(payload)
+        return PagedResult(items=list(items), total_count=total, page_number=page, page_size=size)
+
+    def list_operational_mcp_servers(self) -> PagedResult[dict]:
+        """List the MCP servers the caller currently has hosted.
+
+        Returns the same :class:`PagedResult` shape as :meth:`list_mcp_servers`,
+        so both can be consumed identically. Each entry additionally carries
+        ``operational_urls`` with the live endpoint(s).
+
+        Unlike :meth:`list_mcp_servers` this always requires a valid token: the
+        answer is account-private, so there is no anonymous view to fall back on.
+
+        Examples
+        --------
+        >>> page = api.list_operational_mcp_servers()
+        >>> [s["id"] for s in page.items]
+        ['alice/weather-mcp', ...]
+        """
+        payload = self.openapi.list_operational_mcp_servers()
         items, total, page, size = self._extract_paged(payload)
         return PagedResult(items=list(items), total_count=total, page_number=page, page_size=size)
 

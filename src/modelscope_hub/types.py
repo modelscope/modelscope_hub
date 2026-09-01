@@ -171,6 +171,14 @@ class RepoInfo(_FromDictMixin):
     private: bool | None = None
     gated: bool | None = None
     login_required: bool | None = None
+    # Studio-native fields. Carried here rather than dropped, because the Studio
+    # payload's runtime configuration is the whole point of inspecting a space.
+    sdk_type: str | None = None
+    sdk_version: str | None = None
+    base_image: str | None = None
+    hardware: str | None = None
+    mcp_support: bool | None = None
+    runtime: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.repo_type, str):
@@ -193,12 +201,25 @@ class RepoInfo(_FromDictMixin):
         and formats datetimes with Z suffix to match OpenAPI spec.
         """
         _INTERNAL_FIELDS = {"owner", "name", "repo_type", "visibility"}
+        _OPTIONAL_FIELDS = {
+            "display_name",
+            "file_size",
+            "private",
+            "gated",
+            "login_required",
+            "sdk_type",
+            "sdk_version",
+            "base_image",
+            "hardware",
+            "mcp_support",
+            "runtime",
+        }
         result = {}
         for f in fields(self):  # type: ignore[arg-type]
             if f.name in _INTERNAL_FIELDS:
                 continue
             val = getattr(self, f.name)
-            if val is None and f.name in ("display_name", "file_size", "private", "gated", "login_required"):
+            if val is None and f.name in _OPTIONAL_FIELDS:
                 continue  # skip None optional OpenAPI fields
             if isinstance(val, Enum):
                 val = val.value
@@ -384,9 +405,10 @@ class CreateStudioPayload(TypedDict, total=False):
     owner: str
     display_name: str
     license: str
+    visibility: str
     private: bool
     description: str
-    coverImage: str
+    cover_image: str
     sdk_type: str
     sdk_version: str
     base_image: str
@@ -398,9 +420,10 @@ class UpdateStudioSettingsPayload(TypedDict, total=False):
 
     display_name: str
     license: str
+    visibility: str
     private: bool
     description: str
-    coverImage: str
+    cover_image: str
     sdk_type: str
     sdk_version: str
     base_image: str

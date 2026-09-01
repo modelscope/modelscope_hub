@@ -204,6 +204,47 @@ class TestMcpListExecute:
         assert kw["page_number"] == 2
         assert kw["page_size"] == 5
 
+    def test_hosted_lists_operational_servers_with_urls(self, parser, mock_api, capsys):
+        mock_api.list_operational_mcp_servers.return_value = PagedResult(
+            items=[
+                {
+                    "id": "alice/weather",
+                    "name": "Weather",
+                    "operational_urls": [
+                        {"url": "https://mcp.example/uuid/sse", "transport_type": "sse"},
+                        {"url": "https://mcp.example/uuid/streamable_http", "transport_type": "streamable_http"},
+                    ],
+                }
+            ],
+            total_count=1,
+        )
+        args = parser.parse_args(["mcp", "list", "--hosted"])
+        with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
+            _McpList(args).execute()
+        out = capsys.readouterr().out
+        assert "alice/weather" in out
+        assert "https://mcp.example/uuid/sse" in out
+        assert "streamable_http" in out
+        mock_api.list_operational_mcp_servers.assert_called_once_with()
+        mock_api.list_mcp_servers.assert_not_called()
+
+    def test_hosted_empty(self, parser, mock_api, capsys):
+        mock_api.list_operational_mcp_servers.return_value = PagedResult(items=[], total_count=0)
+        args = parser.parse_args(["mcp", "list", "--hosted"])
+        with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
+            _McpList(args).execute()
+        assert "no hosted MCP servers" in capsys.readouterr().out
+
+    def test_hosted_tolerates_missing_urls(self, parser, mock_api, capsys):
+        mock_api.list_operational_mcp_servers.return_value = PagedResult(
+            items=[{"id": "alice/weather", "name": "Weather"}],
+            total_count=1,
+        )
+        args = parser.parse_args(["mcp", "list", "--hosted"])
+        with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
+            _McpList(args).execute()
+        assert "alice/weather" in capsys.readouterr().out
+
 
 @pytest.mark.mock_only
 class TestMcpInfoExecute:

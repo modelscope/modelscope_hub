@@ -6,11 +6,16 @@ SDK's stability guarantees.
 
 Design goals
 ------------
-* A single :meth:`OpenAPIClient._request` chokepoint owns transport concerns —
+* A single :meth:`OpenAPIClient._send` chokepoint owns transport concerns —
   URL composition, authentication injection, retry/back-off, error decoding
-  and ``data`` envelope unwrapping.
-* Each of the 25 OpenAPI endpoints maps to exactly one method, named after the
-  resource it manipulates and grouped by section comments.
+  and ``data`` envelope unwrapping. :meth:`OpenAPIClient._request` wraps it with
+  the authorisation policy (required token tier, anonymous fallback) and is what
+  the endpoint methods call.
+* Each OpenAPI endpoint maps to exactly one method, named after the resource it
+  manipulates and grouped by section comments. :data:`OPERATION_REGISTRY` records
+  that mapping for the tags this client covers in full, and a test checks it
+  against the vendored specification so a newly published endpoint cannot go
+  unnoticed.
 * Filter-style query parameters (``filter.task=...`` etc.) are accepted as a
   flat ``filters`` mapping and serialised transparently.
 """
@@ -27,7 +32,7 @@ from urllib.parse import urljoin, urlsplit
 import requests
 
 from .config import HubConfig, get_default_config
-from .constants import API_CONNECT_TIMEOUT, API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX
+from .constants import API_CONNECT_TIMEOUT, API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX, TokenScope
 from .errors import (
     APIError,
     AuthenticationError,
@@ -48,7 +53,7 @@ from .types import (
 )
 from .utils.logger import get_logger
 
-__all__ = ["OpenAPIClient"]
+__all__ = ["OPERATION_REGISTRY", "OpenAPIClient"]
 
 _logger = get_logger("openapi")
 
@@ -65,9 +70,85 @@ _RETRYABLE_EXC: tuple[type[BaseException], ...] = (
     RateLimitError,
 )
 
+# Where a user checks which permission tier their token was issued with.
+_TOKEN_SETTINGS_URL = "https://modelscope.cn/my/myaccesstoken"
+
+# Closed value sets published by the Studios section of the specification.
+# Validating client-side turns a silently-ignored typo into a named error.
+_STUDIO_SORTS: tuple[str, ...] = ("default", "last_modified", "view_num", "likes")
+_STUDIO_STATUS_FILTERS: tuple[str, ...] = ("running", "all")
+_STUDIO_HARDWARE_TYPES: tuple[str, ...] = ("xgpu", "amd")
+_STUDIO_SDK_TYPES: tuple[str, ...] = ("gradio", "streamlit", "docker", "static")
+_STUDIO_LOG_TYPES: tuple[str, ...] = ("build", "run")
+
+# ``GET /studios/{owner}/{repo}/logs/{type}`` caps page_size at 500.
+_STUDIO_LOG_MAX_PAGE_SIZE = 500
+
 JSON = dict[str, Any]
 QueryParams = list[tuple[str, str]]
 Filters = Mapping[str, str | int | float | bool] | None
+
+
+def _validate_choice(name: str, value: str | None, allowed: tuple[str, ...]) -> None:
+    """Reject a value the endpoint's enum does not accept.
+
+    The server ignores an unknown enum value rather than complaining, which turns
+    a typo in e.g. ``sort`` into silently wrong results. Failing here names the
+    parameter and lists what it accepts.
+    """
+    if value is not None and value not in allowed:
+        raise InvalidParameter(f"{name} must be one of {', '.join(allowed)} (got {value!r}).")
+
+
+def _as_wire_bool(value: bool | None) -> str | None:
+    """Render a tri-state flag the way query strings expect (``true``/``false``)."""
+    if value is None:
+        return None
+    return "true" if value else "false"
+
+
+# ---------------------------------------------------------------------------
+# Operation registry
+#
+# Maps each specification ``operationId`` to the method implementing it and the
+# minimum token permission tier it needs. Two jobs:
+#
+# 1. ``tests/test_openapi_coverage.py`` checks it against the vendored spec, so a
+#    newly published operation fails the suite by name instead of going unnoticed
+#    -- which is exactly how the gaps this table closes accumulated.
+# 2. It documents the required tier per operation in one place, since the spec
+#    itself declares no scopes.
+#
+# Only the tags the SDK claims to cover are listed; the rest are enumerated as
+# deferred in that test.
+# ---------------------------------------------------------------------------
+OPERATION_REGISTRY: dict[str, tuple[str, TokenScope]] = {
+    # -- MCP ----------------------------------------------------------------
+    "listMcpServers": ("list_mcp_servers", TokenScope.READ),
+    "listOperationalMcpServers": ("list_operational_mcp_servers", TokenScope.READ),
+    "getMcpServer": ("get_mcp_server", TokenScope.READ),
+    "deployMcpServer": ("deploy_mcp_server", TokenScope.WRITE),
+    "undeployMcpServer": ("undeploy_mcp_server", TokenScope.WRITE),
+    # -- Studios ------------------------------------------------------------
+    "listStudios": ("list_studios", TokenScope.READ),
+    "createStudio": ("create_studio", TokenScope.WRITE),
+    "getStudio": ("get_studio", TokenScope.READ),
+    "updateStudioSettings": ("update_studio_settings", TokenScope.WRITE),
+    "deployStudio": ("deploy_studio", TokenScope.WRITE),
+    "stopStudio": ("stop_studio", TokenScope.WRITE),
+    "getStudioLogs": ("get_studio_logs", TokenScope.READ),
+    "listHardware": ("list_studio_hardware", TokenScope.READ),
+    "listBaseImages": ("list_studio_base_images", TokenScope.READ),
+    "listSdkVersions": ("list_studio_sdk_versions", TokenScope.READ),
+    "listStudioSecrets": ("list_studio_secrets", TokenScope.READ),
+    "addStudioSecret": ("add_studio_secret", TokenScope.WRITE),
+    "updateStudioSecret": ("update_studio_secret", TokenScope.WRITE),
+    "deleteStudioSecret": ("delete_studio_secret", TokenScope.WRITE),
+    "listStudioVariables": ("list_studio_variables", TokenScope.READ),
+    "addStudioVariable": ("add_studio_variable", TokenScope.WRITE),
+    "updateStudioVariable": ("update_studio_variable", TokenScope.WRITE),
+    "deleteStudioVariable": ("delete_studio_variable", TokenScope.WRITE),
+}
 
 
 class OpenAPIClient:
@@ -102,6 +183,9 @@ class OpenAPIClient:
             float(timeout) if timeout is not None else (float(API_CONNECT_TIMEOUT), float(API_TIMEOUT))
         )
         self._max_retries = int(max_retries) if max_retries is not None else int(API_MAX_RETRIES)
+        # Tri-state cache for whether this deployment serves ``GET /mcp/servers``.
+        # ``None`` means "not probed yet"; see :meth:`list_mcp_servers`.
+        self._mcp_list_supports_get: bool | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -267,11 +351,95 @@ class OpenAPIClient:
         anonymous: bool = False,
         unwrap: bool = True,
         timeout: float | None = None,
+        required_scope: TokenScope | None = None,
+        anonymous_retry: bool = False,
     ) -> Any:
-        """Execute an HTTP request and return the unwrapped ``data`` payload.
+        """Execute a request, then interpret authorisation failures.
 
-        The method centralises authentication, retries on transient errors,
-        and decoding of the standard ``{"success": ..., "data": ...}`` envelope.
+        Wraps :meth:`_send` (which owns transport, retries and envelope
+        decoding) with the two behaviours that depend on *why* a call was made
+        rather than *how*:
+
+        *required_scope*
+            The minimum token permission tier the endpoint needs. Purely
+            advisory -- the Hub does not publish a token's tier, so nothing can
+            be pre-validated; on a 403 it turns "permission denied" into a
+            message that names the missing tier.
+        *anonymous_retry*
+            For endpoints whose content is public, retry once without
+            credentials when the token is rejected. A read-scoped or stale token
+            must not be able to hide data that any anonymous caller can see.
+            Never enable this for account-private data: degrading to anonymous
+            there would answer "empty" or "not found" and bury the real cause.
+        """
+        try:
+            return self._send(
+                method,
+                path,
+                url=url,
+                params=params,
+                json_body=json_body,
+                data=data,
+                files=files,
+                headers=headers,
+                require_token=require_token,
+                anonymous=anonymous,
+                unwrap=unwrap,
+                timeout=timeout,
+            )
+        except (AuthenticationError, PermissionDeniedError) as exc:
+            if anonymous_retry and not anonymous and self._resolve_token():
+                _logger.debug(
+                    "Credentials rejected for %s %s (%s); retrying anonymously",
+                    method.upper(),
+                    url or path,
+                    exc.__class__.__name__,
+                )
+                return self._send(
+                    method,
+                    path,
+                    url=url,
+                    params=params,
+                    json_body=json_body,
+                    data=data,
+                    files=files,
+                    headers=headers,
+                    require_token=False,
+                    anonymous=True,
+                    unwrap=unwrap,
+                    timeout=timeout,
+                )
+            if required_scope is not None and isinstance(exc, PermissionDeniedError):
+                # Shadow the class-level suggestion on this instance only, so the
+                # error code, status, request id and traceback all stay intact.
+                exc.suggestion = (
+                    f"This operation requires a token with '{required_scope.value}' permission. "
+                    f"Verify the token's permission level at {_TOKEN_SETTINGS_URL}"
+                )
+            raise
+
+    def _send(
+        self,
+        method: str,
+        path: str = "",
+        *,
+        url: str | None = None,
+        params: Mapping[str, Any] | QueryParams | None = None,
+        json_body: Any | None = None,
+        data: Any | None = None,
+        files: Any | None = None,
+        headers: Mapping[str, str] | None = None,
+        require_token: bool = True,
+        anonymous: bool = False,
+        unwrap: bool = True,
+        timeout: float | None = None,
+    ) -> Any:
+        """Send one logical request and return the unwrapped ``data`` payload.
+
+        Owns the transport concerns only: authentication injection, retries on
+        transient errors, and decoding of the standard
+        ``{"success": ..., "data": ...}`` envelope. Authorisation policy lives in
+        :meth:`_request`, which is what callers should use.
 
         When *url* is given, it is used as-is (absolute URL). Otherwise the
         final URL is derived from *path* via :meth:`_url`.
@@ -584,13 +752,129 @@ class OpenAPIClient:
     # ==================================================================
     # Studios
     # ==================================================================
+    def list_studios(
+        self,
+        *,
+        search: str | None = None,
+        owner: str | None = None,
+        sort: str | None = None,
+        page_number: int = 1,
+        page_size: int = 10,
+        status: str | None = None,
+        mcp_support: bool | None = None,
+        hardware_type: str | None = None,
+    ) -> JSON:
+        """``GET /studios`` — list Studio spaces with pagination and filters.
+
+        Note on *status*: the server defaults to ``running`` for a plain search
+        but to ``all`` when ``owner`` is set. That switch is deliberately left to
+        the server rather than second-guessed here, so passing nothing yields
+        whichever default the endpoint considers correct for the query.
+
+        Unlike the other list endpoints this one answers *without* the
+        ``{"success": ..., "data": ...}`` envelope -- ``studios`` sits at the top
+        level of the response body.
+        """
+        if page_number * page_size > 3000:
+            raise InvalidParameter(f"page_number * page_size must be <= 3000 (got {page_number * page_size}).")
+        _validate_choice("sort", sort, _STUDIO_SORTS)
+        _validate_choice("status", status, _STUDIO_STATUS_FILTERS)
+        _validate_choice("hardware_type", hardware_type, _STUDIO_HARDWARE_TYPES)
+        params = self._merge_params(
+            {
+                "search": search,
+                "owner": owner,
+                "sort": sort,
+                "page_number": page_number,
+                "page_size": page_size,
+                "status": status,
+                "mcp_support": _as_wire_bool(mcp_support),
+                "hardware_type": hardware_type,
+            }
+        )
+        return self._request(
+            "GET",
+            "/studios",
+            params=params,
+            require_token=False,
+            required_scope=TokenScope.READ,
+            anonymous_retry=True,
+        )
+
+    def list_studio_hardware(
+        self,
+        *,
+        sdk_type: str | None = None,
+        studio: str | None = None,
+    ) -> JSON:
+        """``GET /studios/hardware`` — hardware tiers available to the caller.
+
+        Anonymous callers get the default free tier; an authenticated caller also
+        gets the paid tiers with prices. Pass *studio* (``owner/repo_name``) to
+        scope the free tiers to what that space may actually use. Paid resources
+        are selected as ``paid/<instance_type>`` in the ``hardware`` field of
+        :meth:`create_studio` / :meth:`update_studio_settings`.
+        """
+        _validate_choice("sdk_type", sdk_type, _STUDIO_SDK_TYPES)
+        params = self._merge_params({"sdk_type": sdk_type, "studio": studio})
+        return self._request(
+            "GET",
+            "/studios/hardware",
+            params=params,
+            require_token=False,
+            required_scope=TokenScope.READ,
+            anonymous_retry=True,
+        )
+
+    def list_studio_base_images(self) -> JSON:
+        """``GET /studios/base-images`` — base images available to Studio spaces."""
+        return self._request(
+            "GET",
+            "/studios/base-images",
+            require_token=False,
+            required_scope=TokenScope.READ,
+            anonymous_retry=True,
+        )
+
+    def list_studio_sdk_versions(self, *, sdk_type: str | None = None) -> JSON:
+        """``GET /studios/sdk-versions`` — SDK versions available to Studio spaces.
+
+        Only ``sdk_type="gradio"`` yields versions; every other SDK type (and
+        omitting it) returns an empty list.
+        """
+        _validate_choice("sdk_type", sdk_type, _STUDIO_SDK_TYPES)
+        params = self._merge_params({"sdk_type": sdk_type})
+        return self._request(
+            "GET",
+            "/studios/sdk-versions",
+            params=params,
+            require_token=False,
+            required_scope=TokenScope.READ,
+            anonymous_retry=True,
+        )
+
     def create_studio(self, payload: CreateStudioPayload | Mapping[str, Any]) -> JSON:
         """``POST /studios`` — create a new Studio space."""
-        return self._request("POST", "/studios", json_body=dict(payload))
+        return self._request(
+            "POST",
+            "/studios",
+            json_body=dict(payload),
+            required_scope=TokenScope.WRITE,
+        )
 
     def get_studio(self, owner: str, repo_name: str) -> JSON:
-        """``GET /studios/{owner}/{repo_name}`` — fetch Studio metadata."""
-        return self._request("GET", f"/studios/{owner}/{repo_name}")
+        """``GET /studios/{owner}/{repo_name}`` — fetch Studio metadata.
+
+        Public and experience-public (``protected``) spaces are readable without
+        credentials, so no token is demanded up front.
+        """
+        return self._request(
+            "GET",
+            f"/studios/{owner}/{repo_name}",
+            require_token=False,
+            required_scope=TokenScope.READ,
+            anonymous_retry=True,
+        )
 
     def deploy_studio(
         self,
@@ -598,16 +882,27 @@ class OpenAPIClient:
         repo_name: str,
         payload: Mapping[str, Any] | None = None,
     ) -> JSON:
-        """``POST /studios/{owner}/{repo_name}/deploy`` — trigger a deployment."""
+        """``POST /studios/{owner}/{repo_name}/deploy`` — trigger a deployment.
+
+        The specification defines no request body for this operation; *payload*
+        is forwarded when given only so that callers written against an older
+        server keep working.
+        """
         return self._request(
             "POST",
             f"/studios/{owner}/{repo_name}/deploy",
             json_body=dict(payload) if payload else None,
+            required_scope=TokenScope.WRITE,
         )
 
     def stop_studio(self, owner: str, repo_name: str) -> JSON:
         """``POST /studios/{owner}/{repo_name}/stop`` — stop a running Studio."""
-        return self._request("POST", f"/studios/{owner}/{repo_name}/stop", json_body=None)
+        return self._request(
+            "POST",
+            f"/studios/{owner}/{repo_name}/stop",
+            json_body=None,
+            required_scope=TokenScope.WRITE,
+        )
 
     def get_studio_logs(
         self,
@@ -621,7 +916,14 @@ class OpenAPIClient:
         start_timestamp: int | None = None,
         end_timestamp: int | None = None,
     ) -> JSON:
-        """``GET /studios/{owner}/{repo_name}/logs/{log_type}`` — paginated logs."""
+        """``GET /studios/{owner}/{repo_name}/logs/{log_type}`` — paginated logs.
+
+        The response payload carries ``logs``, ``page_num``, ``page_size``,
+        ``total_count`` and ``total_page_num``.
+        """
+        _validate_choice("log_type", log_type, _STUDIO_LOG_TYPES)
+        if page_size > _STUDIO_LOG_MAX_PAGE_SIZE:
+            raise InvalidParameter(f"page_size must be <= {_STUDIO_LOG_MAX_PAGE_SIZE} (got {page_size}).")
         params = self._merge_params(
             {
                 "page_num": page_num,
@@ -635,11 +937,20 @@ class OpenAPIClient:
             "GET",
             f"/studios/{owner}/{repo_name}/logs/{log_type}",
             params=params,
+            required_scope=TokenScope.READ,
         )
 
     def list_studio_secrets(self, owner: str, repo_name: str) -> JSON:
-        """``GET /studios/{owner}/{repo_name}/secrets`` — list configured secrets."""
-        return self._request("GET", f"/studios/{owner}/{repo_name}/secrets")
+        """``GET /studios/{owner}/{repo_name}/secrets`` — list secret keys.
+
+        Only the keys are returned; values are never disclosed. Use
+        :meth:`list_studio_variables` for the plaintext counterpart.
+        """
+        return self._request(
+            "GET",
+            f"/studios/{owner}/{repo_name}/secrets",
+            required_scope=TokenScope.READ,
+        )
 
     def add_studio_secret(self, owner: str, repo_name: str, key: str, value: str) -> JSON:
         """``POST /studios/{owner}/{repo_name}/secrets`` — add a new secret."""
@@ -647,6 +958,7 @@ class OpenAPIClient:
             "POST",
             f"/studios/{owner}/{repo_name}/secrets",
             json_body={"key": key, "value": value},
+            required_scope=TokenScope.WRITE,
         )
 
     def update_studio_secret(self, owner: str, repo_name: str, key: str, value: str) -> JSON:
@@ -655,6 +967,7 @@ class OpenAPIClient:
             "PUT",
             f"/studios/{owner}/{repo_name}/secrets",
             json_body={"key": key, "value": value},
+            required_scope=TokenScope.WRITE,
         )
 
     def delete_studio_secret(self, owner: str, repo_name: str, key: str) -> JSON:
@@ -663,6 +976,53 @@ class OpenAPIClient:
             "DELETE",
             f"/studios/{owner}/{repo_name}/secrets",
             json_body={"key": key},
+            required_scope=TokenScope.WRITE,
+        )
+
+    # -- Plaintext variables --------------------------------------------
+    # Mirrors the secrets block above one-for-one. The only difference is
+    # disclosure: a variable's value is public, a secret's never is.
+    def list_studio_variables(self, owner: str, repo_name: str) -> JSON:
+        """``GET /studios/{owner}/{repo_name}/variables`` — list plaintext variables.
+
+        Both keys and values are returned, because unlike secrets the values of
+        plaintext variables are publicly visible.
+        """
+        return self._request(
+            "GET",
+            f"/studios/{owner}/{repo_name}/variables",
+            required_scope=TokenScope.READ,
+        )
+
+    def add_studio_variable(self, owner: str, repo_name: str, key: str, value: str) -> JSON:
+        """``POST /studios/{owner}/{repo_name}/variables`` — add a plaintext variable.
+
+        Both key and value are publicly visible; use
+        :meth:`add_studio_secret` for anything sensitive.
+        """
+        return self._request(
+            "POST",
+            f"/studios/{owner}/{repo_name}/variables",
+            json_body={"key": key, "value": value},
+            required_scope=TokenScope.WRITE,
+        )
+
+    def update_studio_variable(self, owner: str, repo_name: str, key: str, value: str) -> JSON:
+        """``PUT /studios/{owner}/{repo_name}/variables`` — overwrite a plaintext variable."""
+        return self._request(
+            "PUT",
+            f"/studios/{owner}/{repo_name}/variables",
+            json_body={"key": key, "value": value},
+            required_scope=TokenScope.WRITE,
+        )
+
+    def delete_studio_variable(self, owner: str, repo_name: str, key: str) -> JSON:
+        """``DELETE /studios/{owner}/{repo_name}/variables`` — remove a variable by key."""
+        return self._request(
+            "DELETE",
+            f"/studios/{owner}/{repo_name}/variables",
+            json_body={"key": key},
+            required_scope=TokenScope.WRITE,
         )
 
     def update_studio_settings(
@@ -671,11 +1031,17 @@ class OpenAPIClient:
         repo_name: str,
         settings: UpdateStudioSettingsPayload | Mapping[str, Any],
     ) -> JSON:
-        """``PATCH /studios/{owner}/{repo_name}/settings`` — update Studio settings."""
+        """``PATCH /studios/{owner}/{repo_name}/settings`` — update Studio settings.
+
+        Only the fields present in *settings* are modified. Changes to
+        ``sdk_type`` / ``sdk_version`` / ``base_image`` / ``hardware`` take effect
+        on the next deployment.
+        """
         return self._request(
             "PATCH",
             f"/studios/{owner}/{repo_name}/settings",
             json_body=dict(settings),
+            required_scope=TokenScope.WRITE,
         )
 
     # ==================================================================
@@ -706,16 +1072,17 @@ class OpenAPIClient:
         *,
         search: str | None = None,
         page_number: int = 1,
-        page_size: int = 10,
+        page_size: int = 20,
         filter: Mapping[str, Any] | None = None,
         extra: Mapping[str, Any] | None = None,
     ) -> JSON:
-        """``GET /mcp/servers`` — discover MCP servers.
+        """``PUT /mcp/servers`` — discover MCP servers.
 
-        Falls back to the historical ``PUT /mcp/servers`` endpoint while the
-        service rolls out GET support. If an optional token is rejected by the
-        legacy PUT list endpoint, retry anonymously so readonly or stale tokens
-        do not block public MCP discovery.
+        ``PUT`` is the only method the specification defines for this route, so it
+        is tried first. A ``GET`` variant is probed only after a ``PUT`` failure,
+        because probing first cost every single call a wasted round trip to a 404.
+        Whichever verb a deployment turns out to serve is remembered for the life
+        of this client, so the loser is attempted at most once.
 
         Parameters
         ----------
@@ -723,6 +1090,9 @@ class OpenAPIClient:
             Nested filter object. Supported keys: ``category``, ``is_hosted``.
         """
         if page_number * page_size > 100:
+            # The service enforces this itself, answering 403 QuotaLimitExceed with
+            # exactly this rule. Checking here spares the round trip and reports it
+            # as what it is -- a caller parameter mistake, not an exhausted quota.
             raise InvalidParameter(
                 f"page_number * page_size must be <= 100 for MCP servers (got {page_number * page_size})."
             )
@@ -736,30 +1106,58 @@ class OpenAPIClient:
         if extra:
             body.update(extra)
         body = {k: v for k, v in body.items() if v is not None}
-        params = self._flatten_mcp_list_params(body)
-        has_token = self._resolve_token() is not None
-        try:
-            return self._request("GET", "/mcp/servers", params=params, require_token=False)
-        except APIError as exc:
-            if not self._is_method_or_route_unsupported(exc):
-                raise
+
+        def _get() -> JSON:
+            return self._request(
+                "GET",
+                "/mcp/servers",
+                params=self._flatten_mcp_list_params(body),
+                require_token=False,
+                required_scope=TokenScope.READ,
+                anonymous_retry=True,
+            )
+
+        if self._mcp_list_supports_get:
+            # This deployment already answered GET and refused PUT, so leading
+            # with PUT again would just repeat a known 404 on every call.
+            return _get()
 
         try:
-            return self._request("PUT", "/mcp/servers", json_body=body, require_token=False)
-        except (AuthenticationError, PermissionDeniedError):
-            if not has_token:
-                raise
             return self._request(
                 "PUT",
                 "/mcp/servers",
                 json_body=body,
                 require_token=False,
-                anonymous=True,
+                required_scope=TokenScope.READ,
+                anonymous_retry=True,
             )
+        except APIError as exc:
+            if self._mcp_list_supports_get is False or not self._is_method_or_route_unsupported(exc):
+                raise
+
+        try:
+            data = _get()
+        except APIError as exc:
+            if self._is_method_or_route_unsupported(exc):
+                # Serves neither verb: stop probing GET on subsequent calls.
+                self._mcp_list_supports_get = False
+            raise
+        # Serves GET but not PUT: skip the PUT attempt from now on.
+        self._mcp_list_supports_get = True
+        return data
 
     def list_operational_mcp_servers(self) -> JSON:
-        """``GET /mcp/servers/operational`` — list servers deployed by the caller."""
-        return self._request("GET", "/mcp/servers/operational")
+        """``GET /mcp/servers/operational`` — list servers deployed by the caller.
+
+        Answers with the caller's own hosting, so no anonymous fallback: degrading
+        to an anonymous request would report "nothing deployed" for what is really
+        a credential problem.
+        """
+        return self._request(
+            "GET",
+            "/mcp/servers/operational",
+            required_scope=TokenScope.READ,
+        )
 
     def get_mcp_server(
         self,
@@ -768,8 +1166,15 @@ class OpenAPIClient:
         get_operational_url: bool | None = None,
     ) -> JSON:
         """``GET /mcp/servers/{id}`` — fetch a single MCP server's manifest."""
-        params = self._merge_params({"get_operational_url": get_operational_url})
-        return self._request("GET", f"/mcp/servers/{server_id}", params=params, require_token=False)
+        params = self._merge_params({"get_operational_url": _as_wire_bool(get_operational_url)})
+        return self._request(
+            "GET",
+            f"/mcp/servers/{server_id}",
+            params=params,
+            require_token=False,
+            required_scope=TokenScope.READ,
+            anonymous_retry=True,
+        )
 
     def deploy_mcp_server(
         self,
@@ -785,11 +1190,16 @@ class OpenAPIClient:
             "POST",
             f"/mcp/servers/{server_id}/deploy",
             json_body=body,
+            required_scope=TokenScope.WRITE,
         )
 
     def undeploy_mcp_server(self, server_id: str | int) -> JSON:
         """``DELETE /mcp/servers/{id}/undeploy`` — tear down a deployed MCP server."""
-        return self._request("DELETE", f"/mcp/servers/{server_id}/undeploy")
+        return self._request(
+            "DELETE",
+            f"/mcp/servers/{server_id}/undeploy",
+            required_scope=TokenScope.WRITE,
+        )
 
 
 # Re-export iterables-of-strings helper for parity with other modules that may
