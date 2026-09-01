@@ -13,7 +13,7 @@ import requests
 from modelscope_hub._openapi import _RETRYABLE_POST_PATHS, OpenAPIClient
 from modelscope_hub.api import HubApi
 from modelscope_hub.config import HubConfig
-from modelscope_hub.errors import InvalidParameter, RateLimitError, ServerError
+from modelscope_hub.errors import InvalidParameter, PermissionDeniedError, RateLimitError, ServerError
 
 
 @pytest.fixture
@@ -48,21 +48,57 @@ def _mock_response(status_code=200, json_data=None):
 # Item 2: list_mcp_servers filter param
 # ==================================================================
 class TestListMcpServersFilter:
-    def test_filter_included_in_body(self, client):
+    def test_filter_included_in_get_params(self, client):
         resp = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
         with patch.object(client._session, "request", return_value=resp) as mock_req:
             client.list_mcp_servers(filter={"category": "tools", "is_hosted": True})
         call_kwargs = mock_req.call_args.kwargs
-        body = call_kwargs["json"]
-        assert body["filter"] == {"category": "tools", "is_hosted": True}
+        params = dict(call_kwargs["params"])
+        assert call_kwargs["method"] == "GET"
+        assert call_kwargs["json"] is None
+        assert params["filter.category"] == "tools"
+        assert params["filter.is_hosted"] == "true"
 
-    def test_filter_none_not_in_body(self, client):
+    def test_filter_none_not_in_get_params(self, client):
         resp = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
         with patch.object(client._session, "request", return_value=resp) as mock_req:
             client.list_mcp_servers()
         call_kwargs = mock_req.call_args.kwargs
-        body = call_kwargs["json"]
-        assert "filter" not in body
+        params = dict(call_kwargs["params"])
+        assert call_kwargs["method"] == "GET"
+        assert "filter.category" not in params
+        assert "filter" not in params
+
+    def test_get_route_unsupported_falls_back_to_legacy_put(self, client):
+        not_found = _mock_response(status_code=404, json_data={"message": "not found"})
+        success = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
+        with patch.object(client._session, "request", side_effect=[not_found, success]) as mock_req:
+            client.list_mcp_servers(search="weather", page_number=1, page_size=2)
+        first, second = mock_req.call_args_list
+        assert first.kwargs["method"] == "GET"
+        assert dict(first.kwargs["params"])["search"] == "weather"
+        assert second.kwargs["method"] == "PUT"
+        assert second.kwargs["json"] == {"search": "weather", "page_number": 1, "page_size": 2}
+
+    def test_get_permission_denied_does_not_fallback_to_put(self, client):
+        denied = _mock_response(status_code=403, json_data={"message": "denied"})
+        with patch.object(client._session, "request", return_value=denied) as mock_req:
+            with pytest.raises(PermissionDeniedError):
+                client.list_mcp_servers()
+        assert mock_req.call_count == 1
+        assert mock_req.call_args.kwargs["method"] == "GET"
+
+    def test_put_auth_failure_falls_back_to_anonymous_put(self, client):
+        not_found = _mock_response(status_code=404, json_data={"message": "not found"})
+        denied = _mock_response(status_code=403, json_data={"message": "denied"})
+        success = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
+        with patch.object(client._session, "request", side_effect=[not_found, denied, success]) as mock_req:
+            client.list_mcp_servers(page_number=1, page_size=2)
+        assert [call.kwargs["method"] for call in mock_req.call_args_list] == ["GET", "PUT", "PUT"]
+        assert "Authorization" in mock_req.call_args_list[1].kwargs["headers"]
+        assert mock_req.call_args_list[1].kwargs["cookies"]
+        assert "Authorization" not in mock_req.call_args_list[2].kwargs["headers"]
+        assert mock_req.call_args_list[2].kwargs["cookies"] == {}
 
 
 # ==================================================================
@@ -202,8 +238,8 @@ class TestPageSizeDefaults:
         with patch.object(client._session, "request", return_value=resp) as mock_req:
             client.list_mcp_servers()
         call_kwargs = mock_req.call_args.kwargs
-        body = call_kwargs["json"]
-        assert body["page_size"] == 10
+        params = dict(call_kwargs["params"])
+        assert params["page_size"] == "10"
 
 
 # ==================================================================

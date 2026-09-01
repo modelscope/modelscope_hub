@@ -91,9 +91,9 @@ class TestUploadParser:
         args = parser.parse_args(["upload", "o/r", "."])
         assert args.max_workers is None
 
-    def test_use_cache_default_true(self, parser):
+    def test_use_cache_default_uses_environment(self, parser):
         args = parser.parse_args(["upload", "o/r", "."])
-        assert args.use_cache is True
+        assert args.use_cache is None
 
     def test_no_cache(self, parser):
         args = parser.parse_args(["upload", "o/r", ".", "--no-cache"])

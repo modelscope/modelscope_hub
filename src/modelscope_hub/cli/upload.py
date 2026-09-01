@@ -78,8 +78,8 @@ class UploadCommand(CLICommand):
             "--use-cache",
             dest="use_cache",
             action="store_true",
-            default=True,
-            help="Use .ms_upload_cache for resumable folder uploads (default).",
+            default=None,
+            help="Enable upload cache / resume support.",
         )
         cache_group.add_argument(
             "--no-cache",

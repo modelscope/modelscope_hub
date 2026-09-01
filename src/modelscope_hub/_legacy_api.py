@@ -30,9 +30,9 @@ from .constants import (
     REPO_FILES_TRUNCATION_LIMIT,
     REPO_TREE_MAX_REQUESTS,
     REPO_TREE_WALK_WORKERS,
-    UPLOAD_BLOB_CONNECT_TIMEOUT,
-    UPLOAD_BLOB_READ_TIMEOUT,
-    UPLOAD_RETRY_ALLOWED_METHODS,
+    UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS,
+    UPLOAD_BLOB_READ_TIMEOUT_SECONDS,
+    UPLOAD_HTTP_RETRY_ALLOWED_METHODS,
     RepoType,
 )
 from .errors import InvalidParameter, NetworkError, RequestTimeoutError, ServerError, raise_for_status
@@ -108,7 +108,7 @@ class LegacyClient:
             total=max_retries,
             backoff_factor=0.5,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=UPLOAD_RETRY_ALLOWED_METHODS,
+            allowed_methods=UPLOAD_HTTP_RETRY_ALLOWED_METHODS,
         )
         adapter = HTTPAdapter(max_retries=retry)
         self._session.mount("https://", adapter)
@@ -778,7 +778,7 @@ class LegacyClient:
         size: int,
         *,
         headers: dict[str, str] | None = None,
-        timeout: int | None = None,
+        timeout: int | tuple[int, int] | None = None,
     ) -> dict:
         """Upload a blob to the presigned URL returned by :meth:`validate_blobs`.
 
@@ -805,7 +805,7 @@ class LegacyClient:
                 upload_url,
                 data=data,
                 headers=upload_headers,
-                timeout=timeout or (UPLOAD_BLOB_CONNECT_TIMEOUT, UPLOAD_BLOB_READ_TIMEOUT),
+                timeout=timeout or (UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS, UPLOAD_BLOB_READ_TIMEOUT_SECONDS),
             )
         except requests.ConnectionError as exc:
             raise NetworkError(f"Blob upload connection failed: {exc}") from exc
