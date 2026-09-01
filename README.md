@@ -34,22 +34,18 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 ## News
 
 **v0.4.0** (2026-09-01)
-- **Feature**: complete OpenAPI coverage for MCP and Studios — `studio list` / `list --repo-type studio`, `studio variable` (plaintext env vars), `studio hardware` / `base-images` / `sdk-versions` so valid option values no longer have to be guessed, `mcp list --hosted`; `--visibility protected` (app public, code hidden); `RepoInfo` carries the Studio runtime fields instead of discarding them
-- **Feature**: permission-tiered tokens — a read-only token can `login` (warning that writes need a higher tier), and a rejected write names the tier it requires
-- **Fix**: the compat layer forwarded `token` / `endpoint` as business fields (your **API token was serialised into the `PATCH` body**, and per-call `token=` raised or was silently ignored); `cover_image` reached the server as `coverImage` and was dropped, so cover images never applied
-- **Fix**: HTTP 403 now separates insufficient permission (`PermissionDeniedError`) from an exhausted quota (`QuotaExceededError`, never retried); 409 maps to `AlreadyExistsError`; the OpenAPI string error codes are recognised; `info --repo-type studio` works anonymously; `studio logs` prints its pagination footer again
-- **Enhance**: MCP discovery sends `PUT` first and remembers which verb a deployment serves; listing a Studio owner asks for every status instead of answering with nothing
-- **Quality**: the OpenAPI spec is vendored under `tests/data/` and checked against an operation registry, so a newly published MCP/Studios endpoint fails the suite by name
+- **Feature**: full MCP/Studios OpenAPI coverage: Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier
+- **Fix**: Studio compat calls no longer leak connection options or API tokens, or drop cover images; errors distinguish permission, quota and conflicts; anonymous Studio info and log pagination work
+- **Enhance**: MCP verb negotiation and Studio-owner listings adapt to endpoint behaviour
+- **Quality**: the vendored OpenAPI spec and operation registry flag unimplemented published MCP/Studios endpoints
 
 **v0.3.1** (2026-09-01)
-- **Refactor**: upload environment variables renamed to carry their units and semantics (`UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS`, `UPLOAD_BLOB_MAX_ATTEMPTS`, …); the previous names keep working with a deprecation warning
-- **Fix**: `ms-hub logout` is wired up (the API supported it but the CLI never exposed it); download lock filenames hash the remote path, so files sharing a basename no longer contend for one lock
-- **Fix**: `whoami` and legacy compat paths (`get_model_files`, …) map the pre-production field names to their canonical ones and align with the current server responses
+- **Refactor**: upload environment variables now state their units and semantics; deprecated names remain supported with warnings
+- **Fix**: logout works; download locks avoid same-basename contention; `whoami` and legacy responses normalise pre-production field names
 
 **v0.3.0** (2026-08-19)
-- **Feature**: this package now installs all four console scripts — `modelscope`, `ms`, `modelscope-hub`, `ms-hub` — so one distribution owns them and neither package can strand the other's CLI on upgrade; the umbrella SDK contributes its commands as plugins
-- **Feature**: `HubApi.get_current_username()`; agent visibility reads the API's new boolean `private` field while still accepting the legacy `visibility` string
-- **Fix**: the server truncates `repo/files` at a fixed entry count with no marker and ignores pagination, silently hiding files in large repos; listings that land on the cap are now re-enumerated per directory
+- **Feature**: this package owns all four console scripts (`modelscope`, `ms`, `modelscope-hub`, `ms-hub`), adds `HubApi.get_current_username()`, and supports both agent visibility wire formats
+- **Fix**: large `repo/files` listings are re-enumerated when the server silently truncates results
 
 <details>
 <summary>Older releases</summary>
