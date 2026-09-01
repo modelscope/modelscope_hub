@@ -34,17 +34,28 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 ## News
 
 **v0.4.0** (2026-09-01)
-- **Feature**: full OpenAPI coverage for MCP and Studios — `ms-hub studio list`, `ms-hub list --repo-type studio`, `ms-hub studio variable` (plaintext environment variables), and `ms-hub studio hardware` / `base-images` / `sdk-versions` so valid `--hardware` / `--base-image` / `--sdk-version` values no longer have to be guessed; `ms-hub mcp list --hosted` and `HubApi.list_operational_mcp_servers()`
-- **Feature**: Studio `--visibility protected` (app public, code repository hidden), previously inexpressible; `RepoInfo` now carries the Studio runtime fields (`sdk_type`, `sdk_version`, `base_image`, `hardware`, `mcp_support`, `runtime`) instead of discarding them
-- **Feature**: permission-tiered token support — a read-only token can now `login` (with a warning that write operations need a higher tier), and a rejected write reports which tier it requires
-- **Fix**: the compat layer no longer forwards `token` / `endpoint` into request bodies — `HubApi().update_studio_settings(..., token=...)` was serialising your **API token into the `PATCH` body**
-- **Fix**: `HubApi().get_studio_logs(..., token=...)` raised `TypeError` and could never succeed; a per-call `token=` on the Studio compat methods was silently ignored
-- **Fix**: `cover_image` was renamed to `coverImage` on the way out and silently dropped by the server, so Studio cover images never applied (`ms-hub studio settings --cover-image`, `create_repo(cover_image=...)`)
-- **Fix**: HTTP 403 now distinguishes insufficient permission (`PermissionDeniedError`) from an exhausted quota (new `QuotaExceededError`, never retried); 409 maps to `AlreadyExistsError`; the OpenAPI string error codes are recognised at last
-- **Fix**: `ms-hub info --repo-type studio` works anonymously for public spaces; `ms-hub studio logs` prints its pagination footer again (it read a field the response never had)
-- **Enhance**: MCP discovery sends `PUT` first — the only verb the spec defines — instead of spending a wasted round trip on a `GET` 404 every call; whichever verb a deployment serves is remembered, so the loser is attempted at most once
-- **Enhance**: `ms-hub studio list --owner` / `ms-hub list --repo-type studio --owner` now ask for every status, because the endpoint keeps filtering to running spaces even with an owner set and "list my spaces" therefore answered with nothing
-- **Quality**: the OpenAPI specification is vendored under `tests/data/` and checked against an operation registry, so a newly published MCP/Studios endpoint now fails the suite by name
+- **Feature**: complete OpenAPI coverage for MCP and Studios — `ms-hub studio list` / `ms-hub list --repo-type studio`, `ms-hub studio variable` (plaintext env vars), `ms-hub studio hardware` / `base-images` / `sdk-versions` so valid `--hardware` / `--base-image` / `--sdk-version` values no longer have to be guessed, and `ms-hub mcp list --hosted`
+- **Feature**: Studio `--visibility protected` (app public, code hidden), previously inexpressible; `RepoInfo` now carries the Studio runtime fields (`sdk_type`, `hardware`, `runtime`, …) instead of discarding them
+- **Feature**: permission-tiered tokens — a read-only token can `login` (warning that writes need a higher tier), and a rejected write names the tier it requires
+- **Fix**: the compat layer forwarded `token` / `endpoint` as business fields, so `update_studio_settings(..., token=...)` serialised your **API token into the `PATCH` body**, `get_studio_logs(..., token=...)` raised `TypeError`, and a per-call `token=` was silently ignored
+- **Fix**: `cover_image` was renamed to `coverImage` on the way out and dropped by the server, so Studio cover images never applied
+- **Fix**: HTTP 403 now separates insufficient permission (`PermissionDeniedError`) from an exhausted quota (new `QuotaExceededError`, never retried); 409 maps to `AlreadyExistsError`; the OpenAPI string error codes are recognised at last
+- **Fix**: `ms-hub info --repo-type studio` works anonymously for public spaces; `ms-hub studio logs` prints its pagination footer again
+- **Enhance**: MCP discovery sends `PUT` first (the only verb the spec defines) and remembers which verb a deployment serves; listing a Studio owner asks for every status, since the endpoint otherwise answers "list my spaces" with nothing
+- **Quality**: the OpenAPI spec is vendored under `tests/data/` and checked against an operation registry, so a newly published MCP/Studios endpoint fails the suite by name
+
+**v0.3.1** (2026-09-01)
+- **Refactor**: upload environment variables renamed to carry their units and semantics (`UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS`, `UPLOAD_BLOB_MAX_ATTEMPTS`, `UPLOAD_BLOB_PROGRESS_THRESHOLD_BYTES`, …); the previous names keep working and emit a deprecation warning
+- **Fix**: `ms-hub logout` is wired up (the API supported it but the CLI never exposed it); download lock filenames hash the remote path, so files sharing a basename no longer contend for one lock
+- **Fix**: `whoami` and `UserInfo` map the pre-production field names to their canonical ones; `get_model_files` and other legacy compat paths align with the current server responses
+
+**v0.3.0** (2026-08-19)
+- **Feature**: this package now installs all four console scripts — `modelscope`, `ms`, `modelscope-hub`, `ms-hub` — so exactly one distribution owns them and neither package can strand the other's CLI on upgrade; the umbrella SDK contributes its commands as plugins instead
+- **Fix**: the server truncates `repo/files` at a fixed entry count with no marker and ignores pagination, silently hiding files in large repos; listings that land on the cap are now re-enumerated per directory
+- **Feature**: `HubApi.get_current_username()`; agent visibility reads the API's new boolean `private` field while still accepting the legacy `visibility` string
+
+<details>
+<summary>Older releases</summary>
 
 **v0.2.0** (2026-08-01)
 - **Breaking**: `HubApi.login()` now raises `NetworkError` / `ServerError` / `RequestTimeoutError` for non-authentication failures instead of always raising `AuthenticationError` — widen `except AuthenticationError` to `HubError` if you catch *any* login failure
@@ -61,9 +72,6 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 - **Feature**: `ms-hub agent` raw file transfer (download/upload/list) for remote agent repos; visibility support for agent hub; cache checksum verification (`ms-hub cache verify`)
 - **Fix**: forward `progress_callbacks` through `HubApi.download_repo` so custom download-progress callbacks work end-to-end; harden legacy (pre-1.38) cache auto-detection (reuse existing `{cache}/models/...` and default `{cache}/hub/models/...` layouts); normal (non-LFS) file upload
 - **Packaging**: rename console scripts to `modelscope-hub` / `ms-hub` to avoid a file conflict with the `modelscope` package (e.g. FreeBSD pkg)
-
-<details>
-<summary>Older releases</summary>
 
 **v0.1.7** (2026-07-07)
 - **Feature**: intra-/inter-region cloud download acceleration, with a source marker in the progress bar
