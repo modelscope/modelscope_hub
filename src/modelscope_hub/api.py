@@ -23,6 +23,7 @@ Design principles
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any, BinaryIO, TypeAlias
@@ -38,6 +39,7 @@ from ._download import DownloadManager, ProgressCallback
 from ._legacy_api import LegacyClient
 from ._openapi import OpenAPIClient
 from ._upload import UploadManager
+from .agent_idp import sign_agent_token_request
 from .config import HubConfig, get_default_config
 from .constants import DEFAULT_ENDPOINT, RepoType, StudioVisibility, Visibility
 from .errors import (
@@ -49,7 +51,20 @@ from .errors import (
     NotSupportedError,
     PermissionDeniedError,
 )
-from .types import CacheInfo, CacheVerification, FileInfo, PagedResult, RepoInfo, UserInfo
+from .types import (
+    AgentIdConfiguration,
+    AgentIdentity,
+    AgentIdentitySummary,
+    AgentJWK,
+    AgentToken,
+    AgentTokenRecord,
+    CacheInfo,
+    CacheVerification,
+    FileInfo,
+    PagedResult,
+    RepoInfo,
+    UserInfo,
+)
 from .utils.logger import get_logger
 
 __all__ = ["HubApi"]
@@ -2265,6 +2280,109 @@ class HubApi:
         >>> api.undeploy_mcp_server("alice/weather-mcp")
         """
         return self.openapi.undeploy_mcp_server(server_id)
+
+    # ==================================================================
+    # Agent-IDP
+    # ==================================================================
+    def create_agent_identity(self, payload: Mapping[str, Any]) -> AgentIdentity:
+        """Register an Agent-IDP identity with an Ed25519 public JWK."""
+        return AgentIdentity.from_dict(self.openapi.create_agent_identity(payload))
+
+    def get_agent_identity(self, agent_id: str) -> AgentIdentity:
+        """Return an Agent-IDP identity and its current public key."""
+        return AgentIdentity.from_dict(self.openapi.get_agent_identity(agent_id))
+
+    def update_agent_identity(self, agent_id: str, payload: Mapping[str, Any]) -> AgentIdentity:
+        """Update an Agent-IDP identity's mutable metadata."""
+        return AgentIdentity.from_dict(self.openapi.update_agent_identity(agent_id, payload))
+
+    def delete_agent_identity(self, agent_id: str) -> dict:
+        """Delete an Agent-IDP identity and prevent future token issuance."""
+        result = self.openapi.delete_agent_identity(agent_id)
+        return result if isinstance(result, dict) else {}
+
+    def reset_agent_key_pair(self, agent_id: str, payload: Mapping[str, Any]) -> AgentIdentity:
+        """Replace an Agent-IDP identity's registered Ed25519 public key."""
+        return AgentIdentity.from_dict(self.openapi.reset_agent_key_pair(agent_id, payload))
+
+    def pause_agent(self, agent_id: str, *, paused: bool) -> dict:
+        """Pause or resume JWT issuance for an Agent-IDP identity."""
+        result = self.openapi.pause_agent(agent_id, {"paused": paused})
+        return result if isinstance(result, dict) else {}
+
+    def list_agent_token_records(
+        self,
+        agent_id: str,
+        *,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> PagedResult[AgentTokenRecord]:
+        """List one Agent-IDP identity's issued token records."""
+        payload = self.openapi.list_agent_token_records(agent_id, page=page, page_size=page_size)
+        data = payload if isinstance(payload, Mapping) else {}
+        raw_records = data.get("token_records")
+        records: list[Any] = raw_records if isinstance(raw_records, list) else []
+        return PagedResult(
+            items=[AgentTokenRecord.from_dict(item) for item in records if isinstance(item, Mapping)],
+            total_count=int(data.get("total_count") or 0),
+            page_number=int(data.get("page_number") or page),
+            page_size=int(data.get("page_size") or page_size),
+            collection_key="token_records",
+        )
+
+    def list_user_agent_identities(
+        self,
+        username: str,
+        *,
+        status: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> PagedResult[AgentIdentitySummary]:
+        """List a user's Agent-IDP identities via the OpenAPI surface."""
+        payload = self.openapi.list_user_agent_identities(username, status=status, page=page, page_size=page_size)
+        data = payload if isinstance(payload, Mapping) else {}
+        raw_identities = data.get("agent_identities")
+        identities: list[Any] = raw_identities if isinstance(raw_identities, list) else []
+        return PagedResult(
+            items=[AgentIdentitySummary.from_dict(item) for item in identities if isinstance(item, Mapping)],
+            total_count=int(data.get("total_count") or 0),
+            page_number=int(data.get("page_number") or page),
+            page_size=int(data.get("page_size") or page_size),
+            collection_key="agent_identities",
+        )
+
+    def issue_agent_token(self, payload: Mapping[str, Any]) -> AgentToken:
+        """Exchange a locally signed Agent-IDP request for a short-lived JWT."""
+        return AgentToken.from_dict(self.openapi.issue_agent_token(payload))
+
+    def issue_agent_token_with_private_key(
+        self,
+        private_jwk: AgentJWK | Mapping[str, Any],
+        *,
+        agent_id: str,
+        audience: str,
+        timestamp: int | None = None,
+    ) -> AgentToken:
+        """Locally sign and exchange an Agent-IDP token request without persisting a key."""
+        signed = sign_agent_token_request(
+            private_jwk,
+            agent_id=agent_id,
+            audience=audience,
+            timestamp=int(time.time()) if timestamp is None else timestamp,
+        )
+        return self.issue_agent_token(signed)
+
+    def get_agent_id_configuration(self) -> AgentIdConfiguration:
+        """Fetch anonymous Agent-IDP OIDC discovery metadata."""
+        return AgentIdConfiguration.from_dict(self.openapi.get_agent_id_configuration())
+
+    def get_agent_id_jwks(self) -> list[AgentJWK]:
+        """Fetch anonymous Agent-IDP JWT verification keys."""
+        payload = self.openapi.get_agent_id_jwks()
+        keys = payload.get("keys") if isinstance(payload, Mapping) else None
+        if not isinstance(keys, list):
+            return []
+        return [AgentJWK.from_dict(item) for item in keys if isinstance(item, Mapping)]
 
     # ==================================================================
     # Cache

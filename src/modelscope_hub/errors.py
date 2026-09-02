@@ -37,6 +37,9 @@ _SENSITIVE_KEYWORDS: tuple[str, ...] = (
     "session",
     "api_key",
     "apikey",
+    "signature",
+    "jwt",
+    "private_key",
 )
 _SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset(
     {
@@ -53,6 +56,8 @@ _SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset(
         "key",
         "authorization",
         "credentials",
+        "signature",
+        "jwt",
     }
 )
 _SENSITIVE_BODY_KEYS: re.Pattern[str] = re.compile(

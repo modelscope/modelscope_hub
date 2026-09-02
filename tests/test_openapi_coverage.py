@@ -24,7 +24,7 @@ _SPEC_PATH = Path(__file__).parent / "data" / "openapi.json"
 _HTTP_METHODS = frozenset({"get", "post", "put", "delete", "patch", "head", "options"})
 
 # Tags the SDK implements end to end.
-_COVERED_TAGS = frozenset({"MCP", "Studios"})
+_COVERED_TAGS = frozenset({"Agent-IDP", "MCP", "Studios"})
 
 # Tags not implemented yet. Remove an entry as its tag lands; until then the
 # guard would otherwise fail on operations nobody has promised.
@@ -36,7 +36,6 @@ _DEFERRED_TAGS = frozenset(
         "Skills",
         "Files",
         "Collections",
-        "Agent-IDP",
         "Galleries",
         "Magicube",
     }

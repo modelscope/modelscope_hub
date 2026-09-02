@@ -23,6 +23,7 @@ dependencies = [
     "tqdm>=4.64.0",
     "filelock>=3.9",
     "urllib3>=1.26",
+    "cryptography>=41",
 ]
 
 [project.optional-dependencies]
