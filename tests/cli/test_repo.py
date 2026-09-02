@@ -193,14 +193,30 @@ class TestInfoParser:
 class TestListParser:
     """``ms list`` argument parsing."""
 
-    @pytest.mark.parametrize("repo_type", ["model", "dataset", "skill", "mcp"])
+    @pytest.mark.parametrize("repo_type", ["model", "dataset", "studio", "skill", "mcp"])
     def test_all_repo_types(self, parser, repo_type):
         args = parser.parse_args(["list", "--repo-type", repo_type])
         assert args.repo_type == repo_type
 
     def test_invalid_repo_type_rejected(self, parser):
         with pytest.raises(SystemExit):
-            parser.parse_args(["list", "--repo-type", "studio"])
+            parser.parse_args(["list", "--repo-type", "gallery"])
+
+    def test_studio_owner_listing_asks_for_every_status(self, parser, mock_api):
+        """The Studios endpoint keeps filtering to running spaces even with an
+        owner set, so listing your own would otherwise answer with nothing."""
+        mock_api.list_repos.return_value = PagedResult(items=[], total_count=0)
+        args = parser.parse_args(["list", "--repo-type", "studio", "--owner", "alice"])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            ListCommand(args).execute()
+        assert mock_api.list_repos.call_args.kwargs["status"] == "all"
+
+    def test_non_studio_listing_sends_no_status(self, parser, mock_api):
+        mock_api.list_repos.return_value = PagedResult(items=[], total_count=0)
+        args = parser.parse_args(["list", "--repo-type", "model", "--owner", "alice"])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            ListCommand(args).execute()
+        assert "status" not in mock_api.list_repos.call_args.kwargs
 
     def test_owner_flag(self, parser):
         args = parser.parse_args(["list", "--repo-type", "model", "--owner", "my-org"])

@@ -33,6 +33,23 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.4.0** (2026-09-01)
+- **Feature**: complete OpenAPI coverage for Agent-IDP, MCP, and Studios — Agent Ed25519 identities, OIDC discovery/JWKS and signed JWT issuance (`HubApi`, `ms-hub agent-idp`); Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier. Agent private JWKs are only written to an explicitly requested owner-only file.
+- **Fix**: Studio compat calls no longer leak connection options or API tokens, or drop cover images; errors distinguish permission, quota and conflicts; anonymous Studio info and log pagination work
+- **Enhance**: MCP verb negotiation and Studio-owner listings adapt to endpoint behaviour
+- **Quality**: the vendored OpenAPI spec and operation registry flag unimplemented published Agent-IDP, MCP, and Studios endpoints
+
+**v0.3.1** (2026-09-01)
+- **Refactor**: upload environment variables now state their units and semantics; deprecated names remain supported with warnings
+- **Fix**: logout works; download locks avoid same-basename contention; `whoami` and legacy responses normalise pre-production field names
+
+**v0.3.0** (2026-08-19)
+- **Feature**: this package owns all four console scripts (`modelscope`, `ms`, `modelscope-hub`, `ms-hub`), adds `HubApi.get_current_username()`, and supports both agent visibility wire formats
+- **Fix**: large `repo/files` listings are re-enumerated when the server silently truncates results
+
+<details>
+<summary>Older releases</summary>
+
 **v0.2.0** (2026-08-01)
 - **Breaking**: `HubApi.login()` now raises `NetworkError` / `ServerError` / `RequestTimeoutError` for non-authentication failures instead of always raising `AuthenticationError` — widen `except AuthenticationError` to `HubError` if you catch *any* login failure
 - **Fix**: network, timeout and 5xx errors during login are no longer misreported as an invalid token; a failed login no longer deletes stored credentials; bare and upper-case endpoints are accepted (e.g. `--endpoint modelscope.ai`)
@@ -48,9 +65,6 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 - **Feature**: `ms-hub agent` raw file transfer (download/upload/list) for remote agent repos; visibility support for agent hub; cache checksum verification (`ms-hub cache verify`)
 - **Fix**: forward `progress_callbacks` through `HubApi.download_repo` so custom download-progress callbacks work end-to-end; harden legacy (pre-1.38) cache auto-detection (reuse existing `{cache}/models/...` and default `{cache}/hub/models/...` layouts); normal (non-LFS) file upload
 - **Packaging**: rename console scripts to `modelscope-hub` / `ms-hub` to avoid a file conflict with the `modelscope` package (e.g. FreeBSD pkg)
-
-<details>
-<summary>Older releases</summary>
 
 **v0.1.7** (2026-07-07)
 - **Feature**: intra-/inter-region cloud download acceleration, with a source marker in the progress bar
@@ -264,6 +278,36 @@ ms-hub login --token $MY_TOKEN        # non-interactive
 |--------|-------------|
 | `--token TOKEN` | API token; prompted interactively if omitted |
 
+#### Token permission levels
+
+Tokens are issued with one of three permission levels, set when you create the
+token at [modelscope.cn/my/myaccesstoken](https://modelscope.cn/my/myaccesstoken):
+
+| Level | Can do |
+|-------|--------|
+| `read` | Browse and download; list your Studios, secrets and variables |
+| `write` | Everything above, plus create/upload/deploy and change settings |
+| `admin` | Everything above, plus administrative operations |
+
+What this means in practice:
+
+- **A read-only token can log in.** `ms-hub login` succeeds and prints a warning
+  that git and session credentials were not issued, so pushes and uploads will
+  need a `write` token. Downloads and browsing work normally.
+- **A rejected write is explicit.** Attempting a write with a read-only token
+  fails with `[E3002] Permission denied` and a suggestion naming the level the
+  operation requires, rather than leaving you to guess.
+- **Quota exhaustion is not a permission problem.** The service reports both as
+  HTTP 403; the SDK separates them into `PermissionDeniedError` and
+  `QuotaExceededError` (the latter is never retried, since retrying an exhausted
+  quota only delays the error).
+- **Public reads never fail because of a token.** For public endpoints the SDK
+  retries once without credentials, so a read-scoped or stale token cannot hide
+  data any anonymous caller can see.
+
+> The SDK cannot tell you which level *your* token has: the API does not report
+> it. Check the token settings page if you are unsure.
+
 ### `ms-hub whoami`
 
 Show the user associated with the current token.
@@ -400,6 +444,7 @@ ms-hub create my-org/my-model --repo-type model --visibility private
 ms-hub create my-org/demo --repo-type studio --sdk-type gradio
 ms-hub info my-org/my-model --repo-type model
 ms-hub list --repo-type model --owner my-org --page-size 20
+ms-hub list --repo-type studio --owner my-org
 ms-hub delete my-org/my-model --repo-type model --yes
 ```
 
@@ -414,7 +459,7 @@ ms-hub delete my-org/my-model --repo-type model --yes
 |-------------------|----------|-------------|
 | `repo_id` | yes | Repository identifier |
 | `--repo-type` | yes | `model`, `dataset`, `studio`, or `skill` |
-| `--visibility` | no | `public`, `private`, or `internal` |
+| `--visibility` | no | `public`, `private` or `internal`. For Studios also `protected` (app public, code repository hidden) |
 | `--license` | no | SPDX license identifier (e.g. `apache-2.0`) |
 | `--chinese-name` | no | Display name in Chinese |
 | `--description` | no | Repository description |
@@ -453,15 +498,24 @@ ms-hub stop my-org/chat-demo --repo-type studio
 
 </details>
 
-### `ms-hub secret`
+### `ms-hub secret` / `ms-hub studio variable`
 
-Manage secrets for Studio spaces (studio only, `--repo-type` defaults to `studio`).
+Manage a Studio's environment variables. Two commands, because the disclosure
+differs: a **secret**'s value is never returned by the API, a **variable**'s value
+is publicly visible.
 
 ```bash
+# Secrets — values are write-only
 ms-hub secret add my-org/demo API_KEY sk-xxx
 ms-hub secret list my-org/demo
 ms-hub secret update my-org/demo API_KEY sk-new
 ms-hub secret delete my-org/demo API_KEY --yes
+
+# Plaintext variables — values are readable by anyone
+ms-hub studio variable add my-org/demo MODEL_NAME Qwen2.5-7B
+ms-hub studio variable list my-org/demo
+ms-hub studio variable update my-org/demo MODEL_NAME Qwen2.5-14B
+ms-hub studio variable delete my-org/demo MODEL_NAME --yes
 ```
 
 <details>
@@ -469,12 +523,64 @@ ms-hub secret delete my-org/demo API_KEY --yes
 
 | Subcommand | Arguments | Description |
 |------------|-----------|-------------|
-| `add` | `repo_id key value` | Add a new secret |
-| `list` | `repo_id` | List all secret keys |
-| `update` | `repo_id key value` | Update a secret value |
-| `delete` | `repo_id key [--yes]` | Delete a secret |
+| `add` | `repo_id key value` | Add a new entry |
+| `list` | `repo_id` | List entries (`secret` shows keys only; `variable` shows keys and values) |
+| `update` | `repo_id key value` | Update a value |
+| `delete` | `repo_id key [--yes]` | Delete an entry |
 
-All subcommands accept `--repo-type` (default: `studio`, currently the only supported type).
+`ms-hub secret` accepts `--repo-type` (default: `studio`, currently the only supported type).
+
+> **Put anything sensitive in a secret.** A plaintext variable's value is public.
+
+</details>
+
+### `ms-hub studio`
+
+Browse Studio spaces and the runtime resources they can be configured with.
+
+```bash
+# Browse
+ms-hub studio list --search chat --sort likes --page-size 20
+ms-hub studio list --owner my-org --status all
+ms-hub studio list --mcp-support --hardware-type xgpu
+
+# Discover valid values for --hardware / --base-image / --sdk-version
+ms-hub studio hardware --sdk-type gradio
+ms-hub studio hardware --studio my-org/demo
+ms-hub studio base-images
+ms-hub studio sdk-versions --sdk-type gradio
+
+# Runtime management (also available as the top-level deploy/stop/logs/settings)
+ms-hub studio deploy my-org/demo
+ms-hub studio logs my-org/demo --type build
+ms-hub studio settings my-org/demo --visibility protected
+```
+
+<details>
+<summary>Subcommands</summary>
+
+| Subcommand | Arguments | Key Options |
+|------------|-----------|-------------|
+| `list` | — | `--search`, `--owner`, `--sort {default,last_modified,view_num,likes}`, `--status {running,all}`, `--mcp-support`/`--no-mcp-support`, `--hardware-type {xgpu,amd}`, `--page`, `--page-size` |
+| `hardware` | — | `--sdk-type`, `--studio owner/name` |
+| `base-images` | — | — |
+| `sdk-versions` | — | `--sdk-type` (default `gradio`; only gradio publishes versions) |
+| `deploy` / `stop` | `studio_id` | — |
+| `logs` | `studio_id` | `--type {run,build}`, `--keyword`, `--page`, `--page-size` (max 500) |
+| `settings` | `studio_id [key=val...]` | `--display-name`, `--description`, `--license`, `--cover-image`, `--sdk-type`, `--sdk-version`, `--base-image`, `--hardware`, `--visibility`, `--private`/`--public` |
+| `secret` | see above | — |
+| `variable` | see above | — |
+
+`--visibility` accepts three values: `public` (code and app public), `protected`
+(app public, code repository hidden) and `private`. `--private` / `--public`
+remain as shorthands.
+
+Paid hardware tiers are selected as `--hardware paid/<instance_type>`; run
+`ms-hub studio hardware` to see the available identifiers.
+
+`--status` defaults to `all` whenever `--owner` is given, so listing your own
+spaces includes stopped ones. Without `--owner` the server's own default applies
+(running spaces only).
 
 </details>
 
@@ -484,6 +590,7 @@ Manage MCP (Model Context Protocol) servers.
 
 ```bash
 ms-hub mcp list --search weather --page-size 10
+ms-hub mcp list --hosted            # only your own hosted servers, with live URLs
 ms-hub mcp info my-org/weather-mcp
 ms-hub mcp deploy my-org/weather-mcp
 ms-hub mcp undeploy my-org/weather-mcp
@@ -494,10 +601,16 @@ ms-hub mcp undeploy my-org/weather-mcp
 
 | Subcommand | Arguments | Key Options |
 |------------|-----------|-------------|
-| `list` | — | `--search`, `--page`, `--page-size` |
+| `list` | — | `--search`, `--hosted`, `--page`, `--page-size` |
 | `info` | `server_id` | — |
-| `deploy` | `server_id` | — |
+| `deploy` | `server_id` | `--transport-type`, `--expiration-minutes`, `--auth-check`, `--env KEY=VALUE` |
 | `undeploy` | `server_id` | — |
+
+`--hosted` lists the servers you currently have hosted along with their
+`operational_urls`. It takes no search or paging options, because the underlying
+endpoint accepts none.
+
+> Discovery is capped at `page * page_size <= 100` by the service.
 
 </details>
 
@@ -572,6 +685,32 @@ ms-hub agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 
 </details>
 
+### `ms-hub agent-idp`
+
+Agent-IDP manages an Agent's **identity and signing key**, not its repository files. Use `ms-hub agent` for raw Agent repository transfer; use `ms-hub agent-idp` to register an Ed25519 public key, inspect OIDC metadata, and issue a short-lived JWT.
+
+```bash
+# Private JWK storage is always explicit; the command prints only its public JWK.
+ms-hub agent-idp keygen --private-key-out ./agent.jwk
+ms-hub agent-idp create --agent-name my-agent --private-key-file ./agent.jwk
+ms-hub agent-idp issue-token --agent-id agent_id:modelscope:agent_xxx --audience my-hub --private-key-file ./agent.jwk
+
+# These discovery endpoints are public and do not require login.
+ms-hub agent-idp configuration
+ms-hub agent-idp jwks
+```
+
+Protect the private JWK file: it is created with mode `0600` on POSIX, never copied into the SDK configuration or cache, and must not be committed. External key stores can pass a public JWK with `--public-jwk-file` for registration or rotation.
+
+```python
+from modelscope_hub import HubApi, generate_agent_key_pair
+
+api = HubApi(token="ms-write-token")
+private_jwk, public_jwk = generate_agent_key_pair()
+identity = api.create_agent_identity({"agent_name": "my-agent", "public_key": public_jwk.to_dict()})
+token = api.issue_agent_token_with_private_key(private_jwk, agent_id=identity.agent_id, audience="my-hub")
+```
+
 ---
 
 ## SDK API Overview
@@ -598,7 +737,7 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `whoami()` | Get current user info |
 | **Repo** | `create_repo(repo_id, repo_type, ...)` | Create a repository |
 | | `get_repo(repo_id, repo_type)` | Get repository metadata |
-| | `list_repos(repo_type, ...)` | Paginated listing |
+| | `list_repos(repo_type, ...)` | Paginated listing (`model`, `dataset`, `studio`, `skill`, `mcp`) |
 | | `delete_repo(repo_id, repo_type)` | Delete a repository *(deprecated — see note below)* |
 | | `repo_exists(repo_id, repo_type)` | Check existence |
 | **Files** | `upload_file(repo_id, repo_type, local, remote)` | Upload a single file |
@@ -614,19 +753,38 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `get_repo_logs(repo_id, ...)` | Fetch logs |
 | | `update_repo_settings(repo_id, repo_type, ...)` | Update settings |
 | **Secrets** | `add_secret(repo_id, key, value)` | Add a secret |
-| | `list_secrets(repo_id)` | List secrets |
+| | `list_secrets(repo_id)` | List secret keys (values are never returned) |
 | | `update_secret(repo_id, key, value)` | Update a secret |
 | | `delete_secret(repo_id, key)` | Delete a secret |
+| **Variables** | `add_variable(repo_id, key, value)` | Add a plaintext variable *(value is public)* |
+| | `list_variables(repo_id)` | List variables with their values |
+| | `update_variable(repo_id, key, value)` | Update a variable |
+| | `delete_variable(repo_id, key)` | Delete a variable |
+| **Studio resources** | `list_studio_hardware(...)` | Hardware tiers a Studio can run on |
+| | `list_studio_base_images()` | Available base images |
+| | `list_studio_sdk_versions(...)` | Available SDK versions |
 | **MCP** | `list_mcp_servers(...)` | List available MCP servers |
+| | `list_operational_mcp_servers()` | List your hosted servers, with live URLs |
 | | `get_mcp_server(server_id)` | Get server details |
 | | `deploy_mcp_server(server_id)` | Deploy an MCP server |
 | | `undeploy_mcp_server(server_id)` | Undeploy an MCP server |
+| **Agent-IDP** | `create_agent_identity(payload)` | Register an Agent Ed25519 public key |
+| | `get_agent_identity(agent_id)` / `update_agent_identity(...)` / `delete_agent_identity(agent_id)` | Manage identity metadata |
+| | `reset_agent_key_pair(agent_id, payload)` / `pause_agent(agent_id, paused=...)` | Rotate a key or control token issuance |
+| | `list_user_agent_identities(...)` / `list_agent_token_records(...)` | List identities and non-sensitive issuance records |
+| | `issue_agent_token_with_private_key(...)` | Locally sign and exchange a short-lived JWT |
+| | `get_agent_id_configuration()` / `get_agent_id_jwks()` | Anonymous OIDC discovery and JWT verification keys |
 | **Cache** | `scan_cache(cache_dir)` | Inspect local cache |
 | | `clear_cache(cache_dir, ...)` | Free disk space |
 
 > **Deletion restrictions:**
 > - `delete_repo` is deprecated for security reasons (emits `DeprecationWarning`). Will be restored with token-scoped auth. Use the [web console](https://modelscope.cn) instead.
 > - `delete_files` requires cookie-based session auth; API tokens (`ms-...`) may receive a 401 error.
+
+> **Token permission levels:** every write method needs a token issued with
+> `write` permission or higher. A rejected write raises `PermissionDeniedError`
+> whose `suggestion` names the required level; an exhausted quota raises
+> `QuotaExceededError` instead. See [Token permission levels](#token-permission-levels).
 
 </details>
 

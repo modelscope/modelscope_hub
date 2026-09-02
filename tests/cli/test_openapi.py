@@ -13,7 +13,13 @@ import requests
 from modelscope_hub._openapi import _RETRYABLE_POST_PATHS, OpenAPIClient
 from modelscope_hub.api import HubApi
 from modelscope_hub.config import HubConfig
-from modelscope_hub.errors import InvalidParameter, PermissionDeniedError, RateLimitError, ServerError
+from modelscope_hub.errors import (
+    InvalidParameter,
+    NotExistError,
+    PermissionDeniedError,
+    RateLimitError,
+    ServerError,
+)
 
 
 @pytest.fixture
@@ -46,59 +52,98 @@ def _mock_response(status_code=200, json_data=None):
 
 # ==================================================================
 # Item 2: list_mcp_servers filter param
+#
+# PUT is the only method the specification defines for /mcp/servers, so it must
+# be the first thing on the wire. Probing GET first cost every single call a
+# wasted round trip to a 404.
 # ==================================================================
 class TestListMcpServersFilter:
-    def test_filter_included_in_get_params(self, client):
+    def test_put_is_tried_first(self, client):
+        resp = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
+        with patch.object(client._session, "request", return_value=resp) as mock_req:
+            client.list_mcp_servers(search="weather", page_number=1, page_size=2)
+        assert mock_req.call_count == 1
+        call_kwargs = mock_req.call_args.kwargs
+        assert call_kwargs["method"] == "PUT"
+        assert call_kwargs["json"] == {"search": "weather", "page_number": 1, "page_size": 2}
+
+    def test_filter_nested_in_put_body(self, client):
         resp = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
         with patch.object(client._session, "request", return_value=resp) as mock_req:
             client.list_mcp_servers(filter={"category": "tools", "is_hosted": True})
         call_kwargs = mock_req.call_args.kwargs
-        params = dict(call_kwargs["params"])
-        assert call_kwargs["method"] == "GET"
-        assert call_kwargs["json"] is None
-        assert params["filter.category"] == "tools"
-        assert params["filter.is_hosted"] == "true"
+        assert call_kwargs["method"] == "PUT"
+        assert call_kwargs["json"]["filter"] == {"category": "tools", "is_hosted": True}
 
-    def test_filter_none_not_in_get_params(self, client):
+    def test_filter_absent_when_not_requested(self, client):
         resp = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
         with patch.object(client._session, "request", return_value=resp) as mock_req:
             client.list_mcp_servers()
-        call_kwargs = mock_req.call_args.kwargs
-        params = dict(call_kwargs["params"])
-        assert call_kwargs["method"] == "GET"
-        assert "filter.category" not in params
-        assert "filter" not in params
+        assert "filter" not in mock_req.call_args.kwargs["json"]
 
-    def test_get_route_unsupported_falls_back_to_legacy_put(self, client):
+    def test_put_route_unsupported_falls_back_to_get(self, client):
         not_found = _mock_response(status_code=404, json_data={"message": "not found"})
         success = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
         with patch.object(client._session, "request", side_effect=[not_found, success]) as mock_req:
             client.list_mcp_servers(search="weather", page_number=1, page_size=2)
         first, second = mock_req.call_args_list
-        assert first.kwargs["method"] == "GET"
-        assert dict(first.kwargs["params"])["search"] == "weather"
-        assert second.kwargs["method"] == "PUT"
-        assert second.kwargs["json"] == {"search": "weather", "page_number": 1, "page_size": 2}
+        assert first.kwargs["method"] == "PUT"
+        assert second.kwargs["method"] == "GET"
+        assert dict(second.kwargs["params"])["search"] == "weather"
 
-    def test_get_permission_denied_does_not_fallback_to_put(self, client):
+    def test_get_probe_is_not_repeated_when_neither_verb_works(self, client):
+        """A deployment serving neither verb must not be probed twice per call."""
+        not_found = _mock_response(status_code=404, json_data={"message": "not found"})
+        with patch.object(client._session, "request", return_value=not_found) as mock_req:
+            with pytest.raises(NotExistError):
+                client.list_mcp_servers()
+            assert [c.kwargs["method"] for c in mock_req.call_args_list] == ["PUT", "GET"]
+            mock_req.reset_mock()
+            with pytest.raises(NotExistError):
+                client.list_mcp_servers()
+            assert [c.kwargs["method"] for c in mock_req.call_args_list] == ["PUT"]
+
+    def test_put_is_not_retried_once_get_is_known_to_work(self, client):
+        """A GET-only deployment must not pay a PUT 404 on every single call."""
+        not_found = _mock_response(status_code=404, json_data={"message": "not found"})
+        success = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
+        with patch.object(client._session, "request", side_effect=[not_found, success]) as mock_req:
+            client.list_mcp_servers()
+            assert [c.kwargs["method"] for c in mock_req.call_args_list] == ["PUT", "GET"]
+        with patch.object(client._session, "request", return_value=success) as mock_req:
+            client.list_mcp_servers()
+            assert [c.kwargs["method"] for c in mock_req.call_args_list] == ["GET"]
+
+    def test_get_fallback_carries_the_same_query(self, client):
+        not_found = _mock_response(status_code=404, json_data={"message": "not found"})
+        success = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
+        with patch.object(client._session, "request", side_effect=[not_found, success]) as mock_req:
+            client.list_mcp_servers(search="weather", filter={"is_hosted": True})
+        params = dict(mock_req.call_args_list[1].kwargs["params"])
+        assert params["search"] == "weather"
+        assert params["filter.is_hosted"] == "true"
+
+    def test_permission_denied_does_not_fall_back_to_get(self, client):
+        """403 means the route exists; retrying it as GET would be pointless."""
         denied = _mock_response(status_code=403, json_data={"message": "denied"})
         with patch.object(client._session, "request", return_value=denied) as mock_req:
             with pytest.raises(PermissionDeniedError):
                 client.list_mcp_servers()
-        assert mock_req.call_count == 1
-        assert mock_req.call_args.kwargs["method"] == "GET"
+        # One credentialled attempt, then one anonymous retry -- never a GET.
+        assert [c.kwargs["method"] for c in mock_req.call_args_list] == ["PUT", "PUT"]
 
-    def test_put_auth_failure_falls_back_to_anonymous_put(self, client):
-        not_found = _mock_response(status_code=404, json_data={"message": "not found"})
+    def test_put_auth_failure_retries_anonymously(self, client):
+        """A read-scoped or stale token must not hide the public MCP catalogue."""
         denied = _mock_response(status_code=403, json_data={"message": "denied"})
         success = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
-        with patch.object(client._session, "request", side_effect=[not_found, denied, success]) as mock_req:
+        with patch.object(client._session, "request", side_effect=[denied, success]) as mock_req:
             client.list_mcp_servers(page_number=1, page_size=2)
-        assert [call.kwargs["method"] for call in mock_req.call_args_list] == ["GET", "PUT", "PUT"]
-        assert "Authorization" in mock_req.call_args_list[1].kwargs["headers"]
-        assert mock_req.call_args_list[1].kwargs["cookies"]
-        assert "Authorization" not in mock_req.call_args_list[2].kwargs["headers"]
-        assert mock_req.call_args_list[2].kwargs["cookies"] == {}
+        first, second = mock_req.call_args_list
+        assert [first.kwargs["method"], second.kwargs["method"]] == ["PUT", "PUT"]
+        assert "Authorization" in first.kwargs["headers"]
+        assert first.kwargs["cookies"]
+        assert "Authorization" not in second.kwargs["headers"]
+        assert second.kwargs["cookies"] == {}
 
 
 # ==================================================================
@@ -180,18 +225,24 @@ class TestStopStudioBody:
 
 
 # ==================================================================
-# Item 6: get_studio requires token
+# Item 6: get_studio authentication
+#
+# The specification marks getStudio's security as optional and states that
+# public and experience-public (protected) spaces need no credentials, so
+# demanding a token up front locked anonymous callers out of public data.
 # ==================================================================
 class TestGetStudioAuth:
-    def test_requires_token_raises_without_token(self):
-        from modelscope_hub.errors import AuthenticationError
-
+    def test_anonymous_call_is_attempted_rather_than_refused(self):
         config = HubConfig(token="placeholder", endpoint="https://modelscope.cn")
         config.token = None
         client = OpenAPIClient(config)
+        resp = _mock_response()
         with patch.object(HubConfig, "load_token", return_value=None):
-            with pytest.raises(AuthenticationError, match="Missing API token"):
+            with patch.object(client._session, "request", return_value=resp) as mock_req:
                 client.get_studio("org", "demo")
+        call_kwargs = mock_req.call_args.kwargs
+        assert call_kwargs["method"] == "GET"
+        assert "Authorization" not in call_kwargs["headers"]
 
     def test_sends_auth_header_when_token_present(self, client):
         resp = _mock_response()
@@ -200,6 +251,17 @@ class TestGetStudioAuth:
         call_kwargs = mock_req.call_args.kwargs
         assert "Authorization" in call_kwargs["headers"]
         assert call_kwargs["headers"]["Authorization"] == "Bearer test-token"
+
+    def test_rejected_token_falls_back_to_an_anonymous_read(self, client):
+        """A read-scoped token must not hide a space anyone else can see."""
+        denied = _mock_response(status_code=403, json_data={"message": "denied"})
+        success = _mock_response()
+        with patch.object(client._session, "request", side_effect=[denied, success]) as mock_req:
+            client.get_studio("org", "demo")
+        first, second = mock_req.call_args_list
+        assert "Authorization" in first.kwargs["headers"]
+        assert "Authorization" not in second.kwargs["headers"]
+        assert second.kwargs["cookies"] == {}
 
 
 # ==================================================================
@@ -234,11 +296,17 @@ class TestPageSizeDefaults:
         assert param_dict.get("page_size") == "10"
 
     def test_list_mcp_servers_default_page_size(self, client):
+        """The specification's default for this endpoint is 20, not 10."""
         resp = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
         with patch.object(client._session, "request", return_value=resp) as mock_req:
             client.list_mcp_servers()
-        call_kwargs = mock_req.call_args.kwargs
-        params = dict(call_kwargs["params"])
+        assert mock_req.call_args.kwargs["json"]["page_size"] == 20
+
+    def test_list_studios_default_page_size(self, client):
+        resp = _mock_response(json_data={"studios": [], "total_count": 0})
+        with patch.object(client._session, "request", return_value=resp) as mock_req:
+            client.list_studios()
+        params = dict(mock_req.call_args.kwargs["params"])
         assert params["page_size"] == "10"
 
 

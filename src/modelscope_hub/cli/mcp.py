@@ -36,6 +36,12 @@ class _McpList(CLICommand):
     def register(subparsers: SubParsers) -> None:
         p = subparsers.add_parser("list", help="List MCP servers.")
         p.add_argument("--search", default=None)
+        p.add_argument(
+            "--hosted",
+            action="store_true",
+            default=False,
+            help="List only the servers you currently have hosted, with their live URLs.",
+        )
         p.add_argument("--page", dest="page_number", type=int, default=1)
         p.add_argument("--page-size", dest="page_size", type=int, default=20)
         add_subcmd_token_endpoint(p)
@@ -43,6 +49,9 @@ class _McpList(CLICommand):
 
     def execute(self) -> None:
         api = make_api(self.args)
+        if self.args.hosted:
+            self._list_hosted(api)
+            return
         result = api.list_mcp_servers(
             search=self.args.search,
             page_number=self.args.page_number,
@@ -62,6 +71,28 @@ class _McpList(CLICommand):
         ]
         info(render_table(rows, headers=["id", "name", "status", "description"]))
         info(f"\npage {result.page_number} / total {result.total_count}")
+
+    @staticmethod
+    def _list_hosted(api) -> None:
+        """Render the caller's own hosted servers, including their endpoints.
+
+        ``--search`` and paging are not forwarded: the endpoint takes neither, so
+        accepting them silently would imply a filter that never applied.
+        """
+        result = api.list_operational_mcp_servers()
+        if not result.items:
+            info("(no hosted MCP servers)")
+            return
+        for item in result.items:
+            server_id = item.get("id") or "-"
+            name = item.get("name") or "-"
+            info(f"{server_id}  ({name})")
+            for url in item.get("operational_urls") or []:
+                if not isinstance(url, dict):
+                    continue
+                transport = url.get("transport_type") or "-"
+                info(f"    {transport}: {url.get('url') or '-'}")
+        info(f"\ntotal {result.total_count}")
 
 
 class _McpInfo(CLICommand):

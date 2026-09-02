@@ -105,6 +105,55 @@ class Visibility(IntEnum):
             raise ValueError(f"Unknown visibility label: {label!r}") from exc
 
 
+class StudioVisibility(StrEnum):
+    """Visibility levels a Studio space can be published under.
+
+    Deliberately separate from :class:`Visibility`: models and datasets encode
+    visibility as the integers 1/3/5, whereas the Studio endpoints take a string
+    enum and offer a third state the integer encoding cannot express.
+
+    * ``public`` -- both the code and the running app are public.
+    * ``protected`` -- the app is public, the code repository is not.
+    * ``private`` -- neither is public.
+    """
+
+    PUBLIC = "public"
+    PROTECTED = "protected"
+    PRIVATE = "private"
+
+    @classmethod
+    def parse(cls, value: object) -> StudioVisibility | None:
+        """Return the matching member, or ``None`` when *value* is not one.
+
+        Returning ``None`` rather than raising lets callers fall back to the
+        integer :class:`Visibility` encoding for inputs this enum does not own.
+        """
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            try:
+                return cls(value.strip().lower())
+            except ValueError:
+                return None
+        return None
+
+
+class TokenScope(StrEnum):
+    """Permission tiers a ModelScope API token can be issued with.
+
+    The Hub grants tokens one of three levels. The OpenAPI specification does
+    not model them -- ``securitySchemes`` declares a bare bearer scheme with no
+    scopes, and ``GET /users/me`` does not report the caller's level -- so the
+    SDK cannot know a token's tier up front and never pre-validates against it.
+    These values are used only to annotate what an operation needs, so that a
+    403 can name the missing permission instead of leaving the user guessing.
+    """
+
+    READ = "read"
+    WRITE = "write"
+    ADMIN = "admin"
+
+
 class License(StrEnum):
     """Common open-source licenses used on ModelScope Hub."""
 
@@ -902,7 +951,9 @@ __all__ = [
     "RepoType",
     "StrEnum",
     "SESSION_FILE_NAME",
+    "StudioVisibility",
     "TEMPORARY_FOLDER_NAME",
+    "TokenScope",
     "UPLOAD_ADAPTIVE_BATCHING_ENABLED",
     "UPLOAD_ADAPTIVE_BATCH_SIZE",
     "UPLOAD_BATCH_CONSECUTIVE_FAILURE_LIMIT",

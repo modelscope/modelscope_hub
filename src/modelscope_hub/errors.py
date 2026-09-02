@@ -37,6 +37,9 @@ _SENSITIVE_KEYWORDS: tuple[str, ...] = (
     "session",
     "api_key",
     "apikey",
+    "signature",
+    "jwt",
+    "private_key",
 )
 _SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset(
     {
@@ -53,6 +56,8 @@ _SENSITIVE_QUERY_KEYS: frozenset[str] = frozenset(
         "key",
         "authorization",
         "credentials",
+        "signature",
+        "jwt",
     }
 )
 _SENSITIVE_BODY_KEYS: re.Pattern[str] = re.compile(
@@ -281,6 +286,22 @@ class RateLimitError(APIError):
         self.retry_after = retry_after
 
 
+# -- Quota (E3027) ----------------------------------------------------------
+class QuotaExceededError(APIError):
+    """Raised when the account's quota for a resource is exhausted (E3027).
+
+    The OpenAPI surface reports this as HTTP 403 with ``code=QuotaLimitExceed``,
+    sharing the status with "insufficient permission". It is deliberately *not*
+    a :class:`RateLimitError` subclass: rate limiting clears on its own and the
+    transport retries it with back-off, whereas an exhausted quota will keep
+    failing, so retrying only delays the error the caller needs to see.
+    """
+
+    error_code = "E3027"
+    retryable = False
+    suggestion = "Quota exceeded for this resource. Free up existing resources or request a higher quota."
+
+
 # -- Server (E1002) ---------------------------------------------------------
 class ServerError(APIError):
     """Raised on HTTP 5xx -- upstream service failure."""
@@ -390,6 +411,13 @@ _STATUS_MAP: dict[int, type[APIError]] = {
     403: PermissionDeniedError,
     404: NotExistError,
     405: InvalidParameter,
+    # The OpenAPI surface answers 409 (``DuplicateEntity``) when creating a
+    # Studio, a secret or a plaintext variable that already exists. Without
+    # this entry the failure degraded to a bare APIError, so callers could not
+    # catch it as AlreadyExistsError like they can on the legacy surface.
+    409: AlreadyExistsError,
+    # 413 is returned by POST /files/upload when the body exceeds 5 MiB.
+    413: InvalidParameter,
     429: RateLimitError,
 }
 
@@ -411,6 +439,41 @@ _BUSINESS_CODE_MAP: dict[int, type[APIError]] = {
     10010101001: AlreadyExistsError,  # 国内站 - 模型已存在
     10010202004: AlreadyExistsError,  # 国际站 - 名称已被使用
 }
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI string error-code -> exception mapping
+#
+# The ``/openapi/v1`` surface publishes ``code`` as a string enum, not the
+# numeric business code the legacy surface uses, so it never matched
+# _BUSINESS_CODE_MAP above. Two of these codes carry information the HTTP status
+# alone destroys: 403 covers both "insufficient permission" and "quota
+# exhausted", and 400 covers both bad input and a duplicate entity.
+# ---------------------------------------------------------------------------
+_OPENAPI_CODE_MAP: dict[str, type[APIError]] = {
+    "InputParameterError": InvalidParameter,
+    "InvalidAuthentication": AuthenticationError,
+    "OperationNotAllowed": PermissionDeniedError,
+    "ResourceNotFound": NotExistError,
+    "DuplicateEntity": AlreadyExistsError,
+    "QuotaLimitExceed": QuotaExceededError,
+    "RateLimitExceed": RateLimitError,
+    # ServiceUnavailable / InternalServerError arrive with a 5xx status and are
+    # deliberately absent: the status-code branch already maps them to the
+    # retryable ServerError, and reclassifying a 5xx would drop that.
+}
+
+
+def _openapi_code(body: Any) -> str | None:
+    """Return the string error code carried by an OpenAPI response body, if any."""
+    if not isinstance(body, dict):
+        return None
+    raw = body.get("code")
+    if raw is None:
+        raw = body.get("Code")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return None
 
 
 def _business_code(body: Any) -> int | None:
@@ -521,6 +584,10 @@ def raise_for_status(response: Response) -> None:
     if status < 500:
         code = _business_code(body)
         business_cls = _BUSINESS_CODE_MAP.get(code) if code is not None else None
+        if business_cls is None:
+            # The OpenAPI surface publishes a string code instead of a numeric one.
+            openapi_code = _openapi_code(body)
+            business_cls = _OPENAPI_CODE_MAP.get(openapi_code) if openapi_code else None
     if business_cls is not None:
         exc_cls = business_cls
     elif exc_cls is InvalidParameter and isinstance(body, dict):
@@ -613,6 +680,7 @@ __all__ = [
     "InvalidParameter",
     "AlreadyExistsError",
     # Rate limiting / Server
+    "QuotaExceededError",
     "RateLimitError",
     "ServerError",
     # Non-HTTP

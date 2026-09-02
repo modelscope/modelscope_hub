@@ -10,9 +10,16 @@ exported alongside it provide structured return types for type-checked code.
 from __future__ import annotations
 
 from ._download import ProgressCallback, TqdmCallback
+from .agent_idp import (
+    generate_agent_key_pair,
+    load_private_jwk,
+    public_jwk_from_private,
+    sign_agent_token_request,
+    write_private_jwk,
+)
 from .api import HubApi
 from .config import HubConfig, get_default_config, set_default_config
-from .constants import License, RepoType, Visibility
+from .constants import License, RepoType, StudioVisibility, TokenScope, Visibility
 from .errors import (
     APIError,
     AuthenticationError,
@@ -28,6 +35,7 @@ from .errors import (
     NotSupportedError,
     PermissionDeniedError,
     PermissionError,
+    QuotaExceededError,
     RateLimitError,
     RequestTimeoutError,
     ServerError,
@@ -35,6 +43,12 @@ from .errors import (
     ValidationError,
 )
 from .types import (
+    AgentIdConfiguration,
+    AgentIdentity,
+    AgentIdentitySummary,
+    AgentJWK,
+    AgentToken,
+    AgentTokenRecord,
     CachedRepoInfo,
     CacheInfo,
     CacheVerification,
@@ -58,11 +72,25 @@ __all__ = [
     # Enums
     "License",
     "RepoType",
+    "StudioVisibility",
+    "TokenScope",
     "Visibility",
     # Progress callbacks
     "ProgressCallback",
     "TqdmCallback",
+    # Agent-IDP local key helpers
+    "generate_agent_key_pair",
+    "load_private_jwk",
+    "public_jwk_from_private",
+    "sign_agent_token_request",
+    "write_private_jwk",
     # Data classes
+    "AgentIdentity",
+    "AgentIdentitySummary",
+    "AgentIdConfiguration",
+    "AgentJWK",
+    "AgentToken",
+    "AgentTokenRecord",
     "CacheInfo",
     "CacheVerification",
     "CachedRepoInfo",
@@ -85,6 +113,7 @@ __all__ = [
     "NotExistError",
     "NotSupportedError",
     "PermissionDeniedError",
+    "QuotaExceededError",
     "RateLimitError",
     "RequestTimeoutError",
     "ServerError",

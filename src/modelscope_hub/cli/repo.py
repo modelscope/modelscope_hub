@@ -238,6 +238,7 @@ class ListCommand(CLICommand):
             choices=[
                 RepoType.MODEL.value,
                 RepoType.DATASET.value,
+                RepoType.STUDIO.value,
                 RepoType.SKILL.value,
                 RepoType.MCP.value,
             ],
@@ -253,6 +254,17 @@ class ListCommand(CLICommand):
         add_subcmd_token_endpoint(p)
 
     _MAX_PAGE_SIZE = 50
+
+    def _extra_filters(self) -> dict:
+        """Per-type filters this generic listing has to supply.
+
+        Studios are documented as switching their own status default to ``all``
+        once ``owner`` is set, but the endpoint keeps filtering to running spaces,
+        so ``list --repo-type studio --owner me`` answered with nothing at all.
+        """
+        if self.args.repo_type == RepoType.STUDIO.value and self.args.owner:
+            return {"status": "all"}
+        return {}
 
     def execute(self) -> None:
         if self.args.envs:
@@ -279,6 +291,7 @@ class ListCommand(CLICommand):
                 search=self.args.search,
                 page_number=self.args.page_number,
                 page_size=self.args.page_size,
+                **self._extra_filters(),
             )
             if not result.items:
                 info("(no repositories found)")
@@ -297,6 +310,7 @@ class ListCommand(CLICommand):
                 search=self.args.search,
                 page_number=page_number,
                 page_size=page_size,
+                **self._extra_filters(),
             )
             all_items.extend(result.items)
             if not result.has_next or not result.items:
