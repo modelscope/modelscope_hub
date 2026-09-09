@@ -46,7 +46,6 @@ from .errors import (
     AuthenticationError,
     HubError,
     InvalidParameter,
-    NetworkError,
     NotExistError,
     NotSupportedError,
     PermissionDeniedError,
@@ -1675,12 +1674,11 @@ class HubApi:
         commit_message: str | None = None,
         revision: str | None = None,
     ) -> dict:
-        """Delete one or more files from a repository.
+        """Delete one or more files from a repository in a single commit.
 
-        .. note::
-           File deletion is restricted by the server to cookie-based session
-           auth (interactive login). API tokens (``ms-...``) may receive a 401
-           "token no longer supports deletion operations" error.
+        The direct repository DELETE endpoints reject API-token authentication.
+        This method therefore sends commit ``delete`` actions through the same
+        supported write path as :meth:`upload_file` and :meth:`upload_folder`.
 
         Parameters
         ----------
@@ -1691,7 +1689,7 @@ class HubApi:
         file_paths : iterable of str
             Paths of files to remove. Empty entries are ignored.
         commit_message : str, optional
-            Unused (kept for API compatibility).
+            Message for the delete commit. Defaults to ``"Delete files"``.
         revision : str, optional
             Branch to delete from. Defaults to ``"master"``.
 
@@ -1699,42 +1697,16 @@ class HubApi:
         -------
         dict
             Summary with ``deleted_files`` and ``failed_files`` lists.
-
-        Raises
-        ------
-        InvalidParameter
-            When ``file_paths`` resolves to an empty list.
-
-        Examples
-        --------
-        >>> api.delete_files(
-        ...     "alice/llama-7b",
-        ...     "model",
-        ...     ["old_weights.bin", "deprecated/config.json"],
-        ... )
         """
         rt = self._normalize_repo_type(repo_type)
-        paths = [p for p in file_paths if p]
-        if not paths:
-            raise InvalidParameter("file_paths must contain at least one non-empty path.")
-
-        deleted, failed = [], []
-        for p in paths:
-            try:
-                self.legacy.delete_file(
-                    repo_id=repo_id,
-                    repo_type=str(rt),
-                    file_path=p,
-                    revision=revision or "master",
-                )
-                deleted.append(p)
-            except (AuthenticationError, NetworkError):
-                failed.append(p)
-                raise
-            except Exception:
-                failed.append(p)
-
-        return {"deleted_files": deleted, "failed_files": failed, "total_files": len(paths)}
+        paths = [file_paths] if isinstance(file_paths, str) else file_paths
+        return self.uploader.delete_files(
+            repo_id=repo_id,
+            repo_type=str(rt),
+            file_paths=[path for path in paths if path],
+            commit_message=commit_message or "Delete files",
+            revision=revision or "master",
+        )
 
     # ==================================================================
     # Versioning

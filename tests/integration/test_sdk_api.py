@@ -211,7 +211,6 @@ class TestFileOperations:
         paths = [f.path for f in files]
         assert "list_test.txt" in paths
 
-    @pytest.mark.xfail(reason="Server restricts file deletion to cookie-based session auth")
     def test_delete_files(self):
         self.api.upload_file(
             self.repo_id,

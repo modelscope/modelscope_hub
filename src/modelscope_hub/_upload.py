@@ -636,6 +636,42 @@ class UploadManager:
         )
 
     # ------------------------------------------------------------------
+    # Public: delete_files
+    # ------------------------------------------------------------------
+    def delete_files(
+        self,
+        repo_id: str,
+        repo_type: str,
+        file_paths: list[str],
+        *,
+        commit_message: str = "Delete files",
+        revision: str = "master",
+    ) -> dict:
+        """Delete repository files through a commit operation.
+
+        The direct repository DELETE endpoints reject API-token authentication.
+        Commit ``delete`` actions use the same supported write path as uploads
+        and are applied atomically in a single commit.
+        """
+        paths = list(dict.fromkeys(path for path in file_paths if path))
+        if not paths:
+            raise InvalidParameter(
+                "file_paths must contain at least one non-empty path.")
+
+        self._commit_with_retry(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            operations=self._build_delete_operations(paths),
+            commit_message=commit_message,
+            revision=revision,
+        )
+        return {
+            "deleted_files": paths,
+            "failed_files": [],
+            "total_files": len(paths),
+        }
+
+    # ------------------------------------------------------------------
     # Public: upload_folder
     # ------------------------------------------------------------------
     def upload_folder(
