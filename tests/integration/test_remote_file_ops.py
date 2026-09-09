@@ -63,10 +63,6 @@ class TestRemoteFileOperations:
         assert local_path.exists()
         assert content == "hello modelscope"
 
-    @pytest.mark.xfail(
-        reason="Server restricts file deletion to cookie-based session auth; "
-        "API tokens get 401 'token no longer supports deletion operations'"
-    )
     def test_delete_files(self):
         """delete_files removes the file from the repo."""
         print(f"\n** repo_id: {self.repo_id}")
