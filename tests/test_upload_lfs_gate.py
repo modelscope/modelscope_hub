@@ -4,6 +4,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -110,6 +111,60 @@ def test_hub_api_delete_files_delegates_to_upload_manager(
         revision="main",
     )
     assert result == {"deleted_files": ["old.bin"]}
+
+
+@pytest.mark.parametrize("repo_type", ["model", "dataset"])
+def test_hub_api_delete_patterns_resolve_remote_paths(repo_type: str) -> None:
+    api = HubApi(token="test-token")
+    api._uploader = MagicMock()
+    api._uploader.delete_files.return_value = {
+        "deleted_files": ["config.json", "nested/metadata.json"],
+        "failed_files": [],
+        "total_files": 2,
+    }
+    api.list_repo_files = MagicMock(
+        return_value=[
+            SimpleNamespace(path="config.json", type="blob"),
+            SimpleNamespace(path="nested/metadata.json", type="blob"),
+            SimpleNamespace(path="weights.bin", type="blob"),
+            SimpleNamespace(path="nested", type="tree"),
+        ])
+
+    result = api.delete_files(
+        "owner/repo",
+        repo_type,
+        delete_patterns="*.json",
+        commit_message="Remove JSON files",
+        revision="main",
+    )
+
+    api.list_repo_files.assert_called_once_with(
+        "owner/repo", repo_type, revision="main", recursive=True)
+    api._uploader.delete_files.assert_called_once_with(
+        repo_id="owner/repo",
+        repo_type=repo_type,
+        file_paths=["config.json", "nested/metadata.json"],
+        commit_message="Remove JSON files",
+        revision="main",
+    )
+    assert result["total_files"] == 2
+
+
+def test_hub_api_delete_patterns_with_no_match_is_noop() -> None:
+    api = HubApi(token="test-token")
+    api._uploader = MagicMock()
+    api.list_repo_files = MagicMock(
+        return_value=[SimpleNamespace(path="weights.bin", type="blob")])
+
+    result = api.delete_files(
+        "owner/repo", "model", delete_patterns="*.json")
+
+    api._uploader.delete_files.assert_not_called()
+    assert result == {
+        "deleted_files": [],
+        "failed_files": [],
+        "total_files": 0,
+    }
 
 
 def test_upload_file_normal_commits_inline_without_blob_api() -> None:

@@ -23,6 +23,7 @@ Design principles
 
 from __future__ import annotations
 
+import fnmatch
 import time
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -1669,16 +1670,18 @@ class HubApi:
         self,
         repo_id: str,
         repo_type: RepoTypeLike,
-        file_paths: Iterable[str],
+        file_paths: Iterable[str] | str | None = None,
         *,
+        delete_patterns: Iterable[str] | str | None = None,
         commit_message: str | None = None,
         revision: str | None = None,
     ) -> dict:
-        """Delete one or more files from a repository in a single commit.
+        """Delete repository files selected by paths or glob patterns.
 
         The direct repository DELETE endpoints reject API-token authentication.
-        This method therefore sends commit ``delete`` actions through the same
-        supported write path as :meth:`upload_file` and :meth:`upload_folder`.
+        This method resolves optional glob patterns against the remote file list,
+        then sends commit ``delete`` actions through the same supported write
+        path as :meth:`upload_file` and :meth:`upload_folder`.
 
         Parameters
         ----------
@@ -1686,8 +1689,11 @@ class HubApi:
             Canonical ``owner/name`` identifier.
         repo_type : str or RepoType
             Repository type.
-        file_paths : iterable of str
-            Paths of files to remove. Empty entries are ignored.
+        file_paths : iterable of str or str, optional
+            Explicit repository-relative paths to remove.
+        delete_patterns : iterable of str or str, optional
+            Glob patterns matched against remote file paths. For example,
+            ``"*.json"`` matches JSON files at any repository depth.
         commit_message : str, optional
             Message for the delete commit. Defaults to ``"Delete files"``.
         revision : str, optional
@@ -1696,17 +1702,67 @@ class HubApi:
         Returns
         -------
         dict
-            Summary with ``deleted_files`` and ``failed_files`` lists.
+            Summary with ``deleted_files``, ``failed_files``, and ``total_files``.
+            A pattern with no remote matches returns an empty successful summary.
         """
         rt = self._normalize_repo_type(repo_type)
-        paths = [file_paths] if isinstance(file_paths, str) else file_paths
+        paths = self._normalize_delete_values(file_paths, "file_paths")
+        patterns = self._normalize_delete_values(
+            delete_patterns, "delete_patterns")
+        if not paths and not patterns:
+            raise InvalidParameter(
+                "Provide at least one file path or delete pattern.")
+
+        resolved_revision = revision or "master"
+        if patterns:
+            remote_paths = [
+                file.path
+                for file in self.list_repo_files(
+                    repo_id,
+                    rt,
+                    revision=resolved_revision,
+                    recursive=True,
+                )
+                if file.path and file.type != "tree"
+            ]
+            paths.extend(
+                path for path in remote_paths
+                if any(fnmatch.fnmatchcase(path, pattern)
+                       for pattern in patterns))
+
+        paths = list(dict.fromkeys(paths))
+        if not paths:
+            return {
+                "deleted_files": [],
+                "failed_files": [],
+                "total_files": 0,
+            }
+
         return self.uploader.delete_files(
             repo_id=repo_id,
             repo_type=str(rt),
-            file_paths=[path for path in paths if path],
+            file_paths=paths,
             commit_message=commit_message or "Delete files",
-            revision=revision or "master",
+            revision=resolved_revision,
         )
+
+    @staticmethod
+    def _normalize_delete_values(
+        values: Iterable[str] | str | None,
+        parameter_name: str,
+    ) -> list[str]:
+        """Normalize a delete path or glob-pattern argument."""
+        if values is None:
+            return []
+        raw_values = [values] if isinstance(values, str) else list(values)
+        normalized: list[str] = []
+        for value in raw_values:
+            if not isinstance(value, str):
+                raise InvalidParameter(
+                    f"{parameter_name} must contain only strings.")
+            if value:
+                normalized.append(value)
+        return normalized
 
     # ==================================================================
     # Versioning
