@@ -195,6 +195,36 @@ class LegacyHubApi:
             result = [f for f in result if f["Path"] == prefix or str(f["Path"]).startswith(prefix + "/")]
         return result
 
+    def delete_files(
+        self,
+        repo_id: str,
+        repo_type: str | RepoType = RepoType.MODEL,
+        delete_patterns: str | list[str] | None = None,
+        *,
+        file_paths: str | list[str] | None = None,
+        revision: str | None = DEFAULT_DATASET_REVISION,
+        commit_message: str | None = None,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """Delete files selected by legacy glob patterns or explicit paths.
+
+        ``delete_patterns`` preserves the historical ``modelscope.hub.api``
+        contract. Patterns are resolved against the remote repository by the
+        modelscope-hub facade before it commits atomic delete actions.
+        """
+        api = self._api
+        if token or endpoint:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+        return api.delete_files(
+            repo_id,
+            repo_type,
+            file_paths=file_paths,
+            delete_patterns=delete_patterns,
+            commit_message=commit_message,
+            revision=revision,
+        )
+
     def create_repo(
         self,
         repo_id: str,
