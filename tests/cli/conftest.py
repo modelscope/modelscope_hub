@@ -91,7 +91,7 @@ def mock_api():
         {"key": "API_KEY", "description": "test", "updated_at": "2000-01-01T00:00:00Z"},
     ]
     api.list_mcp_servers.return_value = PagedResult(
-        items=[{"id": "mcp-1", "name": "weather", "status": "running", "description": "Weather MCP"}],
+        items=[{"id": "mcp-1", "name": "weather", "description": "Weather MCP"}],
         total_count=1,
         page_number=1,
         page_size=20,

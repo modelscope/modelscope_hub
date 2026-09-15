@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +20,8 @@ from unittest import mock
 
 from modelscope_hub.agent import AgentApi, RemoteFileInfo, is_lfs_file
 from modelscope_hub.cli import agent as cli_agent
+from modelscope_hub.constants import TokenScope
+from modelscope_hub.errors import PermissionDeniedError
 
 
 class _StubClient:
@@ -134,6 +138,77 @@ class TestCmdList(unittest.TestCase):
     def test_list_requires_endpoint(self):
         rc = cli_agent._cmd_list(None, 1, 10, endpoint=None, token="t")
         self.assertEqual(rc, 1)
+
+    def test_list_raises_explicit_permission_error_for_soft_operation_not_allowed(self):
+        client = AgentApi(endpoint="https://modelscope.cn", token="api-inference-only")
+        response = mock.Mock()
+        response.json.return_value = {
+            "Success": False,
+            "Code": "OperationNotAllowed",
+            "Message": "token scope denied",
+            "RequestId": "request-1",
+            "Data": [],
+        }
+        with mock.patch.object(client._openapi, "_request", return_value=response) as request:
+            with self.assertRaises(PermissionDeniedError) as raised:
+                client.list_agents(owner="wangxingjun778", page_number=2, page_size=5)
+        error = raised.exception
+        self.assertEqual(error.error_code, "E3002")
+        self.assertEqual(error.status_code, 403)
+        self.assertIn("OperationNotAllowed", error.message)
+        self.assertEqual(error.request_id, "request-1")
+        request.assert_called_once_with(
+            "PUT",
+            url="https://modelscope.cn/api/v1/dolphin/agents",
+            json_body={
+                "PageSize": 5,
+                "PageNumber": 2,
+                "Query": "",
+                "Sort": "Default",
+                "Criterion": [{"Category": "Path", "Predicate": "contains", "StringValues": ["wangxingjun778"]}],
+            },
+            require_token=True,
+            required_scope=TokenScope.READ,
+            unwrap=False,
+        )
+
+    def test_list_converts_numeric_soft_403_to_permission_denied(self):
+        client = AgentApi(endpoint="https://modelscope.cn", token="api-inference-only")
+        response = mock.Mock()
+        response.json.return_value = {
+            "Success": False,
+            "Code": 403,
+            "Message": "permission denied",
+            "Data": [],
+        }
+        with mock.patch.object(client._openapi, "_request", return_value=response):
+            with self.assertRaises(PermissionDeniedError) as raised:
+                client.list_agents(owner="wangxingjun778")
+        self.assertEqual(raised.exception.error_code, "E3002")
+        self.assertEqual(raised.exception.status_code, 403)
+
+    def test_list_cli_reports_operation_not_allowed_not_empty_result(self):
+        class DeniedClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_agents(self, **kwargs):
+                # Real HTTP 403 may carry OperationNotAllowed only in body.code,
+                # not in the server's human-readable message.
+                raise PermissionDeniedError(
+                    "token scope denied",
+                    status_code=403,
+                    response_body={"code": "OperationNotAllowed"},
+                )
+
+        stderr = io.StringIO()
+        with mock.patch.object(cli_agent, "AgentApi", DeniedClient), contextlib.redirect_stderr(stderr):
+            rc = cli_agent._cmd_list("wangxingjun778", 1, 10, endpoint="https://modelscope.cn", token="scoped")
+        self.assertEqual(rc, 1)
+        message = stderr.getvalue()
+        self.assertIn("403 OperationNotAllowed", message)
+        self.assertIn("'read' permission", message)
+        self.assertNotIn("no agent repositories found", message)
 
 
 class TestCmdDownload(unittest.TestCase):
