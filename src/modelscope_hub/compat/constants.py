@@ -1,5 +1,8 @@
 """Legacy constant mappings for backward compatibility with modelscope SDK."""
 
+import os
+from pathlib import Path
+
 from ..constants import (
     UPLOAD_ADAPTIVE_BATCHING_ENABLED,
     UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS,
@@ -85,3 +88,23 @@ FILE_HASH: str = "Sha256"
 
 # Download temp folder name
 TEMPORARY_FOLDER_NAME: str = "._____temp"
+
+# ---------------------------------------------------------------------------
+# Legacy domain / endpoint / filesystem constants.
+#
+# These keep the historical modelscope SDK names and shapes -- ``www.`` domains,
+# the ``damo`` default group and a ``Path`` credentials location -- so that
+# ``modelscope.hub.constants`` can re-export them here instead of holding its
+# own copies (the source of drift the upload-constant unification set out to
+# remove). The modern SDK deliberately uses different canonical values (e.g.
+# ``https://modelscope.cn`` without ``www``), which is why these live in the
+# compat layer rather than in core ``constants``.
+# ---------------------------------------------------------------------------
+MODEL_ID_SEPARATOR: str = "/"
+DEFAULT_MODELSCOPE_GROUP: str = "damo"
+DEFAULT_MODELSCOPE_DOMAIN: str = "www.modelscope.cn"
+DEFAULT_MODELSCOPE_INTL_DOMAIN: str = "www.modelscope.ai"
+DEFAULT_MODELSCOPE_DATA_ENDPOINT: str = "https://" + DEFAULT_MODELSCOPE_DOMAIN
+DEFAULT_MODELSCOPE_INTL_DATA_ENDPOINT: str = "https://" + DEFAULT_MODELSCOPE_INTL_DOMAIN
+DEFAULT_SKILLS_DIR: str = os.path.join(os.path.expanduser("~"), ".agents", "skills")
+DEFAULT_CREDENTIALS_PATH: Path = Path.home().joinpath(".modelscope", "credentials")
