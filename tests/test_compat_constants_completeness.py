@@ -1,13 +1,14 @@
 """Completeness / consistency of the legacy compat constant surface.
 
 ``modelscope.hub.constants`` re-exports these names from
-``modelscope_hub.compat.constants``, so the compat module must expose every
-legacy constant with the exact legacy value *and* type. Drift here silently
-breaks the downstream modelscope SDK (a missing name is an ``ImportError`` at
-module load; a changed value flips behaviour such as the default endpoint).
+``modelscope_hub.compat.constants``, which in turn re-exports them from the root
+``modelscope_hub.constants`` (the single source of truth). Two invariants must
+hold and are pinned below:
 
-The unification originally centralised only the upload constants; the domain /
-endpoint / group / filesystem constants below were the remaining gap.
+* every legacy constant is present in the compat surface with the exact legacy
+  value and type (what the modelscope SDK imports); and
+* the root module is a superset of the compat surface for the shared prefixes
+  (so a legacy alias is never defined only in the compat shim again).
 """
 
 from __future__ import annotations
@@ -63,4 +64,25 @@ def test_matches_installed_modelscope_when_available():
         if hasattr(hub_mod, a) and getattr(legacy, a) != getattr(hub_mod, a)
     ]
     assert not missing, f"missing from compat: {missing}"
+    assert not mismatch, f"value mismatch: {mismatch}"
+
+
+def test_root_module_is_superset_of_compat_surface():
+    """``modelscope_hub.constants`` must expose every prefixed compat constant.
+
+    compat re-exports from the root module, so the root is the single source of
+    truth; a name present in compat but missing from (or unequal in) the root
+    means a legacy alias regressed into being compat-only again.
+    """
+    import modelscope_hub.constants as root_mod
+
+    prefixes = ("UPLOAD_", "REPO_", "MODEL_", "DEFAULT_", "TEMPORARY_", "FILE_", "MCP_")
+    keys = [a for a in dir(hub_mod) if not a.startswith("_") and a.startswith(prefixes)]
+    missing = [k for k in keys if not hasattr(root_mod, k)]
+    mismatch = [
+        (k, getattr(hub_mod, k), getattr(root_mod, k))
+        for k in keys
+        if hasattr(root_mod, k) and getattr(hub_mod, k) != getattr(root_mod, k)
+    ]
+    assert not missing, f"missing from modelscope_hub.constants: {missing}"
     assert not mismatch, f"value mismatch: {mismatch}"

@@ -12,6 +12,7 @@ import sys
 import warnings
 from dataclasses import dataclass
 from enum import Enum, IntEnum
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # StrEnum compatibility shim (Python 3.10 lacks :class:`enum.StrEnum`).
@@ -180,6 +181,38 @@ class License(StrEnum):
 DEFAULT_ENDPOINT: str = "https://modelscope.cn"
 OPENAPI_PREFIX: str = "/openapi/v1"
 LEGACY_API_PREFIX: str = "/api/v1"
+
+
+# ---------------------------------------------------------------------------
+# Repo-type string aliases and shared repo defaults.
+#
+# The modern surface models repo kinds as :class:`RepoType`; these string
+# aliases and the dataset-revision default are the historical names the
+# modelscope SDK consumes. Defined here so ``modelscope_hub.constants`` is the
+# single source of truth (``compat.constants`` re-exports them).
+# ---------------------------------------------------------------------------
+REPO_TYPE_MODEL: str = RepoType.MODEL.value
+REPO_TYPE_DATASET: str = RepoType.DATASET.value
+REPO_TYPE_STUDIO: str = RepoType.STUDIO.value
+REPO_TYPE_SUPPORT: list[str] = [REPO_TYPE_MODEL, REPO_TYPE_DATASET, REPO_TYPE_STUDIO]
+DEFAULT_DATASET_REVISION: str = "master"
+
+# ---------------------------------------------------------------------------
+# Legacy modelscope domain / endpoint / filesystem constants.
+#
+# Historical names and shapes (``www.`` domains, the ``damo`` group, a ``Path``
+# credentials location) the modelscope SDK consumes. The modern canonical
+# endpoint stays :data:`DEFAULT_ENDPOINT` (no ``www``); these coexist for
+# backward compatibility and ``compat.constants`` re-exports them.
+# ---------------------------------------------------------------------------
+MODEL_ID_SEPARATOR: str = "/"
+DEFAULT_MODELSCOPE_GROUP: str = "damo"
+DEFAULT_MODELSCOPE_DOMAIN: str = "www.modelscope.cn"
+DEFAULT_MODELSCOPE_INTL_DOMAIN: str = "www.modelscope.ai"
+DEFAULT_MODELSCOPE_DATA_ENDPOINT: str = "https://" + DEFAULT_MODELSCOPE_DOMAIN
+DEFAULT_MODELSCOPE_INTL_DATA_ENDPOINT: str = "https://" + DEFAULT_MODELSCOPE_INTL_DOMAIN
+DEFAULT_SKILLS_DIR: str = os.path.join(os.path.expanduser("~"), ".agents", "skills")
+DEFAULT_CREDENTIALS_PATH: Path = Path.home().joinpath(".modelscope", "credentials")
 
 
 # ---------------------------------------------------------------------------
@@ -503,6 +536,9 @@ TEMPORARY_FOLDER_NAME: str = "._____temp"
 FILE_HASH_FIELD: str = "Sha256"
 """API response field name for file hash."""
 
+FILE_HASH: str = FILE_HASH_FIELD
+"""Legacy alias of :data:`FILE_HASH_FIELD` (modelscope SDK name)."""
+
 ENV_FILE_LOCK: str = "MODELSCOPE_DOWNLOAD_FILE_LOCK"
 _env_register(
     ENV_FILE_LOCK,
@@ -755,6 +791,7 @@ UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
 # Deprecated Python aliases. Runtime code must use the explicit names above.
 UPLOAD_BLOB_CONNECT_TIMEOUT = UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS
 UPLOAD_BLOB_READ_TIMEOUT = UPLOAD_BLOB_READ_TIMEOUT_SECONDS
+UPLOAD_BLOB_TIMEOUT = (UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS, UPLOAD_BLOB_READ_TIMEOUT_SECONDS)
 UPLOAD_BLOB_MAX_RETRIES = UPLOAD_BLOB_MAX_ATTEMPTS
 UPLOAD_BLOB_RETRY_BACKOFF = UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS
 UPLOAD_BLOB_RETRY_MAX_WAIT = UPLOAD_BLOB_RETRY_MAX_DELAY_SECONDS
@@ -775,6 +812,7 @@ UPLOAD_REACT_MAX_DELAY = UPLOAD_RECOVERY_MAX_DELAY_SECONDS
 DEFAULT_MAX_WORKERS = UPLOAD_MAX_CONCURRENT_WORKERS
 UPLOAD_USE_CACHE = UPLOAD_CACHE_ENABLED
 UPLOAD_LFS_ENFORCE_THRESHOLD = UPLOAD_LFS_FORCE_THRESHOLD_BYTES
+UPLOAD_SIZE_THRESHOLD_TO_ENFORCE_LFS = UPLOAD_LFS_FORCE_THRESHOLD_BYTES
 UPLOAD_MAX_FILE_COUNT_IN_DIR = UPLOAD_MAX_FILES_PER_DIRECTORY
 UPLOAD_MAX_FILE_SIZE = UPLOAD_MAX_FILE_SIZE_BYTES
 UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT = UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES
@@ -923,10 +961,18 @@ __all__ = [
     "CONFIG_DIR_NAME",
     "DATASET_LFS_SUFFIX",
     "DEFAULT_CACHE_DIR_NAME",
+    "DEFAULT_CREDENTIALS_PATH",
+    "DEFAULT_DATASET_REVISION",
     "DEFAULT_ENDPOINT",
     "DEFAULT_IGNORE_PATTERNS",
     "DEFAULT_INTL_ENDPOINT",
     "DEFAULT_MAX_WORKERS",
+    "DEFAULT_MODELSCOPE_DATA_ENDPOINT",
+    "DEFAULT_MODELSCOPE_DOMAIN",
+    "DEFAULT_MODELSCOPE_GROUP",
+    "DEFAULT_MODELSCOPE_INTL_DATA_ENDPOINT",
+    "DEFAULT_MODELSCOPE_INTL_DOMAIN",
+    "DEFAULT_SKILLS_DIR",
     "DOWNLOAD_CHUNK_SIZE",
     "DOWNLOAD_PARALLEL_THRESHOLD",
     "DOWNLOAD_PARALLELS",
@@ -942,12 +988,18 @@ __all__ = [
     "ENV_PREFER_AI_SITE",
     "ENV_REGISTRY",
     "EnvVar",
+    "FILE_HASH",
     "FILE_HASH_FIELD",
     "get_upload_ignore_file_pattern",
     "LEGACY_API_PREFIX",
     "License",
+    "MODEL_ID_SEPARATOR",
     "MODEL_LFS_SUFFIX",
     "OPENAPI_PREFIX",
+    "REPO_TYPE_DATASET",
+    "REPO_TYPE_MODEL",
+    "REPO_TYPE_STUDIO",
+    "REPO_TYPE_SUPPORT",
     "RepoType",
     "StrEnum",
     "SESSION_FILE_NAME",
@@ -968,6 +1020,7 @@ __all__ = [
     "UPLOAD_BLOB_RETRY_BACKOFF_BASE_SECONDS",
     "UPLOAD_BLOB_RETRY_MAX_DELAY_SECONDS",
     "UPLOAD_BLOB_RETRY_MAX_WAIT",
+    "UPLOAD_BLOB_TIMEOUT",
     "UPLOAD_BLOB_TQDM_DISABLE_THRESHOLD",
     "UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS",
     "UPLOAD_CACHE_ENABLED",
@@ -1005,6 +1058,7 @@ __all__ = [
     "UPLOAD_RECOVERY_SERIAL_BACKOFF_BASE_SECONDS",
     "UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS",
     "UPLOAD_RETRY_ALLOWED_METHODS",
+    "UPLOAD_SIZE_THRESHOLD_TO_ENFORCE_LFS",
     "UPLOAD_USE_CACHE",
     "UPLOAD_VALIDATE_BLOB_BATCH_SIZE",
     "Visibility",
