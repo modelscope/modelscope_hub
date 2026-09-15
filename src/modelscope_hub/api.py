@@ -1707,11 +1707,9 @@ class HubApi:
         """
         rt = self._normalize_repo_type(repo_type)
         paths = self._normalize_delete_values(file_paths, "file_paths")
-        patterns = self._normalize_delete_values(
-            delete_patterns, "delete_patterns")
+        patterns = self._normalize_delete_values(delete_patterns, "delete_patterns")
         if not paths and not patterns:
-            raise InvalidParameter(
-                "Provide at least one file path or delete pattern.")
+            raise InvalidParameter("Provide at least one file path or delete pattern.")
 
         resolved_revision = revision or "master"
         if patterns:
@@ -1726,9 +1724,8 @@ class HubApi:
                 if file.path and file.type != "tree"
             ]
             paths.extend(
-                path for path in remote_paths
-                if any(fnmatch.fnmatchcase(path, pattern)
-                       for pattern in patterns))
+                path for path in remote_paths if any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
+            )
 
         paths = list(dict.fromkeys(paths))
         if not paths:
@@ -1758,8 +1755,7 @@ class HubApi:
         normalized: list[str] = []
         for value in raw_values:
             if not isinstance(value, str):
-                raise InvalidParameter(
-                    f"{parameter_name} must contain only strings.")
+                raise InvalidParameter(f"{parameter_name} must contain only strings.")
             if value:
                 normalized.append(value)
         return normalized
@@ -2240,8 +2236,16 @@ class HubApi:
             filter=filter,
             extra={k: v for k, v in extra.items() if v is not None} or None,
         )
-        items, total, page, size = self._extract_paged(payload)
-        return PagedResult(items=list(items), total_count=total, page_number=page, page_size=size)
+        items, total, _page, _size = self._extract_paged(payload)
+        # The MCP service currently omits page_number/page_size in its response.
+        # The request values are authoritative, exactly as in list_repos("mcp"),
+        # so callers can reliably tell which page they received.
+        return PagedResult(
+            items=list(items),
+            total_count=total,
+            page_number=page_number,
+            page_size=page_size,
+        )
 
     def list_operational_mcp_servers(self) -> PagedResult[dict]:
         """List the MCP servers the caller currently has hosted.

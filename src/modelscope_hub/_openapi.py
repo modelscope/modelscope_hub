@@ -1307,6 +1307,8 @@ class OpenAPIClient:
         filter : dict, optional
             Nested filter object. Supported keys: ``category``, ``is_hosted``.
         """
+        if isinstance(page_number, bool) or not isinstance(page_number, int) or page_number < 1:
+            raise InvalidParameter("page_number must be an integer >= 1.")
         if page_number * page_size > 100:
             # The service enforces this itself, answering 403 QuotaLimitExceed with
             # exactly this rule. Checking here spares the round trip and reports it

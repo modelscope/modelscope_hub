@@ -64,12 +64,11 @@ class _McpList(CLICommand):
             (
                 item.get("id") or item.get("Id") or "-",
                 item.get("name") or item.get("Name") or "-",
-                item.get("status") or item.get("Status") or "-",
                 item.get("description") or item.get("Description") or "-",
             )
             for item in result.items
         ]
-        info(render_table(rows, headers=["id", "name", "status", "description"]))
+        info(render_table(rows, headers=["id", "name", "description"]))
         info(f"\npage {result.page_number} / total {result.total_count}")
 
     @staticmethod

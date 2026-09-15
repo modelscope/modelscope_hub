@@ -35,11 +35,27 @@ def _fail(message: str) -> int:
     return 1
 
 
+def _is_operation_not_allowed(e: APIError) -> bool:
+    """Recognise the server's permission code in either message or envelope."""
+    if "OperationNotAllowed" in e.message:
+        return True
+    body = e.response_body
+    if not isinstance(body, dict):
+        return False
+    code = body.get("Code") if body.get("Code") is not None else body.get("code")
+    return str(code) == "OperationNotAllowed"
+
+
 def _api_error_message(e: APIError, action: str = "request") -> str:
     status = e.status_code or 0
     if status == 401:
         return "authentication failed. Please login again."
     if status == 403:
+        if action == "list" and _is_operation_not_allowed(e):
+            return (
+                "permission denied (403 OperationNotAllowed). Agent repository listing requires a token with "
+                "'read' permission; an api-inference-only token cannot access this endpoint."
+            )
         return "permission denied. You do not have access to this resource."
     if status == 404:
         return "resource not found. Check the repository name and try again."
