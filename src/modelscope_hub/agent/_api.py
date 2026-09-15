@@ -22,8 +22,8 @@ from dataclasses import dataclass
 
 from .._openapi import OpenAPIClient
 from ..config import HubConfig
-from ..constants import Visibility
-from ..errors import AuthenticationError, NotExistError
+from ..constants import TokenScope, Visibility
+from ..errors import APIError, AuthenticationError, NotExistError, PermissionDeniedError
 
 logger = logging.getLogger("modelscope_hub.agent")
 
@@ -230,12 +230,88 @@ class AgentApi:
         """True if the repo exists, False on 404."""
         return self.repo_info(path, name) is not None
 
+    @staticmethod
+    def _decode_dolphin_list_response(response: object, *, list_url: str) -> object:
+        """Decode the legacy dolphin list envelope without hiding soft errors.
+
+        Most endpoints signal access denial with HTTP 403, which OpenAPIClient
+        maps normally. ``/api/v1/dolphin/agents`` can instead answer HTTP 200
+        with ``Code=OperationNotAllowed``. Its former decode path then treated
+        the payload as an empty result, making a scope error indistinguishable
+        from an owner with no repositories.
+        """
+        try:
+            payload = response.json()  # type: ignore[union-attr]
+        except (AttributeError, ValueError) as exc:
+            raise APIError(
+                "Agent repository list endpoint returned a non-JSON response.",
+                status_code=500,
+                url=list_url,
+                method="PUT",
+            ) from exc
+
+        if not isinstance(payload, dict):
+            return payload
+
+        code = payload.get("Code") if payload.get("Code") is not None else payload.get("code")
+        success = payload.get("Success") if "Success" in payload else payload.get("success")
+        message = next(
+            (
+                value.strip()
+                for key in ("Message", "message", "Msg", "msg")
+                if isinstance(value := payload.get(key), str) and value.strip()
+            ),
+            "Agent repository list endpoint rejected the request.",
+        )
+        code_text = str(code).strip()
+        message_lower = message.lower()
+        permission_denied = (
+            code_text == "OperationNotAllowed"
+            or code_text == "403"
+            or "operationnotallowed" in message_lower
+            or "permission denied" in message_lower
+            or "not allowed" in message_lower
+            or "forbidden" in message_lower
+        )
+        failed_envelope = success is False or (code is not None and code_text not in ("", "0", "200"))
+        if permission_denied:
+            error = PermissionDeniedError(
+                f"OperationNotAllowed: {message}",
+                status_code=403,
+                request_id=payload.get("RequestId") or payload.get("request_id"),
+                response_body=payload,
+                url=list_url,
+                method="PUT",
+            )
+            error.suggestion = (
+                "Agent repository listing requires a token with 'read' permission; "
+                "an api-inference-only token cannot access this endpoint."
+            )
+            raise error
+        if failed_envelope:
+            raise APIError(
+                f"Agent repository list endpoint rejected the request: {message}",
+                status_code=400,
+                request_id=payload.get("RequestId") or payload.get("request_id"),
+                response_body=payload,
+                url=list_url,
+                method="PUT",
+            )
+
+        # Match OpenAPIClient's success-envelope unwrapping while preserving the
+        # outer envelope long enough to inspect soft errors above.
+        if "data" in payload:
+            return payload["data"]
+        if "Data" in payload:
+            return payload["Data"]
+        return payload
+
     def list_agents(self, owner: str | None = None, page_number: int = 1, page_size: int = 10) -> dict:
         """List agent repositories (PUT /api/v1/dolphin/agents).
 
-        Queries the dolphin search endpoint. When *owner* is given it is sent as
-        a ``Path contains`` criterion (the group filter). Returns a dict with
-        'items' (list of agent metadata dicts) and 'total_count' (int).
+        This is an account-scoped operation, not a public catalogue lookup. It
+        requires a token with ``read`` permission and must never downgrade a
+        denied request into an anonymous empty list.
         """
         criterion: list[dict] = []
         if owner:
@@ -254,7 +330,15 @@ class AgentApi:
             "Criterion": criterion,
         }
         list_url = f"{self.server}/api/v1/dolphin/agents"
-        data = self._openapi.request("PUT", url=list_url, json_body=body, require_token=False)
+        response = self._openapi._request(
+            "PUT",
+            url=list_url,
+            json_body=body,
+            require_token=True,
+            required_scope=TokenScope.READ,
+            unwrap=False,
+        )
+        data = self._decode_dolphin_list_response(response, list_url=list_url)
         if isinstance(data, list):
             return {"items": data, "total_count": len(data)}
         if isinstance(data, dict):

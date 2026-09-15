@@ -54,6 +54,30 @@ def _decode_base64url(value: object, field: str) -> bytes:
     return decoded
 
 
+def _canonical_signing_component(value: str, field: str) -> str:
+    """Validate one component of the server-defined ASCII signing message.
+
+    The Agent-IDP protocol signs the literal
+    ``agent_id|kid|audience|timestamp`` byte sequence.  ``audience`` is the
+    target Hub application's ``client_id``, not a display name.  Encoding a
+    Unicode display name as UTF-8 here would silently change the bytes the
+    service verifies, so reject it explicitly instead of leaking a Python
+    ``UnicodeEncodeError``.
+    """
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError:
+        reason = (
+            "the target Hub application's client_id"
+            if field == "audience"
+            else "the canonical Agent-IDP signature message"
+        )
+        raise InvalidParameter(f"{field} must contain only ASCII characters because it is {reason}.") from None
+    if "|" in value:
+        raise InvalidParameter(f"{field} must not contain '|', the Agent-IDP signature message delimiter.")
+    return value
+
+
 def _normalise_private_jwk(value: AgentJWK | Mapping[str, Any]) -> AgentJWK:
     """Validate an Ed25519 private JWK and return a safe structured copy."""
     if isinstance(value, AgentJWK):
@@ -186,20 +210,28 @@ def sign_agent_token_request(
     audience: str,
     timestamp: int,
 ) -> TokenSignPayload:
-    """Build the signed body required by anonymous ``POST /agent_id/token``."""
+    """Build the signed body required by anonymous ``POST /agent_id/token``.
+
+    ``audience`` must be the ASCII Hub application ``client_id``. It is not a
+    human-readable application name: every component is signed as the literal
+    ASCII ``agent_id|kid|audience|timestamp`` protocol byte sequence.
+    """
     if not isinstance(agent_id, str) or not agent_id:
         raise InvalidParameter("agent_id must be a non-empty string.")
     if not isinstance(audience, str) or not audience:
         raise InvalidParameter("audience must be a non-empty string.")
     if isinstance(timestamp, bool) or not isinstance(timestamp, int) or timestamp <= 0:
         raise InvalidParameter("timestamp must be a positive Unix timestamp in seconds.")
+    agent_id = _canonical_signing_component(agent_id, "agent_id")
+    audience = _canonical_signing_component(audience, "audience")
     key = _normalise_private_jwk(private_jwk)
-    message = f"{agent_id}|{key.kid}|{audience}|{timestamp}".encode("ascii")
+    kid = _canonical_signing_component(key.kid, "kid")
+    message = f"{agent_id}|{kid}|{audience}|{timestamp}".encode("ascii")
     private_bytes = _decode_base64url(key.d, "d")
     signature = Ed25519PrivateKey.from_private_bytes(private_bytes).sign(message)
     return {
         "agent_id": agent_id,
-        "kid": key.kid,
+        "kid": kid,
         "audience": audience,
         "timestamp": timestamp,
         "signature": _encode_base64url(signature),
