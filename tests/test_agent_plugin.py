@@ -1,0 +1,552 @@
+# Copyright (c) Alibaba, Inc. and its affiliates.
+"""Unit tests for the agent plugin loader (``modelscope_hub.agent._plugin``).
+
+Happy paths build a real plugin package on disk -- manifest, entry module and all
+-- so verification, import and operation negotiation are exercised rather than
+mocked. Only the network hop (``snapshot_download``) is stubbed, per the rule
+that CI runs with ``MODELSCOPE_RUN_REMOTE_TESTS=false``.
+
+The gates themselves are tested here at function level; that they are *wired
+into* ``install_agent`` and map to the right exit codes is covered by
+``tests/cli/test_agent_install.py``, so it is not repeated at both levels.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import sys
+import textwrap
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from modelscope_hub import constants
+from modelscope_hub.agent import _plugin
+from modelscope_hub.errors import InvalidParameter, NotSupportedError
+
+TRUSTED = "mushenL"
+PLUGIN_REPO = f"{TRUSTED}/agent-hub-plugin"
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+ENTRY_SOURCE = textwrap.dedent(
+    """
+    from dataclasses import dataclass, field
+
+
+    @dataclass(frozen=True)
+    class Result:
+        ok: bool = True
+        error: str | None = None
+        files_written: tuple = field(default_factory=tuple)
+        root: str = "/tmp/ws"
+        exit_code: int = 0
+
+
+    CALLS = []
+
+
+    def capabilities():
+        return {"operations": ("install", "download"), "version": "9.9.9"}
+
+
+    def install(repo, **kwargs):
+        CALLS.append(("install", repo, kwargs))
+        return Result(files_written=("SOUL.md",))
+
+
+    def download(repo, **kwargs):
+        CALLS.append(("download", repo, kwargs))
+        return Result(files_written=("SOUL.md",))
+    """
+).lstrip()
+
+
+def make_plugin(
+    root: Path,
+    *,
+    dirname: str = "plugin",
+    entry_module: str = "fake_plugin",
+    version: str = "9.9.9",
+    operations: tuple[str, ...] = ("install", "download"),
+    entry_source: str | None = None,
+    extra_files: dict[str, str] | None = None,
+    omit_hashes: bool = False,
+    omit_entry: bool = False,
+) -> Path:
+    """Write a plugin package tree and return its directory."""
+    directory = root / dirname
+    directory.mkdir(parents=True, exist_ok=True)
+
+    source = entry_source if entry_source is not None else ENTRY_SOURCE
+    (directory / f"{entry_module}.py").write_text(source, encoding="utf-8")
+    for rel, content in (extra_files or {}).items():
+        target = directory / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+
+    manifest: dict[str, Any] = {
+        "name": "agent-hub-plugin",
+        "version": version,
+        "kind": "agent-hub-plugin",
+        "frameworks": ["qwenpaw", "ms-agent"],
+        "api": list(operations),
+    }
+    if not omit_entry:
+        manifest["entry_module"] = entry_module
+    if not omit_hashes:
+        files = sorted(p for p in directory.rglob("*") if p.is_file())
+        manifest["content_sha256"] = {p.relative_to(directory).as_posix(): _sha256(p) for p in files}
+    (directory / "plugin.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return directory
+
+
+def spec_for(directory: Path, *, manifest: dict | None = None) -> _plugin.PluginSpec:
+    resolved = manifest
+    if resolved is None:
+        resolved = json.loads((directory / "plugin.json").read_text(encoding="utf-8"))
+    return _plugin.PluginSpec(
+        repo_id=PLUGIN_REPO,
+        owner=TRUSTED,
+        name="agent-hub-plugin",
+        revision="master",
+        directory=directory,
+        manifest=resolved,
+        entry_module=str(resolved.get("entry_module", "fake_plugin")),
+    )
+
+
+def load_entry(directory: Path, module_name: str):
+    """Import a generated plugin entry module the way ``load_plugin`` does."""
+    return _plugin.load_plugin(spec_for(directory, manifest={"entry_module": module_name}))
+
+
+# ---------------------------------------------------------------------------
+# resolve_plugin_repo
+# ---------------------------------------------------------------------------
+def test_resolve_plugin_repo_resolution_order(monkeypatch):
+    """Argument beats environment, and there is no third fallback."""
+    monkeypatch.setenv(constants.ENV_AGENT_PLUGIN_REPO, "env-owner/env-plugin")
+    assert _plugin.resolve_plugin_repo("arg-owner/arg-plugin") == "arg-owner/arg-plugin"
+    assert _plugin.resolve_plugin_repo(None) == "env-owner/env-plugin"
+    assert _plugin.resolve_plugin_repo("  ") == "env-owner/env-plugin"
+
+    monkeypatch.delenv(constants.ENV_AGENT_PLUGIN_REPO, raising=False)
+    with pytest.raises(InvalidParameter) as excinfo:
+        _plugin.resolve_plugin_repo(None)
+    # A missing default must be actionable from the message alone.
+    assert "--plugin-repo" in str(excinfo.value)
+    assert constants.ENV_AGENT_PLUGIN_REPO in str(excinfo.value)
+
+
+@pytest.mark.parametrize("value", ["noslash", "/noname", "owner/"])
+def test_resolve_plugin_repo_requires_owner_slash_name(monkeypatch, value):
+    monkeypatch.setenv(constants.ENV_AGENT_PLUGIN_REPO, value)
+    with pytest.raises(InvalidParameter):
+        _plugin.resolve_plugin_repo(None)
+
+
+# ---------------------------------------------------------------------------
+# assert_trusted_owner
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def allow_list(monkeypatch):
+    monkeypatch.setattr(constants, "AGENT_PLUGIN_TRUSTED_OWNERS", frozenset({"mushenL", "modelscope"}))
+
+
+def test_assert_trusted_owner_accepts_allow_listed(allow_list):
+    assert _plugin.assert_trusted_owner("mushenL/agent-hub-plugin") == ("mushenL", "agent-hub-plugin")
+    assert _plugin.assert_trusted_owner("modelscope/agent-hub-plugin") == ("modelscope", "agent-hub-plugin")
+
+
+@pytest.mark.parametrize("owner", ["mushenl", "evil", "mushenL-x"])
+def test_assert_trusted_owner_rejects_others(allow_list, owner):
+    """Case-sensitive on purpose: normalising case would accept a look-alike."""
+    with pytest.raises(InvalidParameter) as excinfo:
+        _plugin.assert_trusted_owner(f"{owner}/agent-hub-plugin")
+    assert owner in str(excinfo.value)
+    assert constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS in excinfo.value.suggestion
+
+
+def test_assert_trusted_owner_empty_list_blocks_everything(monkeypatch):
+    monkeypatch.setattr(constants, "AGENT_PLUGIN_TRUSTED_OWNERS", frozenset())
+    with pytest.raises(InvalidParameter):
+        _plugin.assert_trusted_owner("mushenL/agent-hub-plugin")
+
+
+def test_env_csv_helper_preserves_case(monkeypatch):
+    """The only coverage of the environment parsing behind the allow-list; the
+    gate tests above patch the resolved constant instead."""
+    monkeypatch.setenv("MODELSCOPE_TEST_OWNERS", " mushenL , modelscope ,, ")
+    got = constants._env_csv_frozenset_exact("MODELSCOPE_TEST_OWNERS", "fallback", "test", "Core")
+    assert got == frozenset({"mushenL", "modelscope"})
+
+
+# ---------------------------------------------------------------------------
+# verify_manifest
+# ---------------------------------------------------------------------------
+def test_verify_manifest_accepts_a_consistent_package(tmp_path):
+    directory = make_plugin(tmp_path)
+    manifest = _plugin.verify_manifest(directory, PLUGIN_REPO)
+    assert manifest["entry_module"] == "fake_plugin"
+    assert manifest["version"] == "9.9.9"
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("absent", "not an agent plugin"),
+        ("no-entry", "entry_module"),
+        # Without a digest the import would be unconditional code execution.
+        ("no-hashes", "content_sha256"),
+    ],
+)
+def test_verify_manifest_rejects_an_incomplete_manifest(tmp_path, case, expected):
+    if case == "absent":
+        directory = tmp_path / "empty"
+        directory.mkdir()
+    elif case == "no-entry":
+        directory = make_plugin(tmp_path, omit_entry=True)
+    else:
+        directory = make_plugin(tmp_path, omit_hashes=True)
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.verify_manifest(directory, PLUGIN_REPO)
+    assert expected in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("tampered", "sha256 mismatch"),
+        ("missing", "missing"),
+        ("unlisted", "not listed in the manifest"),
+    ],
+)
+def test_verify_manifest_rejects_inconsistent_content(tmp_path, case, expected):
+    directory = make_plugin(tmp_path, extra_files={"pkg/mod.py": "x = 1\n"})
+    if case == "tampered":
+        target = directory / "fake_plugin.py"
+        target.write_text(target.read_text(encoding="utf-8") + "\n# tampered\n", encoding="utf-8")
+    elif case == "missing":
+        (directory / "pkg" / "mod.py").unlink()
+    else:
+        (directory / "surprise.py").write_text("import os\n", encoding="utf-8")
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.verify_manifest(directory, PLUGIN_REPO)
+    assert expected in str(excinfo.value)
+
+
+def test_verify_manifest_exempts_non_plugin_files(tmp_path):
+    """``.gitattributes`` is injected by the hub into every repository and so is
+    never in an author's manifest; refusing it made every real package
+    unverifiable. ``plugin.json`` cannot hash itself and ``__pycache__`` is
+    written locally by a previous import.
+
+    The exemption is exact -- a genuinely unlisted file is still refused.
+    """
+    directory = make_plugin(tmp_path)
+    (directory / ".gitattributes").write_text("*.bin filter=lfs\n", encoding="utf-8")
+    cache = directory / "__pycache__"
+    cache.mkdir()
+    (cache / "fake_plugin.cpython-311.pyc").write_bytes(b"\x00\x01")
+
+    manifest = _plugin.verify_manifest(directory, PLUGIN_REPO)
+    listed = manifest["content_sha256"]
+    assert "plugin.json" not in listed
+    assert ".gitattributes" not in listed
+    assert not any("__pycache__" in key for key in listed)
+
+    (directory / "surprise.py").write_text("import os\n", encoding="utf-8")
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.verify_manifest(directory, PLUGIN_REPO)
+    assert "surprise.py" in str(excinfo.value)
+    assert ".gitattributes" not in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# require_trust
+# ---------------------------------------------------------------------------
+def test_require_trust_blocks_without_opt_in(tmp_path, monkeypatch):
+    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", False)
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.require_trust(spec_for(make_plugin(tmp_path)), trust_remote_code=False)
+    # The refusal must say what would have run, not just "no".
+    message = str(excinfo.value)
+    for expected in (PLUGIN_REPO, "9.9.9", "fake_plugin", "--trust-remote-code"):
+        assert expected in message
+
+
+@pytest.mark.parametrize("via", ["flag", "env"])
+def test_require_trust_allows_with_flag_or_env(tmp_path, monkeypatch, via):
+    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", via == "env")
+    _plugin.require_trust(
+        spec_for(make_plugin(tmp_path)),
+        trust_remote_code=(via == "flag"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# fetch_plugin
+# ---------------------------------------------------------------------------
+def test_fetch_plugin_requests_a_model_repo(monkeypatch, tmp_path):
+    seen: list[dict[str, Any]] = []
+
+    def fake_snapshot_download(repo_id, **kwargs):
+        seen.append({"repo_id": repo_id, **kwargs})
+        return str(tmp_path)
+
+    import modelscope_hub.compat as compat
+
+    monkeypatch.setattr(compat, "snapshot_download", fake_snapshot_download)
+
+    got = _plugin.fetch_plugin(PLUGIN_REPO, revision="v1.2.3", token="tok", endpoint="https://ep")
+    assert got == tmp_path
+    assert seen[0]["repo_id"] == PLUGIN_REPO
+    assert seen[0]["repo_type"] == "model"
+    assert seen[0]["revision"] == "v1.2.3"
+    assert (seen[0]["token"], seen[0]["endpoint"]) == ("tok", "https://ep")
+
+    _plugin.fetch_plugin(PLUGIN_REPO)
+    assert seen[1]["revision"] == constants.DEFAULT_AGENT_PLUGIN_REVISION
+
+
+def test_fetch_plugin_wraps_download_failure(monkeypatch):
+    """``snapshot_download`` re-raises hub errors as ``requests.HTTPError``, so
+    the original type is not a reliable discriminator."""
+
+    def boom(repo_id, **kwargs):
+        raise RuntimeError("404 not found")
+
+    import modelscope_hub.compat as compat
+
+    monkeypatch.setattr(compat, "snapshot_download", boom)
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.fetch_plugin(PLUGIN_REPO)
+    assert PLUGIN_REPO in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+
+
+# ---------------------------------------------------------------------------
+# load_plugin / select_operation
+# ---------------------------------------------------------------------------
+def test_load_plugin_imports_the_declared_entry_module(tmp_path):
+    directory = make_plugin(tmp_path, entry_module="entry_a")
+    module = _plugin.load_plugin(spec_for(directory))
+    assert module.__name__ == "entry_a"
+    assert str(directory) in sys.path
+    sys.path.remove(str(directory))
+    sys.modules.pop("entry_a", None)
+
+
+def test_load_plugin_restores_sys_path_on_failure(tmp_path):
+    directory = tmp_path / "plugin"
+    directory.mkdir()
+    spec = _plugin.PluginSpec(
+        repo_id=PLUGIN_REPO,
+        owner=TRUSTED,
+        name="p",
+        revision="master",
+        directory=directory,
+        manifest={},
+        entry_module="does_not_exist_xyz",
+    )
+    before = list(sys.path)
+    with pytest.raises(ImportError):
+        _plugin.load_plugin(spec)
+    assert sys.path == before
+
+
+def test_select_operation_prefers_install(tmp_path):
+    module = load_entry(make_plugin(tmp_path, entry_module="sel_install"), "sel_install")
+    name, func = _plugin.select_operation(module)
+    assert (name, func) == ("install", module.install)
+
+
+def test_select_operation_falls_back_to_download(tmp_path):
+    source = textwrap.dedent(
+        """
+        def capabilities():
+            return {"operations": ("download",)}
+
+        def install(repo, **kwargs):
+            raise AssertionError("must not be chosen")
+
+        def download(repo, **kwargs):
+            return "downloaded"
+        """
+    ).lstrip()
+    directory = make_plugin(tmp_path, entry_module="sel_download", entry_source=source)
+    module = load_entry(directory, "sel_download")
+    name, func = _plugin.select_operation(module)
+    assert (name, func) == ("download", module.download)
+
+
+def test_select_operation_rejects_an_undeclared_name(tmp_path):
+    """A plugin shipping a name without declaring it in ``capabilities()`` is not
+    trusted to have implemented it."""
+    source = textwrap.dedent(
+        """
+        def capabilities():
+            return {"operations": ()}
+
+        def install(repo, **kwargs):
+            raise AssertionError("must not be chosen")
+        """
+    ).lstrip()
+    directory = make_plugin(tmp_path, entry_module="sel_none", entry_source=source)
+    module = load_entry(directory, "sel_none")
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.select_operation(module)
+    assert "sel_none" in str(excinfo.value)
+
+
+def test_select_operation_without_capabilities_uses_presence(tmp_path):
+    source = "def download(repo, **kwargs):\n    return 'ok'\n"
+    directory = make_plugin(tmp_path, entry_module="sel_nocaps", entry_source=source)
+    assert _plugin.select_operation(load_entry(directory, "sel_nocaps"))[0] == "download"
+
+
+def test_accepted_kwargs_narrowing():
+    def positional(repo, name=None):
+        return repo, name
+
+    assert _plugin._accepted_kwargs(positional, {"repo": "a/b", "name": "x", "force": True}) == {
+        "repo": "a/b",
+        "name": "x",
+    }
+
+    def variadic(**kwargs):
+        return kwargs
+
+    payload = {"repo": "a/b", "anything": 1}
+    assert _plugin._accepted_kwargs(variadic, payload) == payload
+
+
+# ---------------------------------------------------------------------------
+# install_agent
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def wired(monkeypatch, tmp_path):
+    """Point ``install_agent`` at a real plugin tree with the network stubbed."""
+    monkeypatch.setattr(constants, "AGENT_PLUGIN_TRUSTED_OWNERS", frozenset({TRUSTED}))
+    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", False)
+    monkeypatch.delenv(constants.ENV_AGENT_PLUGIN_REPO, raising=False)
+    directory = make_plugin(tmp_path, entry_module="e2e_plugin")
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+    yield directory
+    sys.modules.pop("e2e_plugin", None)
+
+
+def test_install_agent_happy_path_and_option_forwarding(wired):
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    assert outcome.ok, outcome.error
+    assert (outcome.operation, outcome.exit_code) == ("install", 0)
+    assert outcome.plugin.repo_id == PLUGIN_REPO
+    assert outcome.plugin.version == "9.9.9"
+
+    # Importable only now: load_plugin put the directory on sys.path.
+    import e2e_plugin
+
+    assert e2e_plugin.CALLS[-1][:2] == ("install", "owner/my-agent")
+    # Unset optionals are dropped so the plugin applies its own defaults, but a
+    # False boolean is a decision the caller made and is forwarded.
+    assert e2e_plugin.CALLS[-1][2] == {
+        "dry_run": False,
+        "yes": False,
+        "force": False,
+        "quiet": False,
+    }
+
+    _plugin.install_agent(
+        "owner/my-agent",
+        name="sub",
+        local_dir="/tmp/ws",
+        dry_run=True,
+        force=True,
+        endpoint="https://pre.modelscope.cn",
+        token="tok",
+        plugin_repo=PLUGIN_REPO,
+        trust_remote_code=True,
+    )
+    forwarded = e2e_plugin.CALLS[-1][2]
+    assert forwarded["name"] == "sub"
+    assert forwarded["local_dir"] == "/tmp/ws"
+    assert forwarded["dry_run"] is True
+    assert forwarded["force"] is True
+    assert forwarded["endpoint"] == "https://pre.modelscope.cn"
+    assert forwarded["token"] == "tok"
+
+
+@pytest.mark.parametrize("repo", ["", "   ", "no-slash", "/noname", "owner/"])
+def test_install_agent_validates_the_agent_repo(wired, monkeypatch, repo):
+    """``/noname`` and ``owner/`` contain a slash but name no repository; they
+    must be rejected before any network call."""
+
+    def no_network(*args, **kwargs):
+        raise AssertionError(f"network reached for malformed repo id {repo!r}")
+
+    monkeypatch.setattr(_plugin, "fetch_plugin", no_network)
+    import modelscope_hub.compat as compat
+
+    monkeypatch.setattr(compat, "snapshot_download", no_network)
+
+    with pytest.raises(InvalidParameter):
+        _plugin.install_agent(repo, plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+
+
+def test_install_agent_reports_plugin_failure(wired, monkeypatch):
+    source = textwrap.dedent(
+        """
+        from dataclasses import dataclass
+
+
+        @dataclass(frozen=True)
+        class Result:
+            ok: bool = False
+            error: str = "framework not installed"
+            exit_code: int = 2
+
+
+        def capabilities():
+            return {"operations": ("install",)}
+
+
+        def install(repo, **kwargs):
+            return Result()
+        """
+    ).lstrip()
+    directory = make_plugin(wired.parent, dirname="fail_plugin", entry_module="fail_plugin", entry_source=source)
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    assert not outcome.ok
+    assert outcome.error == "framework not installed"
+    # The install layer's own codes (3/4/5/6) carry meaning and must survive.
+    assert outcome.exit_code == 2
+    sys.modules.pop("fail_plugin", None)
+
+
+def test_install_agent_contains_a_plugin_exception(wired, monkeypatch):
+    source = textwrap.dedent(
+        """
+        def capabilities():
+            return {"operations": ("install",)}
+
+
+        def install(repo, **kwargs):
+            raise RuntimeError("boom")
+        """
+    ).lstrip()
+    directory = make_plugin(wired.parent, dirname="boom_plugin", entry_module="boom_plugin", entry_source=source)
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    assert not outcome.ok
+    assert "boom" in outcome.error
+    assert outcome.exit_code == 1
+    sys.modules.pop("boom_plugin", None)

@@ -33,6 +33,10 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**Unreleased**
+- **Feature**: `ms-hub agent install -r owner/name` resolves a framework plugin, fetches it from a model repository, and delegates the install to it — plus the `modelscope_hub.agent.install_agent` SDK entry and its underlying `resolve_plugin_repo` / `assert_trusted_owner` / `fetch_plugin` / `verify_manifest` / `load_plugin` / `select_operation` steps. The hub gains no framework knowledge: where files land and how an agent is registered stay the plugin's decisions.
+- **Quality**: loading a plugin executes code this package did not ship, so it is gated by an explicit plugin source (no built-in default owner), a case-sensitive owner allow-list checked before any download, and a `--trust-remote-code` opt-in that is never persisted. `plugin.json`'s `content_sha256` is verified against every file before import, because the hub's own listing has been observed reporting a git blob SHA-1 in a `sha256` field.
+
 **v0.4.0** (2026-09-01)
 - **Feature**: complete OpenAPI coverage for Agent-IDP, MCP, and Studios — Agent Ed25519 identities, OIDC discovery/JWKS and signed JWT issuance (`HubApi`, `ms-hub agent-idp`); Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier. Agent private JWKs are only written to an explicitly requested owner-only file.
 - **Fix**: Studio compat calls no longer leak connection options or API tokens, or drop cover images; errors distinguish permission, quota and conflicts; anonymous Studio info and log pagination work
@@ -640,12 +644,18 @@ ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
 
 ### `ms-hub agent`
 
-Low-level raw file transfer for remote agent repositories: `download`, `upload`, `list`. This command transfers files as-is, with **no framework awareness**.
+Remote agent repositories: raw file transfer (`download`, `upload`, `list`) and plugin-driven `install`.
 
 ```bash
 ms-hub agent download -r user/my-agent --local-dir ./my-agent   # download raw files
 ms-hub agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw
+ms-hub agent install  -r user/my-agent \
+    --plugin-repo modelscope/agent-hub-plugin --trust-remote-code  # install into the framework
 ```
+
+`download` / `upload` / `list` transfer files as-is, with **no framework awareness**.
+
+`install` is different: it does not know any framework's file layout either. It resolves *which* plugin to use, fetches that plugin from a model repository, verifies it against its own manifest, and hands the agent id over — the plugin decides where files land, how the agent is registered, and what the framework needs afterwards. See [`ms-hub agent install`](#ms-hub-agent-install) for the security model.
 
 > **Framework-aware operations** (cross-framework `convert`, `watch`/bidirectional sync, `status`, `backups`, `restore`, `stop`) live in **[modelscope-agent](https://github.com/modelscope/ms-agent)** — use `ms-agent agent ...` instead. For example, to download and convert in one step: `ms-agent agent download -f qoder -r user/my-agent --target-framework qwenpaw`.
 
@@ -682,6 +692,66 @@ ms-hub agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 | `--local-dir DIR` | no | Source path (file or directory) to upload (default: CWD) |
 | `--revision REV` | no | Repository revision (default: `master`) |
 | `--dry-run` | no | List files that would be uploaded without uploading |
+
+#### `ms-hub agent install`
+
+Download an agent and hand it to its **framework plugin**, which installs it into the local workspace.
+
+```bash
+ms-hub agent install -r user/my-agent --plugin-repo modelscope/agent-hub-plugin --trust-remote-code
+ms-hub agent install -r user/my-agent --plugin-revision v0.2.0 -n sub-agent --local-dir ~/ws
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `-r, --repo REPO` | yes | Agent repository to install (`owner/name`) |
+| `--plugin-repo OWNER/NAME` | no | Plugin model repository. Falls back to `$MODELSCOPE_AGENT_PLUGIN_REPO`; **there is no built-in default owner** |
+| `--plugin-revision REV` | no | Plugin revision (default: `master`; pin a tag for reproducible installs) |
+| `--trust-remote-code` | no | Required to import and run the plugin, unless `$MODELSCOPE_AGENT_TRUST_REMOTE_CODE=1` |
+| `-n, --name NAME` | no | Sub-agent name, passed through to the plugin |
+| `--framework FW` | no | Override the plugin's framework detection |
+| `--local-dir DIR` | no | Override the framework's local root |
+| `--dry-run` | no | Report what would happen, change nothing |
+| `-y, --yes` / `--force` / `-q, --quiet` | no | Passed through to the plugin |
+
+Exit codes: `0` success, `2` a gate refused or the command line is wrong, and otherwise **the plugin's own code** — the install layer gives `3` (already exists), `4` (refused to overwrite), `5` (install or self-check failed) and `6` (framework mismatch) distinct meanings, and collapsing them to `1` would discard the only machine-readable signal a caller has.
+
+##### Security model
+
+Importing a plugin executes code this package did not ship, so the path is gated three times, in increasing order of cost:
+
+1. **Explicit source.** The plugin repository must be named by `--plugin-repo` or `$MODELSCOPE_AGENT_PLUGIN_REPO`. There is no default owner: who publishes the plugin is a deployment decision, and silently falling back to one would let a typo install from somewhere nobody chose.
+2. **Owner allow-list.** Checked *before* anything is downloaded, so an untrusted source is refused without touching the network. Matching is **case-sensitive** — a lower-casing comparison would accept a look-alike account, which is exactly what an allow-list must stop.
+
+   ```bash
+   # Default: mushenL,modelscope. Override (comma-separated, case-sensitive):
+   export MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS="modelscope,my-org"
+   ```
+
+   A refusal names the owners currently trusted and prints this variable, so the fix is discoverable from the error alone.
+3. **Trust opt-in.** Checked after the manifest is verified, so the refusal can show exactly what is about to run — repository, revision, version, entry module, frameworks, declared operations and the manifest digest. The opt-in is a flag or an environment variable and is **never persisted**: "allow this code to run" is not a preference worth remembering on the user's behalf.
+
+Between gates 2 and 3, `plugin.json`'s `content_sha256` is checked against every file on disk. A package whose contents do not match the digest published with them is refused, as is one with no digest at all — without it the import would be unconditional code execution. The hub's own file listing is deliberately *not* used for this: it has been observed reporting a git blob SHA-1 in a `sha256` field, which makes it unreliable as an integrity source.
+
+Downloading a plugin does not execute anything, so fetching an untrusted package is safe; only the import is gated.
+
+##### Python API
+
+```python
+from modelscope_hub.agent import install_agent
+
+outcome = install_agent(
+    "user/my-agent",
+    plugin_repo="modelscope/agent-hub-plugin",
+    plugin_revision="v0.2.0",
+    trust_remote_code=True,
+)
+print(outcome.ok, outcome.operation, outcome.exit_code, outcome.error)
+```
+
+The lower-level steps are exported too (`resolve_plugin_repo`, `assert_trusted_owner`, `fetch_plugin`, `verify_manifest`, `load_plugin`, `select_operation`) for callers that want to inspect a plugin without running it.
+
+The plugin's entry operation is negotiated rather than hard-coded: `install` is preferred, `download` accepted as a fallback, and `capabilities()['operations']` is authoritative when the plugin declares it — so a plugin that ships a name without implementing it is not selected, and the hub does not need re-releasing when a plugin grows a richer entry point. Arguments are narrowed to what the plugin's signature accepts, so a plugin adding new keywords does not break older hubs.
 
 </details>
 
@@ -839,6 +909,9 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | `MODELSCOPE_ENDPOINT` | `https://modelscope.cn` | API endpoint URL |
 | `MODELSCOPE_CACHE` | `~/.cache/modelscope` | Local cache directory |
 | `MODELSCOPE_HOME` | `~/.modelscope` | SDK config directory |
+| `MODELSCOPE_AGENT_PLUGIN_REPO` | — | Model repository (`owner/name`) of the agent plugin used by `ms-hub agent install`; no built-in default |
+| `MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS` | `mushenL,modelscope` | Comma-separated owners allowed to provide the agent plugin (case-sensitive) |
+| `MODELSCOPE_AGENT_TRUST_REMOTE_CODE` | `false` | Let `ms-hub agent install` execute plugin code without `--trust-remote-code` |
 | `MODELSCOPE_PREFER_AI_SITE` | `false` | Prefer `modelscope.ai` over `modelscope.cn` |
 
 **Network:**
