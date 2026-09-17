@@ -30,6 +30,8 @@ from typing import IO, TYPE_CHECKING, Any, BinaryIO
 from tqdm.auto import tqdm
 
 from .constants import (
+    API_CONNECTION_POOL_MAXSIZE,
+    COMMIT_MAX_ACTIONS_PER_REQUEST,
     DATASET_LFS_SUFFIX,
     DEFAULT_IGNORE_PATTERNS,
     MODEL_LFS_SUFFIX,
@@ -44,8 +46,12 @@ from .constants import (
     UPLOAD_COMMIT_BATCH_MAX_OPERATIONS,
     UPLOAD_COMMIT_MAX_ATTEMPTS,
     UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES,
+    UPLOAD_COMMIT_MAX_INLINE_BYTES,
+    UPLOAD_COMMIT_MAX_PER_HOUR,
+    UPLOAD_COMMIT_MAX_RETRY_AFTER_SECONDS,
     UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS,
     UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS,
+    UPLOAD_INLINE_METADATA_PATHS,
     UPLOAD_LEGACY_PROGRESS_FILE,
     UPLOAD_LFS_FORCE_THRESHOLD_BYTES,
     UPLOAD_MAX_CONCURRENT_WORKERS,
@@ -53,6 +59,7 @@ from .constants import (
     UPLOAD_MAX_FILE_SIZE_BYTES,
     UPLOAD_MAX_FILES_PER_DIRECTORY,
     UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES,
+    UPLOAD_PROGRESS_MIN_INTERVAL_SECONDS,
     UPLOAD_RECOVERY_BACKOFF_MAX_EXPONENT,
     UPLOAD_RECOVERY_ENABLED,
     UPLOAD_RECOVERY_MAX_DELAY_SECONDS,
@@ -64,6 +71,7 @@ from .errors import (
     HubError,
     InvalidParameter,
     NetworkError,
+    RateLimitError,
     StorageError,
 )
 from .utils.file_utils import compute_hash
@@ -119,8 +127,21 @@ class _CountedReadStream:
             )
 
 
+def _is_inline_metadata(path: str | Path) -> bool:
+    """Return whether *path* must stay inline in the commit rather than go to LFS.
+
+    Checked before the size and suffix rules so that lowering the LFS threshold
+    can never turn a repository file the Hub parses server-side into a pointer.
+    """
+    if not isinstance(path, (str, Path)):
+        return False
+    return Path(path).name.upper() in UPLOAD_INLINE_METADATA_PATHS
+
+
 def _is_lfs(path: str | Path, size: int, repo_type: str) -> bool:
     """Determine if a file should use LFS upload mode (suffix + size threshold)."""
+    if _is_inline_metadata(path):
+        return False
     if size > UPLOAD_LFS_FORCE_THRESHOLD_BYTES:
         return True
     suffix = Path(path).suffix.lower() if isinstance(path, (str, Path)) else ""
@@ -136,15 +157,68 @@ def _upload_mode(path: str | Path, size: int, repo_type: str) -> str:
     return "lfs" if _is_lfs(path, size, repo_type) else "normal"
 
 
-def _calculate_adaptive_batch_size(total_files: int) -> int:
-    """Calculate optimal commit batch size based on total file count."""
+def _calculate_adaptive_batch_size(total_files: int, max_operations: int) -> int:
+    """Commit batch size from the file count alone, capped by *max_operations*.
+
+    Fewer, fuller commits are strictly better: the Hub throttles commits per
+    repository, so commit count -- not commit size -- is the scarce resource.
+    The only reason to stop growing a batch is the operation cap, or the inlined
+    content limit that :func:`_plan_commit_batches` applies on top of this.
+
+    The cap is itself clamped to :data:`COMMIT_MAX_ACTIONS_PER_REQUEST`, which
+    the server rejects outright rather than truncating.
+    """
     if total_files <= 0:
         return 1
-    if total_files <= 100:
-        return total_files
-    if total_files <= 10_000:
-        return max(64, min(256, total_files // 80))
-    return 512
+    ceiling = max(1, COMMIT_MAX_ACTIONS_PER_REQUEST)
+    cap = max_operations if max_operations > 0 else total_files
+    return max(1, min(cap, ceiling, total_files))
+
+
+def _plan_commit_batches(
+    files: list[tuple[str, str]],
+    repo_type: str,
+    *,
+    max_operations: int,
+    max_inline_bytes: int,
+    sizes: dict[str, int] | None = None,
+) -> list[int]:
+    """Split *files* into commit batches, returning each batch's file count.
+
+    Two limits close a batch, whichever is reached first: ``max_operations``
+    files, or ``max_inline_bytes`` of content that will ride *inside* the commit
+    request. Only non-LFS files contribute to the byte total -- an LFS file adds
+    a fixed-size pointer -- and base64 expansion is accounted for, because the
+    request carries the encoded form. A batch always holds at least one file, so
+    a single oversized inline file still makes progress instead of deadlocking.
+    """
+    if not files:
+        return []
+    cap = max_operations if max_operations > 0 else len(files)
+    cap = max(1, min(cap, max(1, COMMIT_MAX_ACTIONS_PER_REQUEST)))
+
+    batches: list[int] = []
+    count = 0
+    inline_bytes = 0
+    for path_in_repo, file_path in files:
+        size = sizes.get(file_path, 0) if sizes is not None else _safe_size(file_path)
+        encoded = 0 if _is_lfs(path_in_repo, size, repo_type) else (size + 2) // 3 * 4
+        if count > 0 and (count >= cap or (max_inline_bytes > 0 and inline_bytes + encoded > max_inline_bytes)):
+            batches.append(count)
+            count = 0
+            inline_bytes = 0
+        count += 1
+        inline_bytes += encoded
+    if count:
+        batches.append(count)
+    return batches
+
+
+def _safe_size(file_path: str) -> int:
+    try:
+        return os.stat(file_path).st_size
+    except OSError:
+        return 0
 
 
 def _compute_file_hash(
@@ -482,18 +556,38 @@ class NullTracker:
 
 
 class BatchTracker:
-    """Thread-safe tracker for pre-assigned upload batches."""
+    """Thread-safe tracker for pre-assigned upload batches.
 
-    def __init__(self, total_files: int, batch_size: int) -> None:
-        self._batch_size = batch_size
-        self._num_batches = (total_files - 1) // batch_size + 1 if total_files > 0 else 0
+    Batch sizes are supplied as a plan rather than a single number so that a
+    batch can be closed on inlined-content volume as well as on file count.
+    """
+
+    def __init__(self, total_files: int, batch_sizes: list[int] | int) -> None:
+        if isinstance(batch_sizes, int):
+            step = max(1, batch_sizes)
+            sizes = [min(step, total_files - start) for start in range(0, total_files, step)]
+        else:
+            sizes = [size for size in batch_sizes if size > 0]
+        assigned = sum(sizes)
+        if assigned < total_files:
+            # Never drop files: a short plan gets the remainder as a final batch.
+            sizes.append(total_files - assigned)
+        self._batch_sizes = sizes
+        self._num_batches = len(sizes)
+
+        # file index -> batch index, so a completed upload can find its batch
+        # without assuming batches are uniform.
+        self._owner: list[int] = []
+        self._batch_start: list[int] = []
+        offset = 0
+        for batch_idx, size in enumerate(sizes):
+            self._batch_start.append(offset)
+            self._owner.extend([batch_idx] * size)
+            offset += size
+
         self._batch_results: list[list[dict]] = [[] for _ in range(self._num_batches)]
         self._batch_failures: list[list[tuple]] = [[] for _ in range(self._num_batches)]
-        self._batch_expected: list[int] = []
-        for i in range(self._num_batches):
-            start = i * batch_size
-            end = min(start + batch_size, total_files)
-            self._batch_expected.append(end - start)
+        self._batch_expected: list[int] = list(sizes)
         self._batch_events: list[threading.Event] = [threading.Event() for _ in range(self._num_batches)]
         self._lock = threading.Lock()
 
@@ -501,8 +595,13 @@ class BatchTracker:
     def num_batches(self) -> int:
         return self._num_batches
 
+    def batch_range(self, batch_idx: int) -> tuple[int, int]:
+        """Return the ``[start, end)`` file-index range owned by *batch_idx*."""
+        start = self._batch_start[batch_idx]
+        return start, start + self._batch_sizes[batch_idx]
+
     def batch_index(self, file_index: int) -> int:
-        return file_index // self._batch_size
+        return self._owner[file_index]
 
     def record_success(self, file_index: int, result: dict) -> None:
         idx = self.batch_index(file_index)
@@ -538,6 +637,49 @@ class BatchTracker:
         return count >= self._batch_expected[batch_idx]
 
 
+class _CommitRateGovernor:
+    """Sliding-window limiter that keeps commits under a per-hour budget.
+
+    Reacting to a throttle costs a wasted round trip, and when the server holds
+    the connection open instead of answering, a full read timeout. Pacing ahead
+    of the limit avoids both. Disabled when the budget is not positive, so it is
+    inert for interactive uploads that never approach the ceiling.
+    """
+
+    _WINDOW_SECONDS = 3600.0
+
+    def __init__(self, max_per_hour: int) -> None:
+        self._max_per_hour = max_per_hour
+        self._timestamps: list[float] = []
+        self._lock = threading.Lock()
+
+    @property
+    def enabled(self) -> bool:
+        return self._max_per_hour > 0
+
+    def acquire(self) -> float:
+        """Block until a commit slot is free; return the seconds spent waiting."""
+        if not self.enabled:
+            return 0.0
+        waited = 0.0
+        while True:
+            with self._lock:
+                now = time.monotonic()
+                cutoff = now - self._WINDOW_SECONDS
+                self._timestamps = [ts for ts in self._timestamps if ts > cutoff]
+                if len(self._timestamps) < self._max_per_hour:
+                    self._timestamps.append(now)
+                    return waited
+                sleep_for = self._timestamps[0] - cutoff
+            logger.info(
+                "Commit budget reached (%d/hour), pausing %.0fs before the next commit ...",
+                self._max_per_hour,
+                sleep_for,
+            )
+            time.sleep(max(sleep_for, 0.1))
+            waited += max(sleep_for, 0.1)
+
+
 # ====================================================================
 # Upload Manager
 # ====================================================================
@@ -558,6 +700,12 @@ class UploadManager:
         self._config = config
         self._openapi = openapi_client
         self._create_repo_fn = create_repo_fn
+        # The commit budget is a server-side property of the repository, not of
+        # one call, so the governor is shared by every commit this manager makes
+        # -- batch commits, recovery rounds, sync deletes and single files alike.
+        # Pacing only the happy path would leave recovery free to hammer a
+        # server that is already throttling.
+        self._commit_governor = _CommitRateGovernor(UPLOAD_COMMIT_MAX_PER_HOUR)
 
     # ------------------------------------------------------------------
     # Public: upload_file
@@ -627,7 +775,10 @@ class UploadManager:
         )
 
         print(f"Committing file to {repo_id} ...", flush=True)
-        return self._client.create_commit(
+        # Same commit path as folder uploads: a single file gets the transient
+        # retry and the Retry-After handling too. Committing directly meant a
+        # throttled or briefly unavailable server failed the call outright.
+        return self._commit_with_retry(
             repo_id=repo_id,
             repo_type=repo_type,
             operations=[operation],
@@ -650,25 +801,55 @@ class UploadManager:
         """Delete repository files through a commit operation.
 
         The direct repository DELETE endpoints reject API-token authentication.
-        Commit ``delete`` actions use the same supported write path as uploads
-        and are applied atomically in a single commit.
+        Commit ``delete`` actions use the same supported write path as uploads.
+
+        A single commit is capped by the server at
+        :data:`COMMIT_MAX_ACTIONS_PER_REQUEST` actions, so a larger request is
+        split across sequential commits. Deletions within one commit are atomic;
+        across a split they are not, and a failure part-way leaves the earlier
+        commits applied -- which is reported rather than hidden, so the caller can
+        retry with the remaining paths.
         """
         paths = list(dict.fromkeys(path for path in file_paths if path))
         if not paths:
-            raise InvalidParameter(
-                "file_paths must contain at least one non-empty path.")
+            raise InvalidParameter("file_paths must contain at least one non-empty path.")
 
-        self._commit_with_retry(
-            repo_id=repo_id,
-            repo_type=repo_type,
-            operations=self._build_delete_operations(paths),
-            commit_message=commit_message,
-            revision=revision,
-        )
+        chunk_size = max(1, COMMIT_MAX_ACTIONS_PER_REQUEST)
+        chunks = [paths[i : i + chunk_size] for i in range(0, len(paths), chunk_size)]
+        if len(chunks) > 1:
+            logger.info(
+                "Deleting %d file(s) in %d commit(s) (server caps one commit at %d actions).",
+                len(paths),
+                len(chunks),
+                chunk_size,
+            )
+
+        deleted: list[str] = []
+        for index, chunk in enumerate(chunks):
+            message = commit_message if len(chunks) == 1 else f"{commit_message} ({index + 1}/{len(chunks)})"
+            try:
+                self._commit_with_retry(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    operations=self._build_delete_operations(chunk),
+                    commit_message=message,
+                    revision=revision,
+                )
+            except Exception:
+                if deleted:
+                    logger.error(
+                        "Delete commit %d/%d failed after %d file(s) were already removed.",
+                        index + 1,
+                        len(chunks),
+                        len(deleted),
+                    )
+                raise
+            deleted.extend(chunk)
+
         return {
-            "deleted_files": paths,
+            "deleted_files": deleted,
             "failed_files": [],
-            "total_files": len(paths),
+            "total_files": len(deleted),
         }
 
     # ------------------------------------------------------------------
@@ -690,6 +871,8 @@ class UploadManager:
         use_cache: bool | None = None,
         disable_tqdm: bool = False,
         sync_remote_repo: bool = False,
+        tracker_path: str | Path | None = None,
+        progress_callback: Any = None,
     ) -> dict | list[dict] | None:
         """Upload a folder with resumable support, adaptive batching, and retry."""
         start_time = time.time()
@@ -727,12 +910,14 @@ class UploadManager:
 
         # Collect files
         logger.info("Preparing files to upload ...")
+        file_sizes: dict[str, int] = {}
         sorted_files = self._prepare_upload_folder(
             folder_path=folder_path,
             path_in_repo=path_in_repo,
             repo_type=repo_type,
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
+            sizes_out=file_sizes,
         )
 
         # For sync mode: collect ALL local files (unfiltered) to avoid
@@ -760,27 +945,40 @@ class UploadManager:
         # Sort for deterministic batch assignment
         sorted_files = sorted(sorted_files, key=lambda x: x[0])
 
-        # Calculate batch size
-        if UPLOAD_ADAPTIVE_BATCHING_ENABLED:
-            commit_batch_size = _calculate_adaptive_batch_size(len(sorted_files))
-            logger.info(
-                "Adaptive batch size: %d (for %d files)",
-                commit_batch_size,
-                len(sorted_files),
-            )
-        else:
-            commit_batch_size = (
-                UPLOAD_COMMIT_BATCH_MAX_OPERATIONS if UPLOAD_COMMIT_BATCH_MAX_OPERATIONS > 0 else len(sorted_files)
-            )
+        # Plan commit batches. The operation cap bounds the file count; the
+        # inline-content cap bounds how many bytes a commit body carries, which
+        # only non-LFS files add to.
+        max_operations = (
+            _calculate_adaptive_batch_size(len(sorted_files), UPLOAD_COMMIT_BATCH_MAX_OPERATIONS)
+            if UPLOAD_ADAPTIVE_BATCHING_ENABLED
+            else (UPLOAD_COMMIT_BATCH_MAX_OPERATIONS if UPLOAD_COMMIT_BATCH_MAX_OPERATIONS > 0 else len(sorted_files))
+        )
+        batch_plan = _plan_commit_batches(
+            sorted_files,
+            repo_type,
+            max_operations=max_operations,
+            max_inline_bytes=UPLOAD_COMMIT_MAX_INLINE_BYTES,
+            sizes=file_sizes,
+        )
+        logger.info(
+            "Commit plan: %d batch(es) for %d file(s) (max %d ops, max %d inline bytes per commit).",
+            len(batch_plan),
+            len(sorted_files),
+            max_operations,
+            UPLOAD_COMMIT_MAX_INLINE_BYTES,
+        )
 
-        # Initialize tracker
+        # Initialize tracker. The cache normally lives in the uploaded folder,
+        # but a caller that stages files into a throwaway tree (a link tree, a
+        # per-chunk directory) must be able to keep it outside, or every run
+        # rediscovers hashes and re-commits what was already committed.
         folder_path_resolved = Path(folder_path).resolve()
         if use_cache:
-            cache_path = folder_path_resolved / UPLOAD_CACHE_FILE
+            cache_path = Path(tracker_path).expanduser() if tracker_path else folder_path_resolved / UPLOAD_CACHE_FILE
             tracker: UploadTracker | NullTracker = UploadTracker(cache_path, repo_id=repo_id)
         else:
             tracker = NullTracker()
-        batch_tracker = BatchTracker(len(sorted_files), commit_batch_size)
+        batch_tracker = BatchTracker(len(sorted_files), batch_plan)
 
         # Skip individually committed files
         files_to_upload: list[tuple[int, tuple[str, str]]] = []
@@ -800,38 +998,63 @@ class UploadManager:
                 )
             files_to_upload.append((file_idx, (file_path_in_repo, file_path)))
 
-        # Batch pre-validation for LFS files with cached hashes
+        # Batch pre-validation for every LFS candidate.
+        #
+        # Without a cached hash the per-file upload path would ask the git-lfs
+        # batch endpoint for its own pre-signed URL, one round trip per file.
+        # Hashing up front lets all candidates be pre-signed in groups instead,
+        # which is the difference between one request per file and one per group
+        # once small files are routed to LFS.
         pre_validated_map: dict[str, str | None] = {}
-        lfs_hash_info_map: dict[int, tuple[dict, os.stat_result]] = {}
+        lfs_hash_info_map: dict[int, dict] = {}
 
         for file_idx, (file_path_in_repo, file_path) in files_to_upload:
+            size = file_sizes.get(file_path, 0)
+            if _upload_mode(file_path_in_repo, size, repo_type) != "lfs":
+                continue
             try:
                 st = os.stat(file_path)
-                cached = tracker.get_hash(file_path_in_repo, st.st_mtime, st.st_size)
-                if cached is not None:
-                    if (
-                        _upload_mode(
-                            file_path_in_repo,
-                            cached["file_size"],
-                            repo_type,
-                        )
-                        == "lfs"
-                    ):
-                        lfs_hash_info_map[file_idx] = (cached, st)
-                    continue
             except OSError:
-                pass
+                continue
+            cached = tracker.get_hash(file_path_in_repo, st.st_mtime, st.st_size)
+            if cached is None:
+                continue
+            if _upload_mode(file_path_in_repo, cached["file_size"], repo_type) == "lfs":
+                lfs_hash_info_map[file_idx] = cached
+
+        uncached_lfs = [
+            (file_idx, file_info)
+            for file_idx, file_info in files_to_upload
+            if file_idx not in lfs_hash_info_map
+            and _upload_mode(file_info[0], file_sizes.get(file_info[1], 0), repo_type) == "lfs"
+        ]
+        if uncached_lfs:
+            lfs_hash_info_map.update(self._hash_files_parallel(uncached_lfs, tracker, max_workers))
 
         if lfs_hash_info_map:
-            objects = [{"oid": info["file_hash"], "size": info["file_size"]} for info, _ in lfs_hash_info_map.values()]
-            validated = self._validate_blobs_batch(repo_id=repo_id, repo_type=repo_type, objects=objects)
+            objects = [{"oid": info["file_hash"], "size": info["file_size"]} for info in lfs_hash_info_map.values()]
+            # Identical content shares one oid, so the request set is keyed by
+            # digest rather than by file.
+            unique_objects = list({obj["oid"]: obj for obj in objects}.values())
+            validated = self._validate_blobs_batch(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                objects=unique_objects,
+                max_workers=max_workers,
+            )
             pre_validated_map = validated
             reused = sum(1 for v in validated.values() if v is None)
+            unresolved = len(unique_objects) - len(validated)
             logger.info(
-                "Pre-validated %d cached LFS hash(es): %d globally existing, %d need upload.",
+                "Pre-validated %d/%d distinct blob(s) for %d file(s) in %d request(s): "
+                "%d already stored, %d to upload%s.",
+                len(validated),
+                len(unique_objects),
                 len(objects),
+                -(-len(unique_objects) // max(1, UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS)),
                 reused,
-                len(objects) - reused,
+                len(validated) - reused,
+                f", {unresolved} unresolved (will negotiate per file)" if unresolved else "",
             )
 
         skipped_count = len(skipped_indices)
@@ -846,10 +1069,9 @@ class UploadManager:
         )
 
         logger.info(
-            "Uploading %d file(s) in %d batch(es) of size %d (pipeline mode).",
+            "Uploading %d file(s) in %d batch(es) (pipeline mode).",
             len(files_to_upload),
             batch_tracker.num_batches,
-            commit_batch_size,
         )
 
         # Pipeline: upload workers
@@ -864,10 +1086,12 @@ class UploadManager:
                     repo_type=repo_type,
                     tracker=tracker,
                     pre_validated=pre_validated,
+                    hash_info=lfs_hash_info_map.get(file_idx),
                     disable_tqdm=disable_tqdm,
                 )
                 logger.debug("Uploaded: %s", path_in_repo_w)
                 batch_tracker.record_success(file_idx, result)
+                _report_wire(result)
             except Exception as e:
                 logger.error("Upload failed: %s - %s", path_in_repo_w, e)
                 batch_tracker.record_failure(file_idx, file_info, e)
@@ -877,16 +1101,146 @@ class UploadManager:
         all_results: list[dict] = []
         total_failed_files: list[tuple] = []
         num_batches = batch_tracker.num_batches
+        committed_files = 0
+        committed_bytes = 0
+        total_bytes = sum(file_sizes.values())
+        # Wire-level counters, advanced as each file's transfer finishes rather
+        # than when its commit lands.
+        wire_lock = threading.Lock()
+        wire_state = {"bytes": 0, "files": 0, "reported_bytes": 0, "last_emit": 0.0}
+
+        def _emit(payload: dict) -> None:
+            if progress_callback is None:
+                return
+            try:
+                progress_callback(payload)
+            except Exception as cb_error:  # noqa: BLE001 - a reporter must not fail the upload
+                logger.warning("Progress callback raised %s, continuing upload.", cb_error)
+
+        def _report(
+            event: str,
+            batch_idx: int,
+            files: int,
+            num_bytes: int,
+            inline_bytes: int = 0,
+            error: str | None = None,
+        ) -> None:
+            """Emit a batch-level progress event.
+
+            A folder upload is otherwise silent between batches, so a long run is
+            indistinguishable from a hung one. Byte counts are included because a
+            consumer that only learns file counts cannot compute a throughput rate
+            or an ETA, which is most of what progress is for. ``inline_bytes`` is
+            the part of the batch that travels inside this commit rather than
+            having already gone to object storage, so a consumer can attribute
+            wire traffic to the right moment without double counting.
+            """
+            with wire_lock:
+                wire_bytes, wire_files = wire_state["bytes"], wire_state["files"]
+            _emit(
+                {
+                    "event": event,
+                    "repo_id": repo_id,
+                    "batch_index": batch_idx,
+                    "num_batches": num_batches,
+                    "batch_files": files,
+                    "batch_bytes": num_bytes,
+                    "batch_inline_bytes": inline_bytes,
+                    "committed_files": committed_files,
+                    "committed_bytes": committed_bytes,
+                    "uploaded_bytes": wire_bytes,
+                    "uploaded_files": wire_files,
+                    "total_files": len(sorted_files),
+                    "total_bytes": total_bytes,
+                    "skipped_files": skipped_count,
+                    "elapsed": time.time() - start_time,
+                    "error": error,
+                }
+            )
+
+        def _report_wire(result: dict) -> None:
+            """Account one finished file transfer, emitting at a throttled rate.
+
+            Commits land in lumps tens of seconds apart, so a consumer fed only by
+            commit events sees a rate that alternates between a spike and zero and
+            cannot tell a slow batch from a hung one. Blob uploads finish
+            continuously, which is the signal a rate should be built from. Only
+            bytes that really went to object storage count: a deduplicated blob
+            transfers nothing.
+            """
+            if progress_callback is None:
+                return
+            moved = result["file_size_on_disk"] if result.get("is_blob_uploaded") else 0
+            now = time.monotonic()
+            with wire_lock:
+                wire_state["bytes"] += moved
+                wire_state["files"] += 1
+                due = now - wire_state["last_emit"] >= UPLOAD_PROGRESS_MIN_INTERVAL_SECONDS
+                if not due:
+                    return
+                wire_state["last_emit"] = now
+                delta = wire_state["bytes"] - wire_state["reported_bytes"]
+                wire_state["reported_bytes"] = wire_state["bytes"]
+                snapshot = (wire_state["bytes"], wire_state["files"])
+            _emit(
+                {
+                    "event": "upload_progress",
+                    "repo_id": repo_id,
+                    "uploaded_bytes": snapshot[0],
+                    "uploaded_bytes_delta": delta,
+                    "uploaded_files": snapshot[1],
+                    "committed_files": committed_files,
+                    "committed_bytes": committed_bytes,
+                    "total_files": len(sorted_files),
+                    "total_bytes": total_bytes,
+                    "skipped_files": skipped_count,
+                    "elapsed": time.time() - start_time,
+                    "error": None,
+                }
+            )
+
+        def _flush_wire() -> None:
+            """Emit whatever wire bytes the throttle has not reported yet."""
+            if progress_callback is None:
+                return
+            with wire_lock:
+                delta = wire_state["bytes"] - wire_state["reported_bytes"]
+                if delta <= 0:
+                    return
+                wire_state["reported_bytes"] = wire_state["bytes"]
+                snapshot = (wire_state["bytes"], wire_state["files"])
+            _emit(
+                {
+                    "event": "upload_progress",
+                    "repo_id": repo_id,
+                    "uploaded_bytes": snapshot[0],
+                    "uploaded_bytes_delta": delta,
+                    "uploaded_files": snapshot[1],
+                    "committed_files": committed_files,
+                    "committed_bytes": committed_bytes,
+                    "total_files": len(sorted_files),
+                    "total_bytes": total_bytes,
+                    "skipped_files": skipped_count,
+                    "elapsed": time.time() - start_time,
+                    "error": None,
+                }
+            )
 
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for file_idx, file_info in files_to_upload:
                     pv: str | bool | None = None
                     if file_idx in lfs_hash_info_map:
-                        cached_hash = lfs_hash_info_map[file_idx][0]["file_hash"]
-                        pv = pre_validated_map.get(cached_hash)
-                        if pv is None:
-                            pv = True
+                        cached_hash = lfs_hash_info_map[file_idx]["file_hash"]
+                        # "Answered, and the server did not ask for an upload"
+                        # means the blob already exists and is reused. "Never
+                        # answered" means the group failed, and the file has to
+                        # negotiate its own URL -- treating that as reuse would
+                        # skip the transfer and commit a pointer to a blob that
+                        # was never stored.
+                        if cached_hash in pre_validated_map:
+                            url = pre_validated_map[cached_hash]
+                            pv = True if url is None else url
                     executor.submit(_upload_worker, file_idx, file_info, pv)
 
                 consecutive_failures = 0
@@ -896,8 +1250,7 @@ class UploadManager:
                     total=num_batches,
                     disable=disable_tqdm,
                 ):
-                    batch_start = batch_idx * commit_batch_size
-                    batch_end = min(batch_start + commit_batch_size, len(sorted_files))
+                    batch_start, batch_end = batch_tracker.batch_range(batch_idx)
                     if all(i in skipped_indices for i in range(batch_start, batch_end)):
                         logger.info(
                             "Batch %d/%d fully committed, skipping.",
@@ -907,6 +1260,10 @@ class UploadManager:
                         continue
 
                     results, failures = batch_tracker.wait_for_batch(batch_idx)
+                    # Every file of this batch has finished its transfer by now,
+                    # so publish the bytes the throttle may still be holding
+                    # before the commit event reports the batch as done.
+                    _flush_wire()
 
                     if failures:
                         total_failed_files.extend(failures)
@@ -922,6 +1279,7 @@ class UploadManager:
                             batch_idx + 1,
                             num_batches,
                         )
+                        _report("batch_failed", batch_idx, len(failures), 0, error="all files failed to upload")
                         continue
 
                     batch_commit_message = f"{commit_message} (batch {batch_idx + 1}/{num_batches})"
@@ -943,12 +1301,26 @@ class UploadManager:
                         )
                         self._track_committed_batch(tracker, results)
                         consecutive_failures = 0
+                        batch_bytes = sum(r["file_size_on_disk"] for r in results)
+                        batch_inline_bytes = sum(
+                            r["file_size_on_disk"] for r in results if r.get("upload_mode") != "lfs"
+                        )
+                        committed_files += len(results)
+                        committed_bytes += batch_bytes
+                        _report("batch_committed", batch_idx, len(results), batch_bytes, batch_inline_bytes)
                     except Exception as e:
                         logger.error(
                             "Batch %d/%d commit failed: %s",
                             batch_idx + 1,
                             num_batches,
                             e,
+                        )
+                        _report(
+                            "batch_failed",
+                            batch_idx,
+                            len(results),
+                            sum(r["file_size_on_disk"] for r in results),
+                            error=str(e),
                         )
                         category = classify_error(e)
                         if not _ErrorCategory.is_retryable(category):
@@ -1170,6 +1542,7 @@ class UploadManager:
         repo_type: str,
         tracker: UploadTracker | NullTracker | None = None,
         pre_validated: Any = None,
+        hash_info: dict | None = None,
         disable_tqdm: bool = False,
     ) -> dict:
         if tracker is None:
@@ -1178,7 +1551,13 @@ class UploadManager:
         file_stat = None
         is_real_path = isinstance(file_path, (str, os.PathLike))
 
-        if is_real_path:
+        if hash_info is not None:
+            # Already computed during batch pre-validation; re-reading the file
+            # to hash it again would double the disk cost of every LFS file.
+            hash_info_d = dict(hash_info)
+            hash_info_d["file_path_or_obj"] = file_path
+
+        if hash_info_d is None and is_real_path:
             try:
                 file_stat = os.stat(file_path)
                 cached = tracker.get_hash(file_path_in_repo, file_stat.st_mtime, file_stat.st_size)
@@ -1366,24 +1745,97 @@ class UploadManager:
     # ------------------------------------------------------------------
     # Internal: batch blob validation
     # ------------------------------------------------------------------
+    def _hash_files_parallel(
+        self,
+        files: list[tuple[int, tuple[str, str]]],
+        tracker: UploadTracker | NullTracker,
+        max_workers: int,
+    ) -> dict[int, dict]:
+        """Hash *files* concurrently and record the results in *tracker*.
+
+        Hashing ahead of the upload pipeline is what makes group pre-signing
+        possible: the git-lfs batch endpoint is keyed by ``sha256``, so without
+        the digests up front each file has to negotiate its own upload URL.
+        """
+        hashed: dict[int, dict] = {}
+
+        def _hash_one(entry: tuple[int, tuple[str, str]]) -> tuple[int, dict] | None:
+            file_idx, (path_in_repo, file_path) = entry
+            try:
+                st = os.stat(file_path)
+                info = _compute_file_hash(file_path_or_obj=file_path)
+            except OSError as error:
+                # Leave it to the upload worker, which reports per-file failures.
+                logger.debug("Cannot pre-hash %s: %s", path_in_repo, error)
+                return None
+            tracker.put_hash(path_in_repo, st.st_mtime, st.st_size, info)
+            return file_idx, info
+
+        with ThreadPoolExecutor(max_workers=max(1, max_workers)) as executor:
+            for outcome in executor.map(_hash_one, files):
+                if outcome is not None:
+                    hashed[outcome[0]] = outcome[1]
+
+        logger.info("Hashed %d LFS candidate(s) for batch pre-validation.", len(hashed))
+        return hashed
+
     def _validate_blobs_batch(
         self,
         repo_id: str,
         repo_type: str,
         objects: list[dict],
+        max_workers: int = 1,
     ) -> dict[str, str | None]:
+        """Pre-sign every object, in parallel groups, tolerating group failures.
+
+        The groups are independent requests, so running them serially made the
+        pre-sign phase scale linearly with the file count -- measurably so: 150
+        groups took 25s of pure round-trip latency before a single byte moved.
+
+        The batch endpoint answers only about objects that *need* uploading; an
+        object it does not mention already exists server-side. That is normalised
+        here into an explicit ``oid -> None`` entry, so the returned map covers
+        every object of every group that answered.
+
+        A group that fails is not fatal: its oids are simply absent from the map
+        and the per-file upload path negotiates their URL itself. Keeping
+        "answered: already exists" and "never answered" distinguishable is what
+        makes that safe -- conflating them would skip the transfer and commit a
+        pointer to a blob that was never stored.
+        """
+        batch_size = max(1, UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS)
+        chunks = [objects[i : i + batch_size] for i in range(0, len(objects), batch_size)]
+        if not chunks:
+            return {}
+
+        def validate(chunk: list[dict]) -> dict[str, str | None]:
+            try:
+                validated = self._client.validate_blobs(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    objects=chunk,
+                )
+            except Exception as error:  # noqa: BLE001 - degrades to per-file negotiation
+                logger.warning(
+                    "Blob pre-validation failed for %d object(s) (%s); those files will negotiate "
+                    "their upload URL individually.",
+                    len(chunk),
+                    error,
+                )
+                return {}
+            answered: dict[str, str | None] = {obj["oid"]: None for obj in chunk}
+            answered.update(validated)
+            return answered
+
         result: dict[str, str | None] = {}
-        batch_size = UPLOAD_BLOB_VALIDATION_BATCH_MAX_OBJECTS
-
-        for i in range(0, len(objects), batch_size):
-            chunk = objects[i : i + batch_size]
-            validated = self._client.validate_blobs(
-                repo_id=repo_id,
-                repo_type=repo_type,
-                objects=chunk,
-            )
-            result.update(validated)
-
+        if len(chunks) == 1:
+            return validate(chunks[0])
+        # Bounded by the HTTP pool: more in-flight requests than pooled
+        # connections just trades latency for TLS handshakes.
+        workers = max(1, min(max_workers, API_CONNECTION_POOL_MAXSIZE, len(chunks)))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for validated in executor.map(validate, chunks):
+                result.update(validated)
         return result
 
     # ------------------------------------------------------------------
@@ -1401,7 +1853,9 @@ class UploadManager:
     ) -> dict:
         last_error: Exception | None = None
         start_time = time.monotonic()
+        throttled_wait = 0.0
         for attempt in range(max_attempts):
+            self._commit_governor.acquire()
             try:
                 return self._client.create_commit(
                     repo_id=repo_id,
@@ -1422,8 +1876,32 @@ class UploadManager:
             except Exception as e:
                 last_error = e
 
+            # A throttled commit carries the wait the server wants; honoring it
+            # beats guessing, and it is budgeted apart from the transient-error
+            # allowance because its duration is known and can legitimately
+            # exceed it.
+            retry_after = getattr(last_error, "retry_after", None) if isinstance(last_error, RateLimitError) else None
+            if retry_after is not None:
+                wait = float(retry_after)
+                if wait > UPLOAD_COMMIT_MAX_RETRY_AFTER_SECONDS:
+                    logger.error(
+                        "Commit throttled with Retry-After=%.0fs, above the %ds ceiling; aborting retries.",
+                        wait,
+                        UPLOAD_COMMIT_MAX_RETRY_AFTER_SECONDS,
+                    )
+                    break
+                throttled_wait += wait
+                logger.warning(
+                    "Commit attempt %d/%d throttled, honoring Retry-After=%.0fs ...",
+                    attempt + 1,
+                    max_attempts,
+                    wait,
+                )
+                time.sleep(wait)
+                continue
+
             wait = min(2**attempt, 60)
-            elapsed = time.monotonic() - start_time
+            elapsed = time.monotonic() - start_time - throttled_wait
             if elapsed + wait > UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS:
                 logger.error(
                     "Commit total wait time would exceed %ds (already %.1fs elapsed), aborting retries.",
@@ -1536,6 +2014,7 @@ class UploadManager:
         repo_type: str = "model",
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
+        sizes_out: dict[str, int] | None = None,
     ) -> list[tuple[str, str]]:
         folder = Path(folder_path).expanduser().resolve()
         if not folder.is_dir():
@@ -1558,7 +2037,9 @@ class UploadManager:
                     f"max allowed per directory: {UPLOAD_MAX_FILES_PER_DIRECTORY}"
                 )
 
-        # File size checks
+        # File size checks. Sizes are handed back through ``sizes_out`` because
+        # batch planning needs them next; re-stating a large tree costs one
+        # syscall per file for no new information.
         total_size = 0
         normal_size = 0
         for path in all_files:
@@ -1571,6 +2052,8 @@ class UploadManager:
             total_size += fsize
             if not _is_lfs(str(path), fsize, repo_type):
                 normal_size += fsize
+            if sizes_out is not None:
+                sizes_out[str(path)] = fsize
 
         if normal_size > UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES:
             logger.warning(

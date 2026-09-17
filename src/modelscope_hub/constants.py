@@ -227,6 +227,7 @@ def _warn_deprecated_env(
     name: str,
     *,
     expects_mb: bool = False,
+    expects_bytes: bool = False,
     stacklevel: int = 3,
 ) -> None:
     """Warn that a legacy environment variable remains temporarily supported."""
@@ -235,7 +236,17 @@ def _warn_deprecated_env(
     )
     if expects_mb:
         message += f" {name!r} expects a value in MB."
+    if expects_bytes:
+        message += f" {name!r} expects bytes, or a value with a unit suffix such as '32KiB'."
     warnings.warn(message, FutureWarning, stacklevel=stacklevel)
+
+
+def _format_bytes(num_bytes: int) -> str:
+    """Render a byte count using the largest binary unit that stays exact."""
+    for unit, scale in (("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024)):
+        if num_bytes and num_bytes % scale == 0:
+            return f"{num_bytes // scale}{unit}"
+    return f"{num_bytes}"
 
 
 def _env(name: str, *deprecated_names: str) -> str | None:
@@ -251,12 +262,71 @@ def _env(name: str, *deprecated_names: str) -> str | None:
     return None
 
 
+def _warn_invalid_env(name: str, raw: str, reason: str, fallback: object) -> None:
+    """Warn that an environment value was rejected, naming the value used instead.
+
+    Silently falling back to the default made misconfiguration invisible: a
+    pipeline could export a tuning value, observe none of its effect, and have
+    no signal to look at. Every rejected value now says so.
+    """
+    warnings.warn(
+        f"Environment variable {name}={raw!r} is invalid ({reason}); using {fallback!r} instead.",
+        UserWarning,
+        stacklevel=3,
+    )
+
+
+_BYTE_UNITS: dict[str, int] = {
+    "": 1,
+    "B": 1,
+    "K": 1024,
+    "KB": 1000,
+    "KIB": 1024,
+    "M": 1024**2,
+    "MB": 1000**2,
+    "MIB": 1024**2,
+    "G": 1024**3,
+    "GB": 1000**3,
+    "GIB": 1024**3,
+}
+
+
+def _parse_byte_size(raw: str, *, bare_unit: int = 1) -> int:
+    """Parse a size string into bytes, accepting an optional unit suffix.
+
+    ``bare_unit`` scales a value given without a suffix, which is what lets a
+    deprecated ``*_MB`` alias keep its megabyte meaning while the canonical
+    name treats a bare number as bytes. Raises :class:`ValueError` so callers
+    decide between warning and propagating.
+    """
+    text = raw.strip()
+    if not text:
+        raise ValueError("empty value")
+    digits = text
+    suffix = ""
+    while digits and not (digits[-1].isdigit() or digits[-1] == "."):
+        suffix = digits[-1] + suffix
+        digits = digits[:-1]
+    digits = digits.strip()
+    suffix = suffix.strip().upper()
+    if not digits:
+        raise ValueError("no numeric part")
+    if suffix not in _BYTE_UNITS:
+        raise ValueError(f"unknown size unit {suffix!r}")
+    number = float(digits)
+    if number != int(number):
+        raise ValueError("fractional byte counts are not supported")
+    unit = bare_unit if suffix == "" else _BYTE_UNITS[suffix]
+    return int(number) * unit
+
+
 def _env_int(
     name: str,
     default: int,
     description: str = "",
     category: str = "",
     *deprecated_names: str,
+    allow_zero: bool = False,
 ) -> int:
     """Read a positive integer from the environment and register it."""
     all_deprecated = deprecated_names or _DEPRECATED_LOOKUP.get(name, ())
@@ -268,8 +338,13 @@ def _env_int(
     try:
         value = int(raw)
     except ValueError:
+        _warn_invalid_env(name, raw, "not an integer", default)
         return default
-    return value if value > 0 else default
+    if value < 0 or (value == 0 and not allow_zero):
+        reason = "must not be negative" if allow_zero else "must be a positive integer"
+        _warn_invalid_env(name, raw, reason, default)
+        return default
+    return value
 
 
 def _env_int_mb(
@@ -294,8 +369,12 @@ def _env_int_mb(
         try:
             value = int(raw)
         except ValueError:
+            _warn_invalid_env(name, raw, "not an integer", f"{default_mb} MB")
             return default_mb * 1024 * 1024
-        return value * 1024 * 1024 if value > 0 else default_mb * 1024 * 1024
+        if value <= 0:
+            _warn_invalid_env(name, raw, "must be a positive integer", f"{default_mb} MB")
+            return default_mb * 1024 * 1024
+        return value * 1024 * 1024
     # Fall back to deprecated names (value already in bytes)
     for old in all_deprecated:
         raw = os.environ.get(old)
@@ -304,8 +383,12 @@ def _env_int_mb(
             try:
                 value = int(raw)
             except ValueError:
+                _warn_invalid_env(old, raw, "not an integer", f"{default_mb} MB")
                 return default_mb * 1024 * 1024
-            return value if value > 0 else default_mb * 1024 * 1024
+            if value <= 0:
+                _warn_invalid_env(old, raw, "must be a positive integer", f"{default_mb} MB")
+                return default_mb * 1024 * 1024
+            return value
     return default_mb * 1024 * 1024
 
 
@@ -328,8 +411,12 @@ def _env_int_mb_with_deprecated_units(
         try:
             value = int(raw)
         except ValueError:
+            _warn_invalid_env(name, raw, "not an integer", f"{default_mb} MB")
             return default_bytes
-        return value * 1024 * 1024 if value > 0 else default_bytes
+        if value <= 0:
+            _warn_invalid_env(name, raw, "must be a positive integer", f"{default_mb} MB")
+            return default_bytes
+        return value * 1024 * 1024
 
     for old in deprecated_mb_names:
         raw = os.environ.get(old)
@@ -338,8 +425,12 @@ def _env_int_mb_with_deprecated_units(
             try:
                 value = int(raw)
             except ValueError:
+                _warn_invalid_env(old, raw, "not an integer", f"{default_mb} MB")
                 return default_bytes
-            return value * 1024 * 1024 if value > 0 else default_bytes
+            if value <= 0:
+                _warn_invalid_env(old, raw, "must be a positive integer", f"{default_mb} MB")
+                return default_bytes
+            return value * 1024 * 1024
 
     for old in deprecated_byte_names:
         raw = os.environ.get(old)
@@ -348,8 +439,68 @@ def _env_int_mb_with_deprecated_units(
             try:
                 value = int(raw)
             except ValueError:
+                _warn_invalid_env(old, raw, "not an integer", f"{default_mb} MB")
                 return default_bytes
-            return value if value > 0 else default_bytes
+            if value <= 0:
+                _warn_invalid_env(old, raw, "must be a positive integer", f"{default_mb} MB")
+                return default_bytes
+            return value
+
+    return default_bytes
+
+
+def _env_bytes(
+    name: str,
+    default_bytes: int,
+    description: str,
+    category: str,
+    *,
+    deprecated_mb_names: tuple[str, ...] = (),
+    deprecated_byte_names: tuple[str, ...] = (),
+    allow_zero: bool = False,
+) -> int:
+    """Read a byte-size setting whose canonical name accepts a unit suffix.
+
+    The canonical name treats a bare number as **bytes** and understands the
+    suffixes ``B``, ``K``/``KiB``, ``KB``, ``M``/``MiB``, ``MB``, ``G``/``GiB``
+    and ``GB`` (binary for the ``iB``/bare-letter forms, decimal for ``KB``/
+    ``MB``/``GB``). A megabyte-only knob cannot express thresholds below 1 MB,
+    which is exactly the range that matters when deciding whether a small file
+    rides inline in a commit or goes to object storage.
+
+    Names in ``deprecated_mb_names`` keep their megabyte meaning for a bare
+    number; names in ``deprecated_byte_names`` keep their byte meaning.
+    """
+    deprecated_names = deprecated_mb_names + deprecated_byte_names
+    _env_register(name, _format_bytes(default_bytes), description, category, deprecated_names=deprecated_names)
+
+    def _accept(source: str, raw: str, bare_unit: int) -> int:
+        try:
+            value = _parse_byte_size(raw, bare_unit=bare_unit)
+        except ValueError as exc:
+            _warn_invalid_env(source, raw, str(exc), _format_bytes(default_bytes))
+            return default_bytes
+        if value < 0 or (value == 0 and not allow_zero):
+            reason = "must not be negative" if allow_zero else "must be a positive size"
+            _warn_invalid_env(source, raw, reason, _format_bytes(default_bytes))
+            return default_bytes
+        return value
+
+    raw = os.environ.get(name)
+    if raw is not None and raw.strip():
+        return _accept(name, raw, 1)
+
+    for old in deprecated_mb_names:
+        raw = os.environ.get(old)
+        if raw is not None and raw.strip():
+            _warn_deprecated_env(old, name, expects_bytes=True, stacklevel=2)
+            return _accept(old, raw, 1024 * 1024)
+
+    for old in deprecated_byte_names:
+        raw = os.environ.get(old)
+        if raw is not None and raw.strip():
+            _warn_deprecated_env(old, name, expects_bytes=True, stacklevel=2)
+            return _accept(old, raw, 1)
 
     return default_bytes
 
@@ -437,6 +588,42 @@ API_MAX_RETRIES: int = _env_int(
     "Max retry attempts for transient failures",
     "Network",
     "API_MAX_RETRIES",
+)
+
+API_CONNECTION_POOL_MAXSIZE: int = _env_int(
+    "MODELSCOPE_API_CONNECTION_POOL_MAXSIZE",
+    32,
+    "Per-host HTTP connection pool size",
+    "Network",
+)
+"""Connections kept alive per host, and the concurrency the pool can serve.
+
+urllib3 defaults this to 10. A folder upload runs ``max_workers`` requests at
+once -- commonly 16 or more for bulk transfers -- so the default silently
+discards the excess connections ("Connection pool is full, discarding
+connection") and every discarded one costs a fresh TLS handshake on its next
+use. This must be at least as large as the worker count to avoid that churn.
+"""
+
+REPO_TREE_PAGE_MAX_ATTEMPTS: int = _env_int(
+    "MODELSCOPE_REPO_TREE_PAGE_MAX_ATTEMPTS",
+    4,
+    "Attempts for one repo-tree page denied on an already-authorized listing",
+    "Network",
+)
+"""Retries for a spurious ``403`` on a single page of a paginated tree listing.
+
+A large dataset listing spans hundreds of pages and an occasional page answers
+``403 无权访问该数据集`` on a repository the caller has just read successfully.
+Treating that as an authorization result throws away every page already
+collected, so it is retried once the credential has been proven by an earlier
+page.
+"""
+REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS: int = _env_int(
+    "MODELSCOPE_REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS",
+    8,
+    "Maximum backoff between repo-tree page retries (seconds)",
+    "Network",
 )
 
 REPO_FILES_TRUNCATION_LIMIT: int = 3000
@@ -649,6 +836,78 @@ UPLOAD_ADAPTIVE_BATCHING_ENABLED: bool = _env_bool(
     "Upload",
     "UPLOAD_ADAPTIVE_BATCH_SIZE",
 )
+UPLOAD_COMMIT_MAX_INLINE_BYTES: int = _env_bytes(
+    "MODELSCOPE_UPLOAD_COMMIT_MAX_INLINE_BYTES",
+    8 * 1024 * 1024,
+    "Maximum inlined (non-LFS) content carried by one commit request",
+    "Upload",
+)
+"""Byte ceiling on the base64 content a single commit may carry.
+
+Non-LFS files travel *inside* the commit request body, so a batch sized purely
+by file count can produce a request tens of megabytes large -- big enough for
+the server to time out mid-read, which surfaces on the client as an unrelated
+write timeout. Batching therefore closes a batch on whichever limit is reached
+first, this one or :data:`UPLOAD_COMMIT_BATCH_MAX_OPERATIONS`. LFS files
+contribute only a pointer, so they do not count against it.
+"""
+UPLOAD_COMMIT_MAX_PER_HOUR: int = _env_int(
+    "MODELSCOPE_UPLOAD_COMMIT_MAX_PER_HOUR",
+    0,
+    "Client-side commit rate ceiling per hour (0 disables the governor)",
+    "Upload",
+    allow_zero=True,
+)
+"""Opt-in client-side commit budget, disabled by default.
+
+The Hub throttles commits per repository. Reacting to a throttle costs a failed
+round trip and, when the server holds the connection instead of answering, a
+full read timeout. A bulk pipeline that knows its budget can set this to spread
+commits out and never trip the limit; interactive uploads stay unthrottled.
+"""
+UPLOAD_COMMIT_MAX_RETRY_AFTER_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_COMMIT_MAX_RETRY_AFTER_SECONDS",
+    1800,
+    "Longest server-provided Retry-After a commit will honor (seconds)",
+    "Upload",
+)
+"""Upper bound on an honored ``Retry-After`` for a throttled commit.
+
+A rate limit is a bounded wait the server declares, unlike a transient failure
+of unknown duration, so it is budgeted separately from
+:data:`UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS` rather than exhausting it.
+"""
+COMMIT_MAX_ACTIONS_PER_REQUEST: int = _env_int(
+    "MODELSCOPE_COMMIT_MAX_ACTIONS_PER_REQUEST",
+    2000,
+    "Server-enforced maximum actions in one commit request",
+    "Upload",
+)
+"""Hard ceiling the server puts on a single commit request.
+
+Exceeding it is rejected outright with ``HTTP 422``::
+
+    commit request exceeds actions limit: 3300 > 2000; split the commit into
+    smaller batches
+
+This is a server contract, not a tuning preference, so every commit path clamps
+to it -- uploads, and deletes, which otherwise put every path in one request.
+"""
+
+UPLOAD_PROGRESS_MIN_INTERVAL_SECONDS: int = _env_int(
+    "MODELSCOPE_UPLOAD_PROGRESS_MIN_INTERVAL_SECONDS",
+    1,
+    "Minimum gap between wire-level upload progress events (seconds)",
+    "Upload",
+)
+"""Throttle for per-file upload progress events.
+
+Commits land in lumps tens of seconds apart, so a rate built only from commit
+events alternates between a spike and zero and cannot distinguish a slow batch
+from a hung one. Blob uploads finish continuously and are the honest source for
+a rate -- but there is one per file, so the events are coalesced to this interval
+rather than fanning out tens of thousands of callback invocations.
+"""
 UPLOAD_COMMIT_MAX_ATTEMPTS: int = _env_int(
     "MODELSCOPE_UPLOAD_COMMIT_MAX_ATTEMPTS",
     5,
@@ -751,13 +1010,42 @@ UPLOAD_CACHE_FILE: str = ".ms_upload_cache"
 UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 
 # Upload: limits
-UPLOAD_LFS_FORCE_THRESHOLD_BYTES: int = _env_int_mb_with_deprecated_units(
-    "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB",
-    1,
-    "File-size threshold that forces LFS mode (MB)",
+UPLOAD_LFS_FORCE_THRESHOLD_BYTES: int = _env_bytes(
+    "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD",
+    1024 * 1024,
+    "File size above which LFS mode is forced (bytes; accepts a unit suffix, 0 forces LFS for every file)",
     "Upload",
+    deprecated_mb_names=("MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB",),
     deprecated_byte_names=("UPLOAD_LFS_ENFORCE_THRESHOLD", "UPLOAD_SIZE_THRESHOLD_TO_ENFORCE_LFS"),
+    allow_zero=True,
 )
+"""Size above which a file is uploaded as LFS regardless of its suffix.
+
+Files at or below the threshold are committed inline as base64, which puts their
+bytes in the commit request body and caps how many of them one commit can carry.
+Lowering the threshold moves that content onto the pre-signed object-storage
+path instead, leaving the commit with only ``sha256`` plus ``size``.
+
+``0`` forces LFS for every non-empty file. It stays safe because
+:data:`UPLOAD_INLINE_METADATA_PATHS` is consulted first, so the repository files
+the Hub itself parses are never turned into LFS pointers.
+"""
+UPLOAD_INLINE_METADATA_PATHS: frozenset[str] = _env_csv_frozenset(
+    "MODELSCOPE_UPLOAD_INLINE_METADATA_PATHS",
+    "README.md,.gitattributes,.gitignore,configuration.json,configuration.yaml,configuration.yml,"
+    "dataset_infos.json,config.json,.msc,.mdl",
+    "Repository file names always committed inline, never as LFS",
+    "Upload",
+)
+"""Repository-relative file names that must stay inline in the commit.
+
+The Hub parses these server-side -- the dataset/model card front matter, the
+configuration files, the git attribute rules. Stored as an LFS pointer, the
+server would read the 130-byte pointer text instead of the real content and the
+card or configuration would silently render empty. Matching is on the file name
+(case-insensitive), so the rule holds at any depth in the tree, and it is
+checked before the size and suffix rules.
+"""
 UPLOAD_MAX_FILE_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
     "MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB",
     100 * 1024,
@@ -955,9 +1243,11 @@ USER_INFO_FILE_NAME: str = "user"
 
 __all__ = [
     "API_CONNECT_TIMEOUT",
+    "API_CONNECTION_POOL_MAXSIZE",
     "API_MAX_RETRIES",
     "API_TIMEOUT",
     "CATEGORY_ORDER",
+    "COMMIT_MAX_ACTIONS_PER_REQUEST",
     "CONFIG_DIR_NAME",
     "DATASET_LFS_SUFFIX",
     "DEFAULT_CACHE_DIR_NAME",
@@ -996,6 +1286,8 @@ __all__ = [
     "MODEL_ID_SEPARATOR",
     "MODEL_LFS_SUFFIX",
     "OPENAPI_PREFIX",
+    "REPO_TREE_PAGE_MAX_ATTEMPTS",
+    "REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS",
     "REPO_TYPE_DATASET",
     "REPO_TYPE_MODEL",
     "REPO_TYPE_STUDIO",
@@ -1029,12 +1321,16 @@ __all__ = [
     "UPLOAD_COMMIT_BATCH_SIZE",
     "UPLOAD_COMMIT_MAX_ATTEMPTS",
     "UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES",
+    "UPLOAD_COMMIT_MAX_INLINE_BYTES",
+    "UPLOAD_COMMIT_MAX_PER_HOUR",
     "UPLOAD_COMMIT_MAX_RETRIES",
+    "UPLOAD_COMMIT_MAX_RETRY_AFTER_SECONDS",
     "UPLOAD_COMMIT_MAX_TOTAL_WAIT",
     "UPLOAD_COMMIT_RETRY_TOTAL_WAIT_SECONDS",
     "UPLOAD_FAILED_FILE_MAX_RETRIES",
     "UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS",
     "UPLOAD_HTTP_RETRY_ALLOWED_METHODS",
+    "UPLOAD_INLINE_METADATA_PATHS",
     "UPLOAD_LEGACY_PROGRESS_FILE",
     "UPLOAD_LFS_ENFORCE_THRESHOLD",
     "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
@@ -1047,6 +1343,7 @@ __all__ = [
     "UPLOAD_MAX_FILES_PER_DIRECTORY",
     "UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT",
     "UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES",
+    "UPLOAD_PROGRESS_MIN_INTERVAL_SECONDS",
     "UPLOAD_REACT_BACKOFF_MAX_EXPONENT",
     "UPLOAD_REACT_ENABLED",
     "UPLOAD_REACT_MAX_DELAY",
