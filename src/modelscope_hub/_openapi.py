@@ -1085,6 +1085,62 @@ class OpenAPIClient:
         return params
 
     @staticmethod
+    def _decode_mcp_list_response(response: requests.Response) -> JSON:
+        """Decode MCP list replies, including legacy HTTP-200 error envelopes.
+
+        The service normally signals errors through HTTP status codes. Some
+        deployments instead return ``200`` with ``success: false`` and an
+        OpenAPI-style error code. Treating that dictionary as a list payload
+        silently turned invalid request bodies into empty server lists.
+        """
+        try:
+            payload = response.json()
+        except ValueError:
+            return {"raw_response": response.text}
+        if not isinstance(payload, dict):
+            return payload
+
+        success = payload.get("success") if "success" in payload else payload.get("Success")
+        if success is False:
+            code = payload.get("code") if payload.get("code") is not None else payload.get("Code")
+            message = next(
+                (
+                    value.strip()
+                    for key in ("message", "Message", "msg", "Msg", "detail", "Detail")
+                    if isinstance(value := payload.get(key), str) and value.strip()
+                ),
+                "MCP server list request was rejected.",
+            )
+            request_id = payload.get("request_id") or payload.get("requestId") or payload.get("RequestId")
+            code_text = str(code).strip()
+            error_cls: type[APIError] = APIError
+            status_code = 400
+            if code_text == "InputParameterError":
+                error_cls = InvalidParameter
+            elif code_text == "InvalidAuthentication":
+                error_cls = AuthenticationError
+                status_code = 401
+            elif code_text == "OperationNotAllowed":
+                error_cls = PermissionDeniedError
+                status_code = 403
+            elif code_text == "RateLimitExceed":
+                error_cls = RateLimitError
+                status_code = 429
+            raise error_cls(
+                message,
+                status_code=status_code,
+                request_id=request_id,
+                response_body=payload,
+                url=response.url,
+                method=response.request.method if response.request else "PUT",
+            )
+        if "data" in payload:
+            return payload["data"]
+        if "Data" in payload:
+            return payload["Data"]
+        return payload
+
+    @staticmethod
     def _is_method_or_route_unsupported(exc: APIError) -> bool:
         return exc.status_code in (404, 405, 501)
 
@@ -1307,6 +1363,10 @@ class OpenAPIClient:
         filter : dict, optional
             Nested filter object. Supported keys: ``category``, ``is_hosted``.
         """
+        if isinstance(page_number, bool) or not isinstance(page_number, int) or page_number < 1:
+            raise InvalidParameter("page_number must be an integer >= 1.")
+        if isinstance(page_size, bool) or not isinstance(page_size, int) or page_size < 1:
+            raise InvalidParameter("page_size must be an integer >= 1.")
         if page_number * page_size > 100:
             # The service enforces this itself, answering 403 QuotaLimitExceed with
             # exactly this rule. Checking here spares the round trip and reports it
@@ -1326,14 +1386,16 @@ class OpenAPIClient:
         body = {k: v for k, v in body.items() if v is not None}
 
         def _get() -> JSON:
-            return self._request(
+            response = self._request(
                 "GET",
                 "/mcp/servers",
                 params=self._flatten_mcp_list_params(body),
                 require_token=False,
                 required_scope=TokenScope.READ,
                 anonymous_retry=True,
+                unwrap=False,
             )
+            return self._decode_mcp_list_response(response)
 
         if self._mcp_list_supports_get:
             # This deployment already answered GET and refused PUT, so leading
@@ -1341,14 +1403,16 @@ class OpenAPIClient:
             return _get()
 
         try:
-            return self._request(
+            response = self._request(
                 "PUT",
                 "/mcp/servers",
                 json_body=body,
                 require_token=False,
                 required_scope=TokenScope.READ,
                 anonymous_retry=True,
+                unwrap=False,
             )
+            return self._decode_mcp_list_response(response)
         except APIError as exc:
             if self._mcp_list_supports_get is False or not self._is_method_or_route_unsupported(exc):
                 raise

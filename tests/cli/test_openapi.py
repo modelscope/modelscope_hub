@@ -81,6 +81,27 @@ class TestListMcpServersFilter:
             client.list_mcp_servers()
         assert "filter" not in mock_req.call_args.kwargs["json"]
 
+    def test_soft_input_parameter_error_is_not_downgraded_to_empty_list(self, client):
+        response = _mock_response(
+            json_data={
+                "success": False,
+                "request_id": "soft-error-1",
+                "code": "InputParameterError",
+                "message": "Input parameter is invalid: invalid request body",
+            }
+        )
+        with patch.object(client._session, "request", return_value=response) as mock_req:
+            with pytest.raises(InvalidParameter) as raised:
+                client.list_mcp_servers(page_number=1, page_size=20)
+        error = raised.value
+        assert error.error_code == "E3021"
+        assert error.status_code == 400
+        assert error.request_id == "soft-error-1"
+        assert error.message == "Input parameter is invalid: invalid request body"
+        assert mock_req.call_count == 1
+        assert mock_req.call_args.kwargs["method"] == "PUT"
+        assert mock_req.call_args.kwargs["json"] == {"page_number": 1, "page_size": 20}
+
     def test_put_route_unsupported_falls_back_to_get(self, client):
         not_found = _mock_response(status_code=404, json_data={"message": "not found"})
         success = _mock_response(json_data={"success": True, "data": {"mcp_server_list": [], "total": 0}})
@@ -155,6 +176,24 @@ class TestMcpPaginationLimit:
         with patch.object(client._session, "request", return_value=resp):
             client.list_mcp_servers(page_number=5, page_size=20)
 
+    @pytest.mark.parametrize("page_number", [0, -1, True, 1.5])
+    def test_rejects_non_positive_page_number_before_request(self, client, page_number):
+        with patch.object(client._session, "request") as mock_request:
+            with pytest.raises(InvalidParameter, match="page_number must be an integer >= 1") as excinfo:
+                client.list_mcp_servers(page_number=page_number)
+        assert excinfo.value.error_code == "E3021"
+        assert excinfo.value.retryable is False
+        mock_request.assert_not_called()
+
+    @pytest.mark.parametrize("page_size", [0, -1, True, 1.5])
+    def test_rejects_non_positive_or_non_integer_page_size_before_request(self, client, page_size):
+        with patch.object(client._session, "request") as mock_request:
+            with pytest.raises(InvalidParameter, match="page_size must be an integer >= 1") as excinfo:
+                client.list_mcp_servers(page_size=page_size)
+        assert excinfo.value.error_code == "E3021"
+        assert excinfo.value.retryable is False
+        mock_request.assert_not_called()
+
     def test_exceeds_limit(self, client):
         with pytest.raises(InvalidParameter, match="<= 100"):
             client.list_mcp_servers(page_number=11, page_size=10)
@@ -210,6 +249,26 @@ class TestExtractPagedMcp:
         assert result.page_number == 2
         assert result.page_size == 10
         assert result.total_count == 30
+
+    def test_list_mcp_servers_backfills_requested_pagination_when_service_omits_metadata(self):
+        api = HubApi(config=HubConfig(token="t", endpoint="https://modelscope.cn"))
+        mcp_response = {
+            "mcp_server_list": [{"id": "server-6"}],
+            "total": 30,
+        }
+        with patch.object(api.openapi, "list_mcp_servers", return_value=mcp_response) as list_servers:
+            result = api.list_mcp_servers(page_number=2, page_size=5)
+        list_servers.assert_called_once_with(
+            search=None,
+            page_number=2,
+            page_size=5,
+            filter=None,
+            extra=None,
+        )
+        assert result.items == [{"id": "server-6"}]
+        assert result.total_count == 30
+        assert result.page_number == 2
+        assert result.page_size == 5
 
 
 # ==================================================================

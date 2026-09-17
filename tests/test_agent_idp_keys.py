@@ -73,3 +73,36 @@ def test_signing_rejects_invalid_timestamp():
     private_jwk, _ = generate_agent_key_pair()
     with pytest.raises(InvalidParameter, match="timestamp"):
         sign_agent_token_request(private_jwk, agent_id="agent-1", audience="hub", timestamp=0)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("audience", "高德地图"),
+        ("agent_id", "agent-高德"),
+        ("kid", "kid-高德"),
+    ],
+)
+def test_signing_rejects_non_ascii_canonical_component_without_leaking_encoder_error(field, value):
+    private_jwk, _ = generate_agent_key_pair(value if field == "kid" else "key-1")
+    kwargs = {"agent_id": "agent-1", "audience": "hub", "timestamp": 100}
+    if field != "kid":
+        kwargs[field] = value
+    with pytest.raises(InvalidParameter) as raised:
+        sign_agent_token_request(private_jwk, **kwargs)
+    error = raised.value
+    assert error.error_code == "E3021"
+    assert f"{field} must contain only ASCII characters" in str(error)
+    assert "UnicodeEncodeError" not in str(error)
+    assert error.__cause__ is None
+
+
+@pytest.mark.parametrize("field", ["agent_id", "audience", "kid"])
+def test_signing_rejects_canonical_message_delimiter(field):
+    private_jwk, _ = generate_agent_key_pair("key|1" if field == "kid" else "key-1")
+    kwargs = {"agent_id": "agent-1", "audience": "hub", "timestamp": 100}
+    if field != "kid":
+        kwargs[field] = "value|break"
+    with pytest.raises(InvalidParameter, match="must not contain '\\|'") as raised:
+        sign_agent_token_request(private_jwk, **kwargs)
+    assert raised.value.error_code == "E3021"

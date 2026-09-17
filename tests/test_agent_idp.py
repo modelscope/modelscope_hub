@@ -8,6 +8,7 @@ import pytest
 import requests
 
 from modelscope_hub._openapi import OpenAPIClient
+from modelscope_hub.agent_idp import generate_agent_key_pair
 from modelscope_hub.api import HubApi
 from modelscope_hub.config import HubConfig
 from modelscope_hub.errors import InvalidParameter
@@ -145,3 +146,17 @@ class TestAgentIdpFacade:
         )
         assert isinstance(token, AgentToken)
         assert token.access_token == "jwt"
+
+    def test_private_key_facade_rejects_non_ascii_audience_before_http(self):
+        private_jwk, _ = generate_agent_key_pair("key-1")
+        api = HubApi(token="test-token")
+        api._openapi = MagicMock()
+        with pytest.raises(InvalidParameter, match="audience must contain only ASCII characters") as raised:
+            api.issue_agent_token_with_private_key(
+                private_jwk,
+                agent_id="agent_id:modelscope:agent_xxx",
+                audience="高德地图",
+                timestamp=1700000000,
+            )
+        assert raised.value.error_code == "E3021"
+        api._openapi.issue_agent_token.assert_not_called()

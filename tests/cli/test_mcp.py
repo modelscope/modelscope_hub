@@ -177,6 +177,12 @@ class TestMcpListExecute:
         out = capsys.readouterr().out
         assert "weather" in out
 
+    def test_list_omits_unsupported_status_column(self, parser, mock_api, capsys):
+        args = parser.parse_args(["mcp", "list"])
+        with patch("modelscope_hub.cli.mcp.make_api", return_value=mock_api):
+            _McpList(args).execute()
+        assert "status" not in capsys.readouterr().out.lower()
+
     def test_list_empty(self, parser, mock_api, capsys):
         mock_api.list_mcp_servers.return_value = PagedResult(
             items=[],
