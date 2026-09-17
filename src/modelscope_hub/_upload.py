@@ -90,6 +90,25 @@ PathOrFileObj = str | Path | bytes | BinaryIO | IO[bytes]
 _TRACKER_VERSION = 3
 
 
+class _DuplicateBlob:
+    """Marker: an earlier file in this run uploads this exact content.
+
+    Identical content hashes to one oid, and the batch pre-sign step hands every
+    occurrence the same upload URL -- so without this marker each occurrence
+    would PUT the same bytes again. The server only reports "already stored"
+    once a blob has landed, which cannot help when all the pre-signing happens
+    before any upload starts.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - diagnostic only
+        return "<duplicate blob, uploaded by an earlier file>"
+
+
+DUPLICATE_BLOB = _DuplicateBlob()
+
+
 # ====================================================================
 # Helpers
 # ====================================================================
@@ -1057,6 +1076,42 @@ class UploadManager:
                 f", {unresolved} unresolved (will negotiate per file)" if unresolved else "",
             )
 
+        # Elect one owner per distinct blob.
+        #
+        # `files_to_upload` is in ascending file index, and a batch owns a
+        # contiguous ascending index range, so the first file holding a given oid
+        # always lands in a batch no later than any of its duplicates. Batches are
+        # committed in order and each waits for its own files, so by the time a
+        # duplicate's batch commits, its owner has already finished -- which is
+        # what lets the duplicates skip the transfer with no locking and no risk
+        # of a worker pool deadlocking on itself.
+        blob_owner: dict[str, int] = {}
+        blob_ready: dict[str, bool] = {}
+        blob_state_lock = threading.Lock()
+        deduped_files = 0
+        deduped_bytes = 0
+        for file_idx, _file_info in files_to_upload:
+            info = lfs_hash_info_map.get(file_idx)
+            if info is None:
+                continue
+            oid = info["file_hash"]
+            if pre_validated_map.get(oid, "") is None:
+                # Already stored server-side; nobody needs to transfer it.
+                blob_ready[oid] = True
+                continue
+            if oid not in blob_owner:
+                blob_owner[oid] = file_idx
+            else:
+                deduped_files += 1
+                deduped_bytes += info["file_size"]
+        if deduped_files:
+            logger.info(
+                "Deduplicated %d file(s) sharing content with an earlier file: %d byte(s) that "
+                "would otherwise be uploaded twice.",
+                deduped_files,
+                deduped_bytes,
+            )
+
         skipped_count = len(skipped_indices)
         if skipped_count > 0:
             logger.info("%d file(s) already committed, skipping.", skipped_count)
@@ -1077,6 +1132,10 @@ class UploadManager:
         # Pipeline: upload workers
         def _upload_worker(file_idx: int, file_info: tuple, pre_validated: Any = None) -> None:
             path_in_repo_w, file_path_w = file_info
+            owned_oid: str | None = None
+            info = lfs_hash_info_map.get(file_idx)
+            if info is not None and blob_owner.get(info["file_hash"]) == file_idx:
+                owned_oid = info["file_hash"]
             try:
                 logger.debug("Uploading: %s ...", path_in_repo_w)
                 result = self._upload_single_file(
@@ -1090,10 +1149,18 @@ class UploadManager:
                     disable_tqdm=disable_tqdm,
                 )
                 logger.debug("Uploaded: %s", path_in_repo_w)
+                # Publish the blob outcome before the batch is marked complete:
+                # the consumer reads it as soon as the batch event fires.
+                if owned_oid is not None:
+                    with blob_state_lock:
+                        blob_ready[owned_oid] = True
                 batch_tracker.record_success(file_idx, result)
                 _report_wire(result)
             except Exception as e:
                 logger.error("Upload failed: %s - %s", path_in_repo_w, e)
+                if owned_oid is not None:
+                    with blob_state_lock:
+                        blob_ready[owned_oid] = False
                 batch_tracker.record_failure(file_idx, file_info, e)
 
         # Pipeline: consume batches in order
@@ -1229,7 +1296,7 @@ class UploadManager:
         try:
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 for file_idx, file_info in files_to_upload:
-                    pv: str | bool | None = None
+                    pv: str | bool | _DuplicateBlob | None = None
                     if file_idx in lfs_hash_info_map:
                         cached_hash = lfs_hash_info_map[file_idx]["file_hash"]
                         # "Answered, and the server did not ask for an upload"
@@ -1240,7 +1307,12 @@ class UploadManager:
                         # was never stored.
                         if cached_hash in pre_validated_map:
                             url = pre_validated_map[cached_hash]
-                            pv = True if url is None else url
+                            if url is None:
+                                pv = True
+                            elif blob_owner.get(cached_hash) == file_idx:
+                                pv = url
+                            else:
+                                pv = DUPLICATE_BLOB
                     executor.submit(_upload_worker, file_idx, file_info, pv)
 
                 consecutive_failures = 0
@@ -1269,6 +1341,43 @@ class UploadManager:
                         total_failed_files.extend(failures)
                         for item, err in failures:
                             logger.error("  Failed: %s - %s", item[0], err)
+
+                    # A file that skipped its transfer because a duplicate owned
+                    # it must not be committed if that owner's upload failed:
+                    # the commit would reference a blob that was never stored.
+                    # Its owner is in this batch or an earlier one, both already
+                    # resolved, so the outcome is known here.
+                    orphaned: list[dict] = []
+                    if blob_owner:
+                        with blob_state_lock:
+                            ready_snapshot = dict(blob_ready)
+                        committable = []
+                        for item_r in results:
+                            oid_r = item_r["file_hash_info"]["file_hash"]
+                            if (
+                                item_r.get("upload_mode") == "lfs"
+                                and oid_r in blob_owner
+                                and not ready_snapshot.get(oid_r, False)
+                            ):
+                                orphaned.append(item_r)
+                                continue
+                            committable.append(item_r)
+                        if orphaned:
+                            logger.warning(
+                                "Batch %d/%d: %d file(s) deferred, the upload of the content they "
+                                "share failed; they will be retried on their own.",
+                                batch_idx + 1,
+                                num_batches,
+                                len(orphaned),
+                            )
+                            total_failed_files.extend(
+                                (
+                                    (item_r["file_path_in_repo"], item_r["file_path"]),
+                                    StorageError("shared blob upload failed"),
+                                )
+                                for item_r in orphaned
+                            )
+                            results = committable
 
                     self._track_uploaded_batch(tracker, results)
 
@@ -1365,6 +1474,39 @@ class UploadManager:
             tracker.save()
 
         # ReAct progressive retry fallback
+        #
+        # Recovery has to report progress too. It is exactly the moment an
+        # operator is watching, and a run whose recovered volume never reaches
+        # the metrics under-reports by however much it rescued: an 8 GiB run that
+        # lost one 512-file batch to a rejected commit finished with 40000 files
+        # on the Hub but 91 MB missing from done_bytes.
+        def _report_recovery(results: list[dict], label: str) -> None:
+            nonlocal committed_files, committed_bytes
+            recovered_bytes = sum(r["file_size_on_disk"] for r in results)
+            inline_bytes = sum(r["file_size_on_disk"] for r in results if r.get("upload_mode") != "lfs")
+            committed_files += len(results)
+            committed_bytes += recovered_bytes
+            _flush_wire()
+            _emit(
+                {
+                    "event": "recovery_committed",
+                    "repo_id": repo_id,
+                    "stage": label,
+                    "batch_index": -1,
+                    "num_batches": num_batches,
+                    "batch_files": len(results),
+                    "batch_bytes": recovered_bytes,
+                    "batch_inline_bytes": inline_bytes,
+                    "committed_files": committed_files,
+                    "committed_bytes": committed_bytes,
+                    "total_files": len(sorted_files),
+                    "total_bytes": total_bytes,
+                    "skipped_files": skipped_count,
+                    "elapsed": time.time() - start_time,
+                    "error": None,
+                }
+            )
+
         if total_failed_files and UPLOAD_RECOVERY_ENABLED:
             total_failed_files, react_commits, react_results = self._retry_failed_files_react(
                 failed_files=total_failed_files,
@@ -1375,6 +1517,8 @@ class UploadManager:
                 revision=revision,
                 max_workers=max_workers,
                 disable_tqdm=disable_tqdm,
+                on_uploaded=_report_wire,
+                on_committed=_report_recovery,
             )
             commit_infos.extend(react_commits)
             all_results.extend(react_results)
@@ -1390,6 +1534,8 @@ class UploadManager:
                 commit_infos=commit_infos,
                 all_results=all_results,
                 disable_tqdm=disable_tqdm,
+                on_uploaded=_report_wire,
+                on_committed=_report_recovery,
             )
 
         tracker.save()
@@ -1694,6 +1840,15 @@ class UploadManager:
 
         if pre_validated is True:
             logger.info("Blob %s already exists globally, reuse.", sha256[:8])
+            res_d["is_uploaded"] = True
+            res_d["is_reused"] = True
+            return res_d
+
+        if pre_validated is DUPLICATE_BLOB:
+            # An earlier file in this run owns the transfer for this content.
+            # Batch ordering guarantees it has finished before any commit that
+            # references this file, so nothing has to be waited on here.
+            logger.debug("Blob %s is uploaded by an earlier duplicate, skipping transfer.", sha256[:8])
             res_d["is_uploaded"] = True
             res_d["is_reused"] = True
             return res_d
@@ -2090,6 +2245,8 @@ class UploadManager:
         revision: str,
         max_workers: int,
         disable_tqdm: bool = False,
+        on_uploaded: Any = None,
+        on_committed: Any = None,
     ) -> tuple[list[tuple], list[dict], list[dict]]:
         commit_infos: list[dict] = []
         all_successes: list[dict] = []
@@ -2180,6 +2337,8 @@ class UploadManager:
                         try:
                             result = future.result()
                             round_successes.append(result)
+                            if on_uploaded is not None:
+                                on_uploaded(result)
                         except Exception as e:
                             round_failures.append(((path_in_repo_r, file_path_r), e))
             else:
@@ -2207,6 +2366,8 @@ class UploadManager:
                             disable_tqdm=disable_tqdm,
                         )
                         round_successes.append(result)
+                        if on_uploaded is not None:
+                            on_uploaded(result)
                     except Exception as e:
                         logger.error(
                             "[ReAct] %s: failed %s - %s",
@@ -2236,6 +2397,8 @@ class UploadManager:
                     )
                     commit_infos.append(commit_info)
                     self._track_committed_batch(tracker, batch)
+                    if on_committed is not None:
+                        on_committed(batch, round_name)
                     logger.info(
                         "[ReAct] %s: committed %d file(s).",
                         round_name,
@@ -2335,6 +2498,8 @@ class UploadManager:
         commit_infos: list[dict],
         all_results: list[dict],
         disable_tqdm: bool = False,
+        on_uploaded: Any = None,
+        on_committed: Any = None,
     ) -> list[tuple]:
         total_failed_files = list(failed_files)
         for retry_round in range(UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS):
@@ -2359,6 +2524,8 @@ class UploadManager:
                         disable_tqdm=disable_tqdm,
                     )
                     retry_successes.append(result)
+                    if on_uploaded is not None:
+                        on_uploaded(result)
                 except Exception as e:
                     logger.error("  Retry failed: %s - %s", path_in_repo_r, e)
                     retry_failures.append(((path_in_repo_r, file_path_r), e))
@@ -2377,6 +2544,8 @@ class UploadManager:
                         commit_infos.append(commit_info)
                         all_results.extend(retry_successes)
                         self._track_committed_batch(tracker, retry_successes)
+                        if on_committed is not None:
+                            on_committed(retry_successes, f"retry round {retry_round + 1}")
                         logger.info(
                             "  Retry round %d: committed %d file(s).",
                             retry_round + 1,

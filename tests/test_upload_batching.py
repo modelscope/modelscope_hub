@@ -558,6 +558,54 @@ def test_reused_blobs_report_no_wire_bytes(tmp_path: Path, monkeypatch) -> None:
     assert commits[-1]["committed_bytes"] == 4 * 4096
 
 
+def test_recovered_files_are_reported_so_totals_stay_complete(tmp_path: Path, monkeypatch) -> None:
+    # Recovery is exactly when an operator is watching. An 8 GiB run that lost one
+    # 512-file batch to a rejected commit put all 40000 files on the Hub but left
+    # 91 MB missing from done_bytes, because the recovery path emitted nothing.
+    monkeypatch.setattr(upload_module, "UPLOAD_COMMIT_BATCH_MAX_OPERATIONS", 2)
+    monkeypatch.setattr(upload_module, "UPLOAD_ADAPTIVE_BATCHING_ENABLED", False)
+    monkeypatch.setattr(upload_module.time, "sleep", lambda _s: None)
+    manager, client = _make_manager()
+    expected_total = 0
+    for index in range(4):
+        payload = bytes([index]) * (1024 * (index + 1))
+        (tmp_path / f"file-{index}.txt").write_bytes(payload)
+        expected_total += len(payload)
+    events: list[dict] = []
+
+    # Exhaust every in-commit attempt for the first batch so it really falls
+    # through to the recovery path instead of being absorbed earlier. The attempt
+    # budget is a default argument, so it is spelled out rather than patched.
+    attempts = upload_module.UPLOAD_COMMIT_MAX_ATTEMPTS
+    calls = {"n": 0}
+
+    def create_commit(**kwargs):
+        calls["n"] += 1
+        if calls["n"] <= attempts:
+            raise NetworkError("commit rejected")
+        return {"ok": True}
+
+    client.create_commit.side_effect = create_commit
+
+    manager.upload_folder(
+        repo_id="owner/repo",
+        repo_type="model",
+        folder_path=tmp_path,
+        max_workers=1,
+        use_cache=False,
+        disable_tqdm=True,
+        progress_callback=events.append,
+    )
+
+    recovery = [e for e in events if e["event"] == "recovery_committed"]
+    assert recovery, "a recovered commit must report its progress"
+    accounted = [e for e in events if e["event"] in ("batch_committed", "recovery_committed")]
+    # Every byte is accounted for exactly once across the two commit paths.
+    assert sum(e["batch_bytes"] for e in accounted) == expected_total
+    assert accounted[-1]["committed_bytes"] == expected_total
+    assert accounted[-1]["committed_files"] == 4
+
+
 def test_progress_callback_failure_does_not_abort_the_upload(tmp_path: Path) -> None:
     manager, client = _make_manager()
     (tmp_path / "README.md").write_bytes(b"hello")
