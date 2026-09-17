@@ -26,6 +26,7 @@ import pytest
 from modelscope_hub import constants
 from modelscope_hub.agent import InstallOutcome, PluginSpec, _plugin
 from modelscope_hub.cli.agent import AgentCommand
+from modelscope_hub.errors import NotSupportedError
 
 from .conftest import run_cli
 
@@ -194,12 +195,21 @@ def test_install_does_not_resolve_a_username(monkeypatch, stub_sdk):
 # ---------------------------------------------------------------------------
 # gates: exit code 2, and where the message lands
 # ---------------------------------------------------------------------------
-def test_missing_plugin_repo_exits_2_with_guidance():
-    code, out, err = run_cli(["agent", "install", "-r", AGENT_REPO])
-    assert code == 2
-    assert "--plugin-repo" in err
-    # run_cmd prints the message to stderr and the suggestion to stdout.
-    assert constants.ENV_AGENT_PLUGIN_REPO in out + err
+def test_unfetchable_default_plugin_repo_points_at_the_override(monkeypatch):
+    """The default repository is not the user's choice, so a bare download error
+    would leave them nothing to act on. Stubbed: this must not reach the network."""
+
+    def refused(repo_id, **kwargs):
+        assert repo_id == constants.DEFAULT_AGENT_PLUGIN_REPO, "the built-in default should be used"
+        raise NotSupportedError(f"failed to download agent plugin {repo_id}@master: record not found")
+
+    monkeypatch.setattr(_plugin, "fetch_plugin", refused)
+    code, out, err = run_cli(["agent", "install", "-r", AGENT_REPO, "--trust-remote-code"])
+    assert code != 0
+    combined = out + err
+    assert constants.DEFAULT_AGENT_PLUGIN_REPO in combined
+    assert "--plugin-repo" in combined
+    assert constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS in combined
 
 
 def test_untrusted_plugin_owner_exits_2():
@@ -268,6 +278,37 @@ def test_success_wording_follows_the_negotiated_operation(monkeypatch, operation
     code, out, _ = run_cli(MINIMAL)
     assert code == 0
     assert f"{verb} {AGENT_REPO}: 2 file(s) {where} /tmp/staged" in out
+
+
+def test_reports_the_supported_scope(monkeypatch):
+    """A successful run must show what that plugin build covers, not just an exit
+    code -- which frameworks, which operations work, and which are declared but
+    not implemented yet."""
+    rich = PluginSpec(
+        repo_id=PLUGIN_REPO,
+        owner=TRUSTED,
+        name="agent-hub-plugin",
+        revision="v0.2.0",
+        directory=Path("/tmp/nowhere"),
+        manifest={
+            "version": "0.2.0",
+            "frameworks": ["ms-agent", "qwenpaw"],
+            "api": ["fetch_raw", "list_backups", "restore"],
+            "roadmap": {"install": "entry package", "upload": "P1", "convert": "P2"},
+            "content_sha256": {"agent_hub_core/__init__.py": "0" * 64},
+        },
+        entry_module="agent_hub_core",
+    )
+    result = type("R", (), {"files_written": ("SOUL.md",), "root": "/tmp/staged"})()
+    monkeypatch.setattr(
+        "modelscope_hub.cli.agent.install_agent",
+        lambda *a, **k: outcome(ok=True, operation="fetch_raw", plugin=rich, result=result),
+    )
+    code, out, _ = run_cli(MINIMAL)
+    assert code == 0
+    assert "scope : frameworks ms-agent, qwenpaw" in out
+    assert "operations fetch_raw, list_backups, restore" in out
+    assert "planned convert (P2), install (entry package), upload (P1)" in out
 
 
 def test_quiet_suppresses_all_hub_output(monkeypatch):

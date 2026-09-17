@@ -131,18 +131,14 @@ def load_entry(directory: Path, module_name: str):
 # resolve_plugin_repo
 # ---------------------------------------------------------------------------
 def test_resolve_plugin_repo_resolution_order(monkeypatch):
-    """Argument beats environment, and there is no third fallback."""
+    """Argument beats environment beats the built-in default."""
     monkeypatch.setenv(constants.ENV_AGENT_PLUGIN_REPO, "env-owner/env-plugin")
     assert _plugin.resolve_plugin_repo("arg-owner/arg-plugin") == "arg-owner/arg-plugin"
     assert _plugin.resolve_plugin_repo(None) == "env-owner/env-plugin"
     assert _plugin.resolve_plugin_repo("  ") == "env-owner/env-plugin"
 
     monkeypatch.delenv(constants.ENV_AGENT_PLUGIN_REPO, raising=False)
-    with pytest.raises(InvalidParameter) as excinfo:
-        _plugin.resolve_plugin_repo(None)
-    # A missing default must be actionable from the message alone.
-    assert "--plugin-repo" in str(excinfo.value)
-    assert constants.ENV_AGENT_PLUGIN_REPO in str(excinfo.value)
+    assert _plugin.resolve_plugin_repo(None) == constants.DEFAULT_AGENT_PLUGIN_REPO
 
 
 @pytest.mark.parametrize("value", ["noslash", "/noname", "owner/"])
@@ -165,13 +161,26 @@ def test_assert_trusted_owner_accepts_allow_listed(allow_list):
     assert _plugin.assert_trusted_owner("modelscope/agent-hub-plugin") == ("modelscope", "agent-hub-plugin")
 
 
-@pytest.mark.parametrize("owner", ["mushenl", "evil", "mushenL-x"])
+@pytest.mark.parametrize("owner", ["evil", "mushenL-x", "modelscope2", "ai_modelscope"])
 def test_assert_trusted_owner_rejects_others(allow_list, owner):
-    """Case-sensitive on purpose: normalising case would accept a look-alike."""
     with pytest.raises(InvalidParameter) as excinfo:
         _plugin.assert_trusted_owner(f"{owner}/agent-hub-plugin")
     assert owner in str(excinfo.value)
     assert constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS in excinfo.value.suggestion
+
+
+@pytest.mark.parametrize("owner", ["mushenl", "MUSHENL", "ModelScope", "MODELSCOPE", "ai-modelscope"])
+def test_assert_trusted_owner_matches_case_insensitively(monkeypatch, owner):
+    """The registry resolves ids case-insensitively and normalises the owner --
+    ``ModelScope/x`` and ``modelscope/x`` are one repository -- so two owners
+    differing only in case cannot both exist. Matching exactly would not stop a
+    look-alike; it would only reject the casing somebody copied from the website,
+    which is how the product writes ``ModelScope``."""
+    monkeypatch.setattr(constants, "AGENT_PLUGIN_TRUSTED_OWNERS", frozenset({"mushenL", "modelscope", "AI-ModelScope"}))
+    got_owner, got_name = _plugin.assert_trusted_owner(f"{owner}/agent-hub-plugin")
+    assert got_name == "agent-hub-plugin"
+    # Echoed as typed, so messages and PluginSpec keep the user's spelling.
+    assert got_owner == owner
 
 
 def test_assert_trusted_owner_empty_list_blocks_everything(monkeypatch):

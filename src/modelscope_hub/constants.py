@@ -964,10 +964,18 @@ ENV_AGENT_PLUGIN_REPO: str = "MODELSCOPE_AGENT_PLUGIN_REPO"
 ENV_AGENT_PLUGIN_TRUSTED_OWNERS: str = "MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS"
 ENV_AGENT_TRUST_REMOTE_CODE: str = "MODELSCOPE_AGENT_TRUST_REMOTE_CODE"
 
-DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS: str = "mushenL,modelscope"
+#: Owners allowed to provide the agent plugin. ``modelscope`` and
+#: ``AI-ModelScope`` are the published homes for it; ``mushenL`` is a personal
+#: account used while the plugin is still being developed there, and should be
+#: dropped before this ships. Removing it is this line alone -- nothing else reads
+#: the default, and no test pins it (the gate tests set the resolved constant
+#: themselves). Until then an override is enough:
+#: ``MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS=modelscope,AI-ModelScope``.
+DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS: str = "modelscope,AI-ModelScope,mushenL"
+DEFAULT_AGENT_PLUGIN_REPO: str = "modelscope/agent-hub-plugin"
 DEFAULT_AGENT_PLUGIN_REVISION: str = "master"
 
-_AGENT_TRUSTED_OWNERS_DESCRIPTION = "Comma-separated owners allowed to provide the agent plugin (case-sensitive)"
+_AGENT_TRUSTED_OWNERS_DESCRIPTION = "Comma-separated owners allowed to provide the agent plugin"
 
 
 def _env_csv_frozenset_exact(
@@ -977,11 +985,15 @@ def _env_csv_frozenset_exact(
     category: str,
     *deprecated_names: str,
 ) -> frozenset[str]:
-    """Read a comma-separated set from the environment, **preserving case**.
+    """Read a comma-separated set from the environment, preserving case.
 
-    Do not "simplify" this into :func:`_env_csv_frozenset`: that one upper-cases
-    every item, which would let an owner differing only in case pass an
-    allow-list check -- the look-alike an allow-list exists to stop.
+    Case is preserved so the list can be shown back to a user exactly as they or
+    the default wrote it. It is **not** an identity rule: the registry resolves
+    repository ids case-insensitively and normalises them (``ModelScope/x`` and
+    ``modelscope/x`` are one repository), so matching happens case-insensitively
+    at the comparison site in :mod:`modelscope_hub.agent._plugin`. Do not
+    "simplify" this into :func:`_env_csv_frozenset`, which upper-cases every item
+    and would turn ``AI-ModelScope`` into ``AI-MODELSCOPE`` in messages.
     """
     _env_register(name, default, description, category, deprecated_names=deprecated_names)
     raw = _env(name, *deprecated_names) or default
@@ -990,7 +1002,7 @@ def _env_csv_frozenset_exact(
 
 _env_register(
     ENV_AGENT_PLUGIN_REPO,
-    "-",
+    DEFAULT_AGENT_PLUGIN_REPO,
     "Model repository id ('owner/name') of the agent plugin used by 'ms agent install'",
     "Core",
 )
@@ -1024,6 +1036,7 @@ __all__ = [
     "CATEGORY_ORDER",
     "CONFIG_DIR_NAME",
     "DATASET_LFS_SUFFIX",
+    "DEFAULT_AGENT_PLUGIN_REPO",
     "DEFAULT_AGENT_PLUGIN_REVISION",
     "DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS",
     "DEFAULT_CACHE_DIR_NAME",

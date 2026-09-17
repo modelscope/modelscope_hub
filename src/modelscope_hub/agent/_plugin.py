@@ -76,10 +76,29 @@ class PluginSpec:
             f"  entry      : {self.entry_module}\n"
             f"  frameworks : {', '.join(map(str, frameworks)) or '-'}\n"
             f"  operations : {', '.join(map(str, operations)) or '-'}\n"
+            f"  planned    : {self._planned()}\n"
             f"  directory  : {self.directory}\n"
             f"  manifest   : {len(self.manifest.get('content_sha256') or {})} file(s), "
             f"sha256 {digest}"
         )
+
+    def scope(self) -> str:
+        """One line naming what this build covers, for the success path.
+
+        A command that exits 0 otherwise tells a user nothing about which
+        frameworks it handled or which operations this plugin version actually
+        implements, and both decide whether the result is what they wanted.
+        """
+        frameworks = ", ".join(map(str, self.manifest.get("frameworks") or [])) or "-"
+        operations = ", ".join(map(str, self.manifest.get("api") or [])) or "-"
+        return f"frameworks {frameworks} | operations {operations} | planned {self._planned()}"
+
+    def _planned(self) -> str:
+        """Operations the manifest declares as not yet implemented, and when."""
+        roadmap = self.manifest.get("roadmap") or {}
+        if not isinstance(roadmap, dict):
+            return "-"
+        return ", ".join(f"{name} ({when})" for name, when in sorted(roadmap.items())) or "-"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,27 +120,19 @@ def _manifest_digest(manifest: dict[str, Any]) -> str:
 
 
 def resolve_plugin_repo(explicit: str | None = None) -> str:
-    """Return the plugin repository id, or raise if none was configured.
+    """Return the plugin repository id: argument, then environment, then default.
 
-    Resolution is the argument, then
-    :data:`~modelscope_hub.constants.ENV_AGENT_PLUGIN_REPO`, and stops there.
-    There is deliberately no built-in default owner: who publishes the plugin is a
-    deployment decision, and a silent fallback would let a typo install from
-    somewhere nobody chose.
+    The default is :data:`~modelscope_hub.constants.DEFAULT_AGENT_PLUGIN_REPO`,
+    the plugin published under the ModelScope organisation. It is a default and
+    not a hard-coded call site because who publishes the plugin is a deployment
+    decision -- an override is one flag or one environment variable away, and the
+    owner allow-list applies to whichever id wins.
     """
     repo_id = (explicit or "").strip()
     if not repo_id:
         repo_id = (os.environ.get(constants.ENV_AGENT_PLUGIN_REPO) or "").strip()
     if not repo_id:
-        error = InvalidParameter(
-            "no agent plugin repository configured. Pass --plugin-repo owner/name, "
-            f"or set {constants.ENV_AGENT_PLUGIN_REPO}=owner/name."
-        )
-        error.suggestion = (
-            "The plugin is published as a ModelScope model repository. Its owner is a "
-            "deployment choice, so modelscope-hub does not assume one."
-        )
-        raise error
+        repo_id = constants.DEFAULT_AGENT_PLUGIN_REPO
     HubApi._parse_repo_id(repo_id)
     return repo_id
 
@@ -129,19 +140,22 @@ def resolve_plugin_repo(explicit: str | None = None) -> str:
 def assert_trusted_owner(repo_id: str) -> tuple[str, str]:
     """Split *repo_id* and require its owner on the allow-list.
 
-    Comparison is case-sensitive: owners are identifiers, so normalising case
-    would let ``mushenl`` pass a list that only trusts ``mushenL``.
+    Matching is case-insensitive because that is how the registry treats
+    identity: it resolves ``ModelScope/x`` and ``modelscope/x`` to the same
+    repository and normalises the owner, so two owners differing only in case
+    cannot both exist. An exact comparison would therefore not stop a look-alike
+    account -- it would only reject the casing somebody copied from the website.
     """
     owner, name = HubApi._parse_repo_id(repo_id)
     trusted = constants.AGENT_PLUGIN_TRUSTED_OWNERS
-    if owner not in trusted:
+    if owner.casefold() not in {entry.casefold() for entry in trusted}:
         error = InvalidParameter(
             f"owner {owner!r} is not allowed to provide the agent plugin. "
             f"Trusted owners: {', '.join(sorted(trusted)) or '(none)'}."
         )
         error.suggestion = (
             f"Extend the allow-list with {constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS}"
-            "=owner1,owner2 (comma-separated, case-sensitive), then retry."
+            "=owner1,owner2 (comma-separated), then retry."
         )
         raise error
     return owner, name
@@ -378,13 +392,25 @@ def install_agent(
     plugin_repo_id = resolve_plugin_repo(plugin_repo)
     owner, plugin_name = assert_trusted_owner(plugin_repo_id)
 
-    directory = fetch_plugin(
-        plugin_repo_id,
-        revision=plugin_revision,
-        token=token,
-        endpoint=endpoint,
-        cache_dir=cache_dir,
-    )
+    try:
+        directory = fetch_plugin(
+            plugin_repo_id,
+            revision=plugin_revision,
+            token=token,
+            endpoint=endpoint,
+            cache_dir=cache_dir,
+        )
+    except NotSupportedError as exc:
+        if plugin_repo_id == constants.DEFAULT_AGENT_PLUGIN_REPO:
+            # The user never named this repository, so a bare download error
+            # leaves them nothing to act on.
+            exc.suggestion = (
+                f"{plugin_repo_id} is the built-in default. If it is not published yet, "
+                f"or you built your own, pass --plugin-repo owner/name (or set "
+                f"{constants.ENV_AGENT_PLUGIN_REPO}) -- its owner must also be listed in "
+                f"{constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS}."
+            )
+        raise
     manifest = verify_manifest(directory, plugin_repo_id)
     spec = PluginSpec(
         repo_id=plugin_repo_id,

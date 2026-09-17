@@ -20,7 +20,14 @@ from argparse import RawDescriptionHelpFormatter
 from pathlib import Path
 
 from ..agent import AgentApi, agent_last_modified, agent_visibility_label, install_agent, is_lfs_file
-from ..constants import Visibility
+from ..constants import (
+    DEFAULT_AGENT_PLUGIN_REPO,
+    DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS,
+    ENV_AGENT_PLUGIN_REPO,
+    ENV_AGENT_PLUGIN_TRUSTED_OWNERS,
+    ENV_AGENT_TRUST_REMOTE_CODE,
+    Visibility,
+)
 from ..errors import APIError
 from .base import CLICommand, SubParsers, info, success
 from .compat import add_subcmd_token_endpoint
@@ -303,6 +310,7 @@ def _cmd_install(
         info(f"plugin: {plugin.repo_id}@{plugin.revision} (version {plugin.version})")
         if outcome.operation:
             info(f"entry : {plugin.entry_module}.{outcome.operation}()")
+        info(f"scope : {plugin.scope()}")
 
     if not outcome.ok:
         _fail(outcome.error or "install failed")
@@ -439,10 +447,16 @@ class AgentCommand(CLICommand):
                 "registration steps, while one that only transports bytes writes the repository's files "
                 "into a destination directory and leaves placement to whatever runs next. The command "
                 "reports which of the two happened.\n\n"
-                "Loading a plugin imports code this package did not ship, so the plugin source must be "
-                "named explicitly (--plugin-repo or MODELSCOPE_AGENT_PLUGIN_REPO), its owner must be on "
-                "the allow-list (MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS), and execution requires "
-                "--trust-remote-code."
+                "Supported scope comes from the plugin, not from this package, so it cannot go stale here: "
+                "every run prints a 'scope :' line naming the frameworks that plugin build covers, the "
+                "operations it implements, and the ones it declares as not yet available. Run without "
+                "--trust-remote-code to see that summary plus the resolved plugin and its manifest digest "
+                "without executing any downloaded code.\n\n"
+                f"Loading a plugin imports code this package did not ship, so its owner must be on the "
+                f"allow-list ({ENV_AGENT_PLUGIN_TRUSTED_OWNERS}, default: "
+                f"{DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS}) and execution requires --trust-remote-code "
+                f"(or {ENV_AGENT_TRUST_REMOTE_CODE}=1). The plugin itself defaults to "
+                f"{DEFAULT_AGENT_PLUGIN_REPO}; --plugin-repo or {ENV_AGENT_PLUGIN_REPO} overrides it."
             ),
         )
         p_install.add_argument(
@@ -465,8 +479,8 @@ class AgentCommand(CLICommand):
         p_install.add_argument(
             "--plugin-repo",
             default=None,
-            help="Plugin model repository, owner/name (default: $MODELSCOPE_AGENT_PLUGIN_REPO; there is "
-            "no built-in default owner)",
+            help=f"Plugin model repository, owner/name (default: ${ENV_AGENT_PLUGIN_REPO}, else "
+            f"{DEFAULT_AGENT_PLUGIN_REPO}). Its owner must be on the allow-list.",
         )
         p_install.add_argument(
             "--plugin-revision",
