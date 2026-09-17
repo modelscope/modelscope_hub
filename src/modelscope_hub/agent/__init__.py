@@ -16,7 +16,10 @@ Public API
 - ``agent_visibility_label`` / ``agent_last_modified`` -- read renamed agent
   metadata fields from an API item, tolerating both JSON spellings
   (snake_case and PascalCase) and legacy keys.
-- :func:`install_agent` -- install an agent through its framework plugin.
+- :func:`install_agent` -- fetch or install an agent through its framework
+  plugin, the choice being negotiated with the plugin.
+- :func:`default_staging_dir` -- where a fetch-only plugin's files land when the
+  caller named no directory.
 """
 
 from ._api import AgentApi, RemoteFileInfo, agent_last_modified, agent_visibility_label, is_lfs_file
@@ -25,6 +28,7 @@ from ._plugin import (
     InstallOutcome,
     PluginSpec,
     assert_trusted_owner,
+    default_staging_dir,
     fetch_plugin,
     install_agent,
     load_plugin,
@@ -49,4 +53,5 @@ __all__ = [
     "verify_manifest",
     "load_plugin",
     "select_operation",
+    "default_staging_dir",
 ]

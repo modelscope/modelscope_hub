@@ -3,8 +3,11 @@
 
 ``ms agent install`` resolves which plugin to use, downloads it from a model
 repository, verifies it, and hands the agent id to the plugin's entry point. No
-framework knowledge lives here: where files land and how an agent is registered
-are the plugin's decisions.
+framework knowledge lives here: how an agent is registered and what its workspace
+looks like are the plugin's decisions. The one exception is the destination
+directory, which this module resolves for a plugin that only transports bytes --
+it cannot know where such a plugin should write, and the plugin deliberately has
+no default of its own.
 
 Integrity comes from ``plugin.json``'s ``content_sha256``, not from the hub's own
 file listing -- that listing has been observed reporting a git blob SHA-1 in a
@@ -20,17 +23,29 @@ import json
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .. import constants
 from ..errors import InvalidParameter, NotSupportedError
+from ..utils.file_utils import get_cache_dir
 
 MANIFEST_NAME = "plugin.json"
 
 #: Negotiated rather than hard-coded, so a plugin growing a richer entry point
-#: does not require re-releasing the hub.
-ENTRY_OPERATIONS: tuple[str, ...] = ("install", "download")
+#: does not require re-releasing the hub. Order is preference: a plugin that
+#: implements ``install`` owns placement, registration and completion, so it
+#: wins. ``fetch_raw`` is a transport that writes the repository's bytes into a
+#: directory the caller names and never touches a framework workspace, which is
+#: what keeps a user's own credentials intact. ``download`` is the 0.1.x name
+#: for an operation that did install into the workspace.
+ENTRY_OPERATIONS: tuple[str, ...] = ("install", "fetch_raw", "download")
+
+#: Staging root for a fetch-only plugin, relative to ``MODELSCOPE_CACHE``.
+#: Matches the plugin's own ``staging_dir()`` so one convention covers both
+#: sides and there are not two places agent files can land.
+AGENT_STAGING_SUBDIR: tuple[str, ...] = ("agent", "agent-staging")
 
 
 @dataclass(frozen=True, slots=True)
@@ -322,6 +337,20 @@ def _accepted_kwargs(func: Any, candidates: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in candidates.items() if key in parameters}
 
 
+def default_staging_dir(repo: str) -> Path:
+    """Where a fetch-only plugin's files land when the caller named no directory.
+
+    The staging directory itself is not created -- the plugin makes it when it
+    writes, so an operation that ignores ``dest`` leaves no empty directory
+    behind. Resolving the path does create the SDK cache root, as any download
+    would. The repository id contains a slash and so is flattened; the timestamp
+    keeps repeated fetches of one repository apart, to one-second resolution.
+    """
+    slug = repo.replace("/", "--")
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return get_cache_dir().joinpath(*AGENT_STAGING_SUBDIR, f"{slug}-{stamp}")
+
+
 def install_agent(
     repo: str,
     *,
@@ -339,7 +368,13 @@ def install_agent(
     token: str | None = None,
     cache_dir: str | None = None,
 ) -> InstallOutcome:
-    """Download *repo*'s agent into the local framework workspace via a plugin.
+    """Fetch or install *repo*'s agent through its framework plugin.
+
+    Which of the two happens is the plugin's answer, not this function's: the
+    entry operation is negotiated in :func:`select_operation`, so a plugin that
+    installs into the workspace installs, and one that only transports bytes
+    stages them in ``local_dir`` (or :func:`default_staging_dir`) for the install
+    layer to place.
 
     *repo* is passed through uninterpreted beyond requiring ``owner/name``.
     Plugin failures come back as data (``ok`` False); the three gates
@@ -393,6 +428,10 @@ def install_agent(
         "framework": framework,
         "source_framework": framework,
         "local_dir": local_dir,
+        # A fetch-only plugin writes where it is told and has no default, so the
+        # destination is always resolved here: the caller's --local-dir, else a
+        # staging directory. Operations that do not declare ``dest`` never see it.
+        "dest": local_dir or str(default_staging_dir(repo)),
         "dry_run": dry_run,
         "yes": yes,
         "force": force,

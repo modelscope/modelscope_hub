@@ -34,7 +34,7 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 ## News
 
 **Unreleased**
-- **Feature**: `ms-hub agent install -r owner/name` resolves a framework plugin, fetches it from a model repository, and delegates the install to it — plus the `modelscope_hub.agent.install_agent` SDK entry and its underlying `resolve_plugin_repo` / `assert_trusted_owner` / `fetch_plugin` / `verify_manifest` / `load_plugin` / `select_operation` steps. The hub gains no framework knowledge: where files land and how an agent is registered stay the plugin's decisions.
+- **Feature**: `ms-hub agent install -r owner/name` resolves a framework plugin, fetches it from a model repository, and delegates to the entry operation the plugin declares — plus the `modelscope_hub.agent.install_agent` SDK entry and its underlying `resolve_plugin_repo` / `assert_trusted_owner` / `fetch_plugin` / `verify_manifest` / `load_plugin` / `select_operation` / `default_staging_dir` steps. The hub gains no framework knowledge: how an agent is registered and what its workspace looks like stay the plugin's decisions, the one exception being the destination directory, which the hub resolves for a plugin that only transports bytes.
 - **Quality**: loading a plugin executes code this package did not ship, so it is gated by an explicit plugin source (no built-in default owner), a case-sensitive owner allow-list checked before any download, and a `--trust-remote-code` opt-in that is never persisted. `plugin.json`'s `content_sha256` is verified against every file before import, because the hub's own listing has been observed reporting a git blob SHA-1 in a `sha256` field.
 
 **v0.4.0** (2026-09-01)
@@ -655,7 +655,7 @@ ms-hub agent install  -r user/my-agent \
 
 `download` / `upload` / `list` transfer files as-is, with **no framework awareness**.
 
-`install` is different: it does not know any framework's file layout either. It resolves *which* plugin to use, fetches that plugin from a model repository, verifies it against its own manifest, and hands the agent id over — the plugin decides where files land, how the agent is registered, and what the framework needs afterwards. See [`ms-hub agent install`](#ms-hub-agent-install) for the security model.
+`install` is different: it does not know any framework's file layout either. It resolves *which* plugin to use, fetches that plugin from a model repository, verifies it against its own manifest, and hands the agent id over — the plugin decides how the agent is registered and what the framework needs afterwards, and which entry operation runs is negotiated from what the plugin declares. See [`ms-hub agent install`](#ms-hub-agent-install) for the security model.
 
 > **Framework-aware operations** (cross-framework `convert`, `watch`/bidirectional sync, `status`, `backups`, `restore`, `stop`) live in **[modelscope-agent](https://github.com/modelscope/ms-agent)** — use `ms-agent agent ...` instead. For example, to download and convert in one step: `ms-agent agent download -f qoder -r user/my-agent --target-framework qwenpaw`.
 
@@ -695,7 +695,7 @@ ms-hub agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 
 #### `ms-hub agent install`
 
-Download an agent and hand it to its **framework plugin**, which installs it into the local workspace.
+Download an agent and hand it to its **framework plugin**. What the plugin does with it is negotiated: one with an `install` entry point places the agent into the framework's workspace, one that only transports bytes writes the repository's files into a destination directory and leaves placement to whatever runs next. The command reports which happened (`Installed …` vs `Fetched …`).
 
 ```bash
 ms-hub agent install -r user/my-agent --plugin-repo modelscope/agent-hub-plugin --trust-remote-code
@@ -710,7 +710,7 @@ ms-hub agent install -r user/my-agent --plugin-revision v0.2.0 -n sub-agent --lo
 | `--trust-remote-code` | no | Required to import and run the plugin, unless `$MODELSCOPE_AGENT_TRUST_REMOTE_CODE=1` |
 | `-n, --name NAME` | no | Sub-agent name, passed through to the plugin |
 | `--framework FW` | no | Override the plugin's framework detection |
-| `--local-dir DIR` | no | Override the framework's local root |
+| `--local-dir DIR` | no | Where the agent goes: the destination directory for a plugin that only fetches, the framework's local root for one that installs. Omitted, a fetch-only plugin gets `$MODELSCOPE_CACHE/agent/agent-staging/<owner>--<name>-<timestamp>/` |
 | `--dry-run` | no | Report what would happen, change nothing |
 | `-y, --yes` / `--force` / `-q, --quiet` | no | Passed through to the plugin |
 
@@ -749,9 +749,11 @@ outcome = install_agent(
 print(outcome.ok, outcome.operation, outcome.exit_code, outcome.error)
 ```
 
-The lower-level steps are exported too (`resolve_plugin_repo`, `assert_trusted_owner`, `fetch_plugin`, `verify_manifest`, `load_plugin`, `select_operation`) for callers that want to inspect a plugin without running it.
+The lower-level steps are exported too (`resolve_plugin_repo`, `assert_trusted_owner`, `fetch_plugin`, `verify_manifest`, `load_plugin`, `select_operation`, `default_staging_dir`) for callers that want to inspect a plugin without running it.
 
-The plugin's entry operation is negotiated rather than hard-coded: `install` is preferred, `download` accepted as a fallback, and `capabilities()['operations']` is authoritative when the plugin declares it — so a plugin that ships a name without implementing it is not selected, and the hub does not need re-releasing when a plugin grows a richer entry point. Arguments are narrowed to what the plugin's signature accepts, so a plugin adding new keywords does not break older hubs.
+The plugin's entry operation is negotiated rather than hard-coded, in preference order `install` → `fetch_raw` → `download`, and `capabilities()['operations']` is authoritative when the plugin declares it — so a plugin that ships a name without implementing it is not selected, and the hub does not need re-releasing when a plugin grows a richer entry point. Arguments are narrowed to what the plugin's signature accepts, so a plugin adding new keywords does not break older hubs.
+
+`fetch_raw` is a transport, not an installer: it writes the repository's bytes into a directory the caller names and stops, with no workspace registration and no inbound rewriting. Such a plugin deliberately has **no default destination**, because the only sensible-looking default is a framework workspace, and a workspace holds the user's own credentials (`agent.json` channels, `settings.json` providers, `mcp.json` env blocks) that an overwrite would silently destroy. The hub therefore resolves `dest` for it — `--local-dir` when given, otherwise `default_staging_dir(repo)` — and operations that do not declare `dest` never see it.
 
 </details>
 

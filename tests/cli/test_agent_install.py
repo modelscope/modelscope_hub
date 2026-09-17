@@ -249,6 +249,27 @@ def test_reports_plugin_and_entry(monkeypatch):
     assert "mod.install()" in out
 
 
+@pytest.mark.parametrize(
+    ("operation", "verb", "where"),
+    [
+        ("install", "Installed", "under"),
+        ("download", "Installed", "under"),
+        ("fetch_raw", "Fetched", "to"),
+    ],
+)
+def test_success_wording_follows_the_negotiated_operation(monkeypatch, operation, verb, where):
+    """A transport-only plugin stages files; reporting "Installed" would hide
+    that no framework was touched."""
+    result = type("R", (), {"files_written": ("SOUL.md", "AGENTS.md"), "root": "/tmp/staged"})()
+    monkeypatch.setattr(
+        "modelscope_hub.cli.agent.install_agent",
+        lambda *a, **k: outcome(ok=True, operation=operation, plugin=spec(), result=result),
+    )
+    code, out, _ = run_cli(MINIMAL)
+    assert code == 0
+    assert f"{verb} {AGENT_REPO}: 2 file(s) {where} /tmp/staged" in out
+
+
 def test_quiet_suppresses_all_hub_output(monkeypatch):
     monkeypatch.setattr(
         "modelscope_hub.cli.agent.install_agent",

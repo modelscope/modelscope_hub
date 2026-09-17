@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -411,6 +412,49 @@ def test_select_operation_without_capabilities_uses_presence(tmp_path):
     assert _plugin.select_operation(load_entry(directory, "sel_nocaps"))[0] == "download"
 
 
+def test_select_operation_prefers_install_over_fetch_raw(tmp_path):
+    """A plugin that owns placement wins over one that only transports bytes, so
+    the install layer taking over needs no hub release."""
+    source = textwrap.dedent(
+        """
+        def capabilities():
+            return {"operations": ("install", "fetch_raw", "download")}
+
+        def install(repo, **kwargs):
+            return "installed"
+
+        def fetch_raw(repo, *, dest, **kwargs):
+            raise AssertionError("must not be chosen while install is declared")
+        """
+    ).lstrip()
+    directory = make_plugin(tmp_path, entry_module="sel_pref", entry_source=source)
+    module = load_entry(directory, "sel_pref")
+    assert _plugin.select_operation(module) == ("install", module.install)
+
+
+def test_select_operation_falls_back_to_fetch_raw(tmp_path):
+    """A transport-only plugin is usable: ``download`` is present but undeclared,
+    so it must not be chosen over the operation the plugin actually reports."""
+    source = textwrap.dedent(
+        """
+        def capabilities():
+            return {"operations": ("fetch_raw", "restore", "list_backups")}
+
+        def install(repo, **kwargs):
+            raise AssertionError("must not be chosen")
+
+        def download(repo, **kwargs):
+            raise AssertionError("must not be chosen")
+
+        def fetch_raw(repo, *, dest, **kwargs):
+            return "fetched"
+        """
+    ).lstrip()
+    directory = make_plugin(tmp_path, entry_module="sel_fetch", entry_source=source)
+    module = load_entry(directory, "sel_fetch")
+    assert _plugin.select_operation(module) == ("fetch_raw", module.fetch_raw)
+
+
 def test_accepted_kwargs_narrowing():
     def positional(repo, name=None):
         return repo, name
@@ -436,6 +480,9 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(constants, "AGENT_PLUGIN_TRUSTED_OWNERS", frozenset({TRUSTED}))
     monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", False)
     monkeypatch.delenv(constants.ENV_AGENT_PLUGIN_REPO, raising=False)
+    # install_agent resolves a default staging directory under the cache; keep it
+    # out of the real user home.
+    monkeypatch.setenv(constants.ENV_CACHE, str(tmp_path / "cache"))
     directory = make_plugin(tmp_path, entry_module="e2e_plugin")
     monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
     yield directory
@@ -453,14 +500,20 @@ def test_install_agent_happy_path_and_option_forwarding(wired):
     import e2e_plugin
 
     assert e2e_plugin.CALLS[-1][:2] == ("install", "owner/my-agent")
+    forwarded = e2e_plugin.CALLS[-1][2]
     # Unset optionals are dropped so the plugin applies its own defaults, but a
     # False boolean is a decision the caller made and is forwarded.
-    assert e2e_plugin.CALLS[-1][2] == {
+    assert {key: forwarded[key] for key in ("dry_run", "yes", "force", "quiet")} == {
         "dry_run": False,
         "yes": False,
         "force": False,
         "quiet": False,
     }
+    # A variadic entry also gets the resolved destination. With no --local-dir
+    # that is a fresh staging directory under the cache, not a workspace.
+    staged = Path(forwarded["dest"])
+    assert staged.parent.name == "agent-staging"
+    assert staged.name.startswith("owner--my-agent-")
 
     _plugin.install_agent(
         "owner/my-agent",
@@ -476,6 +529,7 @@ def test_install_agent_happy_path_and_option_forwarding(wired):
     forwarded = e2e_plugin.CALLS[-1][2]
     assert forwarded["name"] == "sub"
     assert forwarded["local_dir"] == "/tmp/ws"
+    assert forwarded["dest"] == "/tmp/ws"
     assert forwarded["dry_run"] is True
     assert forwarded["force"] is True
     assert forwarded["endpoint"] == "https://pre.modelscope.cn"
@@ -550,3 +604,140 @@ def test_install_agent_contains_a_plugin_exception(wired, monkeypatch):
     assert "boom" in outcome.error
     assert outcome.exit_code == 1
     sys.modules.pop("boom_plugin", None)
+
+
+# ---------------------------------------------------------------------------
+# fetch-only plugins
+# ---------------------------------------------------------------------------
+def test_default_staging_dir_computes_without_creating(tmp_path, monkeypatch):
+    monkeypatch.setenv(constants.ENV_CACHE, str(tmp_path / "cache"))
+    path = _plugin.default_staging_dir("owner/my-agent")
+
+    assert path.parent == tmp_path / "cache" / "agent" / "agent-staging"
+    # The repository id contains a slash, so it has to be flattened, and the
+    # stamp keeps repeats of one repository apart. Resolution is one second, so
+    # this separates runs, not concurrent calls.
+    assert re.fullmatch(r"owner--my-agent-\d{8}_\d{6}", path.name)
+    assert not path.exists(), "computing a destination must not create it"
+
+
+#: Mirrors the real 0.2.0 plugin: ``dest`` is keyword-only and required, and
+#: there is no ``local_dir`` at all, so a hub that does not resolve a
+#: destination cannot call it.
+FETCH_ONLY_SOURCE = textwrap.dedent(
+    """
+    from dataclasses import dataclass, field
+
+
+    @dataclass(frozen=True)
+    class Result:
+        ok: bool = True
+        error: str | None = None
+        files_written: tuple = field(default_factory=tuple)
+        root: str = ""
+        exit_code: int = 0
+
+
+    CALLS = []
+
+
+    def capabilities():
+        return {"operations": ("fetch_raw", "restore", "list_backups")}
+
+
+    def install(**kwargs):
+        raise AssertionError("placeholder must not be chosen")
+
+
+    def download(repo, **kwargs):
+        raise AssertionError("legacy alias must not be chosen")
+
+
+    def fetch_raw(repo, *, dest, name=None, framework=None, dry_run=False,
+                  quiet=False, endpoint=None, token=None):
+        CALLS.append({"repo": repo, "dest": dest, "framework": framework})
+        return Result(files_written=("SOUL.md", "AGENTS.md"), root=dest)
+    """
+).lstrip()
+
+
+@pytest.fixture
+def fetch_only(wired, monkeypatch):
+    directory = make_plugin(
+        wired.parent,
+        dirname="fetch_plugin",
+        entry_module="fetch_plugin",
+        entry_source=FETCH_ONLY_SOURCE,
+    )
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+    yield directory
+    sys.modules.pop("fetch_plugin", None)
+
+
+def test_install_agent_drives_a_fetch_only_plugin(fetch_only):
+    """The regression test for the joint-testing failure: a transport-only plugin
+    used to be rejected outright, and then called without its required ``dest``."""
+    outcome = _plugin.install_agent(
+        "owner/my-agent",
+        framework="qwenpaw",
+        plugin_repo=PLUGIN_REPO,
+        trust_remote_code=True,
+    )
+    assert outcome.ok, outcome.error
+    assert outcome.operation == "fetch_raw"
+
+    import fetch_plugin
+
+    call = fetch_plugin.CALLS[-1]
+    assert call["repo"] == "owner/my-agent"
+    assert call["framework"] == "qwenpaw"
+    assert Path(call["dest"]).parent.name == "agent-staging"
+    # The destination the plugin reports is the one the hub resolved.
+    assert str(outcome.result.root) == call["dest"]
+
+
+def test_install_agent_maps_local_dir_onto_dest(fetch_only):
+    outcome = _plugin.install_agent(
+        "owner/my-agent",
+        local_dir="/tmp/joint/staging",
+        plugin_repo=PLUGIN_REPO,
+        trust_remote_code=True,
+    )
+    assert outcome.ok, outcome.error
+
+    import fetch_plugin
+
+    assert fetch_plugin.CALLS[-1]["dest"] == "/tmp/joint/staging"
+
+
+def test_dest_is_not_forwarded_to_an_operation_that_does_not_accept_it(wired, monkeypatch):
+    """Narrowing keeps the legacy path working: an operation with no ``dest``
+    parameter must not be handed one, or every 0.1.x plugin would break."""
+    source = textwrap.dedent(
+        """
+        def capabilities():
+            return {"operations": ("download",)}
+
+        CALLS = []
+
+        def download(repo, *, local_dir=None, dry_run=False):
+            CALLS.append({"repo": repo, "local_dir": local_dir})
+            return "ok"
+        """
+    ).lstrip()
+    directory = make_plugin(wired.parent, dirname="legacy_plugin", entry_module="legacy_plugin", entry_source=source)
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+
+    outcome = _plugin.install_agent(
+        "owner/my-agent",
+        local_dir="/tmp/ws",
+        plugin_repo=PLUGIN_REPO,
+        trust_remote_code=True,
+    )
+    assert outcome.ok, outcome.error
+    assert outcome.operation == "download"
+
+    import legacy_plugin
+
+    assert legacy_plugin.CALLS[-1] == {"repo": "owner/my-agent", "local_dir": "/tmp/ws"}
+    sys.modules.pop("legacy_plugin", None)

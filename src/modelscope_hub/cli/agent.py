@@ -315,10 +315,13 @@ def _cmd_install(
         result = outcome.result
         written = getattr(result, "files_written", None)
         root = getattr(result, "root", None)
+        # ``fetch_raw`` stages files for the install layer to place; reporting
+        # "Installed" would hide that no framework was touched.
+        verb, where = ("Fetched", "to") if outcome.operation == "fetch_raw" else ("Installed", "under")
         if written is not None and root is not None:
-            success(f"Installed {repo}: {len(written)} file(s) under {root}")
+            success(f"{verb} {repo}: {len(written)} file(s) {where} {root}")
         else:
-            success(f"Installed {repo}")
+            success(f"{verb} {repo}")
     return 0
 
 
@@ -430,8 +433,12 @@ class AgentCommand(CLICommand):
             help="Install an agent into its framework via the agent plugin",
             formatter_class=RawDescriptionHelpFormatter,
             description=(
-                "Download an agent repository and hand it to the framework plugin, which installs it "
-                "into the local workspace.\n\n"
+                "Download an agent repository and hand it to the framework plugin.\n\n"
+                "What the plugin does with it is negotiated, not assumed: a plugin with an install entry "
+                "point places the agent into the framework's workspace and completes the framework's own "
+                "registration steps, while one that only transports bytes writes the repository's files "
+                "into a destination directory and leaves placement to whatever runs next. The command "
+                "reports which of the two happened.\n\n"
                 "Loading a plugin imports code this package did not ship, so the plugin source must be "
                 "named explicitly (--plugin-repo or MODELSCOPE_AGENT_PLUGIN_REPO), its owner must be on "
                 "the allow-list (MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS), and execution requires "
@@ -448,7 +455,13 @@ class AgentCommand(CLICommand):
             "-n", "--name", default=None, help="Sub-agent name to install (default: the plugin's choice)"
         )
         p_install.add_argument("--framework", default=None, help="Override framework detection")
-        p_install.add_argument("--local-dir", default=None, help="Override the framework's local root")
+        p_install.add_argument(
+            "--local-dir",
+            default=None,
+            help="Where the agent goes: the destination directory for a plugin that only fetches, the "
+            "framework's local root for one that installs (default: a staging directory under "
+            "$MODELSCOPE_CACHE/agent/agent-staging/)",
+        )
         p_install.add_argument(
             "--plugin-repo",
             default=None,
