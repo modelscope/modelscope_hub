@@ -28,8 +28,9 @@ from pathlib import Path
 from typing import Any
 
 from .. import constants
+from ..api import HubApi
 from ..errors import InvalidParameter, NotSupportedError
-from ..utils.file_utils import get_cache_dir
+from ..utils.file_utils import compute_hash, get_cache_dir
 
 MANIFEST_NAME = "plugin.json"
 
@@ -99,19 +100,6 @@ def _manifest_digest(manifest: dict[str, Any]) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
-def _split_repo_id(repo_id: str, *, label: str) -> tuple[str, str]:
-    """Split ``owner/name`` or raise, rejecting empty halves.
-
-    ``"/" in repo_id`` is not enough: ``/name`` and ``owner/`` both contain a
-    slash but name no repository, and letting either through costs a real request
-    for somebody else's path.
-    """
-    owner, _, name = repo_id.partition("/")
-    if not owner or not name:
-        raise InvalidParameter(f"{label} {repo_id!r} must be in 'owner/name' form.")
-    return owner, name
-
-
 def resolve_plugin_repo(explicit: str | None = None) -> str:
     """Return the plugin repository id, or raise if none was configured.
 
@@ -134,7 +122,7 @@ def resolve_plugin_repo(explicit: str | None = None) -> str:
             "deployment choice, so modelscope-hub does not assume one."
         )
         raise error
-    _split_repo_id(repo_id, label="agent plugin repository")
+    HubApi._parse_repo_id(repo_id)
     return repo_id
 
 
@@ -144,7 +132,7 @@ def assert_trusted_owner(repo_id: str) -> tuple[str, str]:
     Comparison is case-sensitive: owners are identifiers, so normalising case
     would let ``mushenl`` pass a list that only trusts ``mushenL``.
     """
-    owner, name = _split_repo_id(repo_id, label="agent plugin repository")
+    owner, name = HubApi._parse_repo_id(repo_id)
     trusted = constants.AGENT_PLUGIN_TRUSTED_OWNERS
     if owner not in trusted:
         error = InvalidParameter(
@@ -234,7 +222,7 @@ def verify_manifest(directory: Path, repo_id: str) -> dict[str, Any]:
         if not target.is_file():
             missing.append(rel)
             continue
-        actual = hashlib.sha256(target.read_bytes()).hexdigest()
+        actual = compute_hash(target)
         if actual != expected:
             mismatched.append(rel)
     recorded_set = set(recorded)
@@ -385,7 +373,7 @@ def install_agent(
     if not repo or not repo.strip():
         raise InvalidParameter("--repo is required, in 'owner/name' form.")
     repo = repo.strip()
-    _split_repo_id(repo, label="agent repository")
+    HubApi._parse_repo_id(repo)
 
     plugin_repo_id = resolve_plugin_repo(plugin_repo)
     owner, plugin_name = assert_trusted_owner(plugin_repo_id)
