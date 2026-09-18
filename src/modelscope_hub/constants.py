@@ -953,13 +953,92 @@ GIT_TOKEN_FILE_NAME: str = "git_token"
 USER_INFO_FILE_NAME: str = "user"
 
 
+# ---------------------------------------------------------------------------
+# Agent plugin loading (``ms agent install``)
+#
+# These constrain where the plugin that ``ms agent install`` imports may come
+# from. The security model they serve is documented in
+# :mod:`modelscope_hub.agent._plugin`.
+# ---------------------------------------------------------------------------
+ENV_AGENT_PLUGIN_REPO: str = "MODELSCOPE_AGENT_PLUGIN_REPO"
+ENV_AGENT_PLUGIN_TRUSTED_OWNERS: str = "MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS"
+ENV_AGENT_TRUST_REMOTE_CODE: str = "MODELSCOPE_AGENT_TRUST_REMOTE_CODE"
+
+#: Owners allowed to provide the agent plugin. ``modelscope`` and
+#: ``AI-ModelScope`` are the published homes for it; ``mushenL`` is a personal
+#: account used while the plugin is still being developed there, and should be
+#: dropped before this ships. Removing it is this line alone -- nothing else reads
+#: the default, and no test pins it (the gate tests set the resolved constant
+#: themselves). Until then an override is enough:
+#: ``MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS=modelscope,AI-ModelScope``.
+DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS: str = "modelscope,AI-ModelScope,mushenL"
+DEFAULT_AGENT_PLUGIN_REPO: str = "modelscope/agent-hub-plugin"
+DEFAULT_AGENT_PLUGIN_REVISION: str = "master"
+
+_AGENT_TRUSTED_OWNERS_DESCRIPTION = "Comma-separated owners allowed to provide the agent plugin"
+
+
+def _env_csv_frozenset_exact(
+    name: str,
+    default: str,
+    description: str,
+    category: str,
+    *deprecated_names: str,
+) -> frozenset[str]:
+    """Read a comma-separated set from the environment, preserving case.
+
+    Case is preserved so the list can be shown back to a user exactly as they or
+    the default wrote it. It is **not** an identity rule: the registry resolves
+    repository ids case-insensitively and normalises them (``ModelScope/x`` and
+    ``modelscope/x`` are one repository), so matching happens case-insensitively
+    at the comparison site in :mod:`modelscope_hub.agent._plugin`. Do not
+    "simplify" this into :func:`_env_csv_frozenset`, which upper-cases every item
+    and would turn ``AI-ModelScope`` into ``AI-MODELSCOPE`` in messages.
+    """
+    _env_register(name, default, description, category, deprecated_names=deprecated_names)
+    raw = _env(name, *deprecated_names) or default
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
+_env_register(
+    ENV_AGENT_PLUGIN_REPO,
+    DEFAULT_AGENT_PLUGIN_REPO,
+    "Model repository id ('owner/name') of the agent plugin used by 'ms agent install'",
+    "Core",
+)
+_env_register(
+    ENV_AGENT_TRUST_REMOTE_CODE,
+    "false",
+    "Let 'ms agent install' execute plugin code without --trust-remote-code",
+    "Core",
+)
+
+AGENT_PLUGIN_TRUSTED_OWNERS: frozenset[str] = _env_csv_frozenset_exact(
+    ENV_AGENT_PLUGIN_TRUSTED_OWNERS,
+    DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS,
+    _AGENT_TRUSTED_OWNERS_DESCRIPTION,
+    "Core",
+)
+AGENT_TRUST_REMOTE_CODE: bool = _env_bool(
+    ENV_AGENT_TRUST_REMOTE_CODE,
+    False,
+    "Let 'ms agent install' execute plugin code without --trust-remote-code",
+    "Core",
+)
+
+
 __all__ = [
+    "AGENT_PLUGIN_TRUSTED_OWNERS",
+    "AGENT_TRUST_REMOTE_CODE",
     "API_CONNECT_TIMEOUT",
     "API_MAX_RETRIES",
     "API_TIMEOUT",
     "CATEGORY_ORDER",
     "CONFIG_DIR_NAME",
     "DATASET_LFS_SUFFIX",
+    "DEFAULT_AGENT_PLUGIN_REPO",
+    "DEFAULT_AGENT_PLUGIN_REVISION",
+    "DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS",
     "DEFAULT_CACHE_DIR_NAME",
     "DEFAULT_CREDENTIALS_PATH",
     "DEFAULT_DATASET_REVISION",
@@ -979,6 +1058,9 @@ __all__ = [
     "DOWNLOAD_PART_SIZE",
     "DOWNLOAD_RETRY_TIMES",
     "DOWNLOAD_TIMEOUT",
+    "ENV_AGENT_PLUGIN_REPO",
+    "ENV_AGENT_PLUGIN_TRUSTED_OWNERS",
+    "ENV_AGENT_TRUST_REMOTE_CODE",
     "ENV_FILE_LOCK",
     "ENV_CACHE",
     "ENV_INTRA_CLOUD_ACCELERATION",
