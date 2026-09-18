@@ -710,7 +710,7 @@ ms-hub agent install -r user/my-agent --plugin-revision v0.2.0 -n sub-agent --lo
 | `--trust-remote-code` | no | Required to import and run the plugin, unless `$MODELSCOPE_AGENT_TRUST_REMOTE_CODE=1` |
 | `-n, --name NAME` | no | Sub-agent name, passed through to the plugin |
 | `--framework FW` | no | Override the plugin's framework detection |
-| `--local-dir DIR` | no | Where the agent goes: the destination directory for a plugin that only fetches, the framework's local root for one that installs. Omitted, a fetch-only plugin gets `$MODELSCOPE_CACHE/agent/agent-staging/<owner>--<name>-<timestamp>/` |
+| `--local-dir DIR` | no | Where the agent repository is **downloaded**. A fetch-only plugin stops there; an installing plugin then places the agent in the framework's own home (`~/.ms_agent`, `~/.qwenpaw`) and leaves the download behind, because a directory you named is never treated as scratch. Omitted, downloads go to `$MODELSCOPE_CACHE/agent/agent-staging/<owner>--<name>-<timestamp>/` and are cleaned up on success |
 | `--dry-run` | no | Report what would happen, change nothing |
 | `-y, --yes` / `--force` / `-q, --quiet` | no | Passed through to the plugin |
 

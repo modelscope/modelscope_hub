@@ -472,9 +472,11 @@ class AgentCommand(CLICommand):
         p_install.add_argument(
             "--local-dir",
             default=None,
-            help="Where the agent goes: the destination directory for a plugin that only fetches, the "
-            "framework's local root for one that installs (default: a staging directory under "
-            "$MODELSCOPE_CACHE/agent/agent-staging/)",
+            help="Where the agent repository is downloaded. A plugin that only fetches leaves the files "
+            "there and stops; one that installs then places the agent in the framework's own home "
+            "(e.g. ~/.ms_agent, ~/.qwenpaw) and leaves the download behind, since a directory you named "
+            "is never treated as scratch. Omitted, downloads go to "
+            "$MODELSCOPE_CACHE/agent/agent-staging/ and are cleaned up on success.",
         )
         p_install.add_argument(
             "--plugin-repo",
