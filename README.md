@@ -739,14 +739,14 @@ There is **no per-invocation confirmation**. An allow-listed plugin is downloade
 
 The plugin receives your `--endpoint` and your API token, since it needs credentials to fetch the agent.
 
-Only official plugins are supported. Third-party plugin support — and with it a user-facing opt-in such as `--trust-remote-code` — is deferred; the package format is documented for maintainers in the `modelscope_hub.agent._plugin` module docstring.
+Only official plugins are supported; the allow-list is the whole authorisation and there is nothing for a user to opt into. Support for plugins from other owners is deferred, and the package format is documented for maintainers in the `modelscope_hub.agent._plugin` module docstring.
 
 ##### Python API
 
 ```python
 from modelscope_hub.agent import install_agent
 
-outcome = install_agent("user/my-agent", plugin_revision="v0.3.1", trust_remote_code=True)
+outcome = install_agent("owner/my-agent", plugin_revision="v0.3.1")
 print(outcome.ok, outcome.operation, outcome.exit_code, outcome.error)
 ```
 

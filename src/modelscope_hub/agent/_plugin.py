@@ -244,8 +244,9 @@ def fetch_plugin(
 ) -> Path:
     """Download the plugin package and return its directory.
 
-    Transfer executes nothing, so fetching an untrusted plugin is safe; only the
-    import is gated, by :func:`require_trust`.
+    Transfer executes nothing, and the owner gate in :func:`assert_trusted_owner`
+    has already run by the time this is reached -- a package outside the
+    allow-list is refused without touching the network.
     """
     from ..compat import snapshot_download
 
@@ -281,11 +282,11 @@ def verify_manifest(directory: Path, repo_id: str) -> dict[str, Any]:
 
     Strict on purpose, and worth being clear about what strictness buys: it proves
     the files on disk are the files the manifest described, and it makes the
-    digest shown by :func:`require_trust` mean something, so what the user agreed
-    to and what gets imported cannot diverge. It does not prove anything about
-    authorship -- the manifest is unsigned and ships beside the code it describes,
-    so a repository's owner can make any content verify. That is the owner
-    allow-list's job.
+    digest in the :func:`log_execution` audit line mean something, so what was
+    recorded as about to run and what actually got imported cannot diverge. It
+    does not prove anything about authorship -- the manifest is unsigned and ships
+    beside the code it describes, so a repository's owner can make any content
+    verify. That is the owner allow-list's job.
     """
     manifest_path = directory / MANIFEST_NAME
     if not manifest_path.is_file():

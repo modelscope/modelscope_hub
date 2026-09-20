@@ -348,6 +348,12 @@ def test_no_trust_opt_in_is_exposed():
     assert not hasattr(_plugin, "require_trust")
     assert "trust_remote_code" not in inspect.signature(_plugin.install_agent).parameters
 
+    # Nor in the user-facing docs: naming an opt-in that does not exist invites
+    # users to reach for it, and a stale example is a call that raises TypeError.
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    assert "trust_remote_code" not in readme
+    assert "trust-remote-code" not in readme
+
 
 # ---------------------------------------------------------------------------
 # fetch_plugin
