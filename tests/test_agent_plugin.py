@@ -323,40 +323,30 @@ def test_verify_manifest_refuses_keys_pointing_outside_the_package(tmp_path, key
 
 
 # ---------------------------------------------------------------------------
-# require_trust
+# execution audit / no opt-in
 # ---------------------------------------------------------------------------
-def test_require_trust_blocks_without_opt_in(tmp_path, monkeypatch):
-    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", False)
-    with pytest.raises(NotSupportedError) as excinfo:
-        _plugin.require_trust(spec_for(make_plugin(tmp_path)), trust_remote_code=False)
-    # The refusal must say what would have run, not just "no".
-    message = str(excinfo.value)
-    for expected in (PLUGIN_REPO, "9.9.9", "fake_plugin", "--trust-remote-code"):
-        assert expected in message
+def test_log_execution_records_the_build_before_import(tmp_path, caplog):
+    """There is no opt-in to wait for any more -- the allow-list is the
+    authorisation -- but executing downloaded code still deserves an audit line
+    naming the exact build, emitted before the import so a crash during it leaves
+    a trace of what was being loaded."""
+    spec = spec_for(make_plugin(tmp_path))
+    with caplog.at_level("INFO", logger="modelscope_hub.agent"):
+        _plugin.log_execution(spec)
+    for expected in (spec.repo_id, spec.revision, spec.entry_module, "9.9.9"):
+        assert expected in caplog.text
 
 
-@pytest.mark.parametrize("via", ["flag", "env"])
-def test_require_trust_allows_with_flag_or_env(tmp_path, monkeypatch, via):
-    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", via == "env")
-    _plugin.require_trust(
-        spec_for(make_plugin(tmp_path)),
-        trust_remote_code=(via == "flag"),
-    )
+def test_no_trust_opt_in_is_exposed():
+    """Deferred on purpose: the allow-list already decided, so a per-invocation
+    flag would imply a choice the user does not have. Pin that it stays gone until
+    third-party plugins are supported."""
+    import inspect
 
-
-def test_require_trust_warns_when_the_environment_opted_in(tmp_path, monkeypatch, caplog):
-    """The variable applies to every install in the process, so an environment the
-    user did not build can opt them in without a decision being made here. The
-    flag path stays silent: that one was a choice."""
-    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", True)
-    with caplog.at_level("WARNING", logger="modelscope_hub.agent"):
-        _plugin.require_trust(spec_for(make_plugin(tmp_path)), trust_remote_code=False)
-    assert constants.ENV_AGENT_TRUST_REMOTE_CODE in caplog.text
-
-    caplog.clear()
-    with caplog.at_level("WARNING", logger="modelscope_hub.agent"):
-        _plugin.require_trust(spec_for(make_plugin(tmp_path / "b")), trust_remote_code=True)
-    assert caplog.text == ""
+    assert not hasattr(constants, "AGENT_TRUST_REMOTE_CODE")
+    assert not hasattr(constants, "ENV_AGENT_TRUST_REMOTE_CODE")
+    assert not hasattr(_plugin, "require_trust")
+    assert "trust_remote_code" not in inspect.signature(_plugin.install_agent).parameters
 
 
 # ---------------------------------------------------------------------------
@@ -469,7 +459,7 @@ def test_plugin_syspath_is_scoped_to_the_block(tmp_path):
 
 
 def test_install_agent_leaves_no_plugin_directory_on_sys_path(wired):
-    _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO)
     assert str(wired) not in sys.path
 
 
@@ -611,7 +601,6 @@ def test_accepted_kwargs_narrowing():
 def wired(monkeypatch, tmp_path):
     """Point ``install_agent`` at a real plugin tree with the network stubbed."""
     monkeypatch.setattr(constants, "AGENT_PLUGIN_TRUSTED_OWNERS", frozenset({TRUSTED}))
-    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", False)
     monkeypatch.delenv(constants.ENV_AGENT_PLUGIN_REPO, raising=False)
     # install_agent resolves a default staging directory under the cache; keep it
     # out of the real user home.
@@ -623,7 +612,7 @@ def wired(monkeypatch, tmp_path):
 
 
 def test_install_agent_happy_path_and_option_forwarding(wired):
-    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO)
     assert outcome.ok, outcome.error
     assert (outcome.operation, outcome.exit_code) == ("install", 0)
     assert outcome.plugin.repo_id == PLUGIN_REPO
@@ -655,7 +644,6 @@ def test_install_agent_happy_path_and_option_forwarding(wired):
         endpoint="https://pre.modelscope.cn",
         token="tok",
         plugin_repo=PLUGIN_REPO,
-        trust_remote_code=True,
     )
     forwarded = entry.CALLS[-1][2]
     assert forwarded["name"] == "sub"
@@ -681,7 +669,7 @@ def test_install_agent_validates_the_agent_repo(wired, monkeypatch, repo):
     monkeypatch.setattr(compat, "snapshot_download", no_network)
 
     with pytest.raises(InvalidParameter):
-        _plugin.install_agent(repo, plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+        _plugin.install_agent(repo, plugin_repo=PLUGIN_REPO)
 
 
 def test_install_agent_reports_plugin_failure(wired, monkeypatch):
@@ -708,7 +696,7 @@ def test_install_agent_reports_plugin_failure(wired, monkeypatch):
     directory = make_plugin(wired.parent, dirname="fail_plugin", entry_module="fail_plugin", entry_source=source)
     monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
 
-    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO)
     assert not outcome.ok
     assert outcome.error == "framework not installed"
     # The install layer's own codes (3/4/5/6) carry meaning and must survive.
@@ -730,11 +718,49 @@ def test_install_agent_contains_a_plugin_exception(wired, monkeypatch):
     directory = make_plugin(wired.parent, dirname="boom_plugin", entry_module="boom_plugin", entry_source=source)
     monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
 
-    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO)
     assert not outcome.ok
     assert "boom" in outcome.error
     assert outcome.exit_code == 1
     sys.modules.pop("boom_plugin", None)
+
+
+def test_an_unimportable_plugin_says_it_was_downloaded_but_not_run(wired, monkeypatch):
+    """The download and the manifest check both passed, so a bare "failed to load"
+    reads like a network problem and hides the two facts that matter: the package
+    is fine, and no agent work happened."""
+    source = "import definitely_not_installed_xyz\n"
+    directory = make_plugin(wired.parent, dirname="bad_import", entry_module="bad_import", entry_source=source)
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO)
+    assert not outcome.ok
+    assert outcome.exit_code == 1
+    assert "downloaded and verified" in outcome.error
+    assert "NOT executed" in outcome.error
+    assert "no agent was fetched or installed" in outcome.error
+
+
+def test_a_plugin_with_no_usable_operation_says_it_was_not_run(wired, monkeypatch):
+    source = textwrap.dedent(
+        """
+        def capabilities():
+            return {"operations": ()}
+
+        def install(repo, **kwargs):
+            raise AssertionError("must not be chosen")
+        """
+    ).lstrip()
+    directory = make_plugin(wired.parent, dirname="no_op", entry_module="no_op", entry_source=source)
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO)
+    message = str(excinfo.value)
+    assert "downloaded and verified" in message
+    assert "NOT executed" in message
+    assert "no agent was fetched or installed" in message
+    sys.modules.pop("no_op", None)
 
 
 @pytest.mark.parametrize("returned", ["None", "'done'", "{}"])
@@ -755,7 +781,7 @@ def test_install_agent_refuses_a_result_without_ok(wired, monkeypatch, returned)
     directory = make_plugin(wired.parent, dirname="no_ok_plugin", entry_module="no_ok_plugin", entry_source=source)
     monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
 
-    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO)
     assert not outcome.ok
     assert outcome.exit_code == 1
     assert "no 'ok' attribute" in outcome.error
@@ -837,7 +863,6 @@ def test_install_agent_drives_a_fetch_only_plugin(fetch_only):
         "owner/my-agent",
         framework="qwenpaw",
         plugin_repo=PLUGIN_REPO,
-        trust_remote_code=True,
     )
     assert outcome.ok, outcome.error
     assert outcome.operation == "fetch_raw"
@@ -855,7 +880,6 @@ def test_install_agent_maps_local_dir_onto_dest(fetch_only):
         "owner/my-agent",
         local_dir="/tmp/joint/staging",
         plugin_repo=PLUGIN_REPO,
-        trust_remote_code=True,
     )
     assert outcome.ok, outcome.error
 
@@ -884,7 +908,6 @@ def test_dest_is_not_forwarded_to_an_operation_that_does_not_accept_it(wired, mo
         "owner/my-agent",
         local_dir="/tmp/ws",
         plugin_repo=PLUGIN_REPO,
-        trust_remote_code=True,
     )
     assert outcome.ok, outcome.error
     assert outcome.operation == "download"

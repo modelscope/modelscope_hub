@@ -24,7 +24,6 @@ from ..constants import (
     AGENT_PLUGIN_TRUSTED_OWNERS,
     DEFAULT_AGENT_PLUGIN_REPO,
     ENV_AGENT_PLUGIN_REPO,
-    ENV_AGENT_TRUST_REMOTE_CODE,
     Visibility,
 )
 from ..errors import APIError
@@ -273,7 +272,6 @@ def _cmd_install(
     quiet,
     plugin_repo,
     plugin_revision,
-    trust_remote_code,
     endpoint,
     token,
 ) -> int:
@@ -299,7 +297,6 @@ def _cmd_install(
         quiet=quiet,
         plugin_repo=plugin_repo,
         plugin_revision=plugin_revision,
-        trust_remote_code=trust_remote_code,
         endpoint=endpoint,
         token=token,
     )
@@ -345,7 +342,7 @@ class AgentCommand(CLICommand):
             "  download  -r REPO [--local-dir DIR] [--revision REV]\n"
             "  upload    -r REPO [--local-dir DIR] [--revision REV] [--dry-run]\n"
             "  list      [--owner OWNER] [--page N] [--page-size N]\n"
-            "  install   -r REPO --plugin-repo OWNER/NAME --trust-remote-code\n"
+            "  install   -r REPO [--plugin-repo OWNER/NAME]\n"
             "            [-n NAME] [--framework FW] [--local-dir DIR] [--plugin-revision REV]\n"
             "            [--dry-run] [-y] [--force] [-q]\n"
             "\n"
@@ -357,8 +354,7 @@ class AgentCommand(CLICommand):
             "  ms agent download -r user/my-agent --local-dir ./my-agent\n"
             "  ms agent upload -r user/my-agent --local-dir ./my-agent\n"
             "  ms agent list --owner user\n"
-            "  ms agent install -r user/my-agent --plugin-repo modelscope/agent-hub-plugin \\\n"
-            "      --trust-remote-code\n"
+            "  ms agent install -r user/my-agent\n"
         )
         agent_parser = subparsers.add_parser(
             "agent",
@@ -448,15 +444,14 @@ class AgentCommand(CLICommand):
                 "reports which of the two happened.\n\n"
                 "Supported scope comes from the plugin, not from this package, so it cannot go stale here: "
                 "every run prints a 'scope :' line naming the frameworks that plugin build covers, the "
-                "operations it implements, and the ones it declares as not yet available. Run without "
-                "--trust-remote-code to see that summary plus the resolved plugin and its manifest digest "
-                "without executing any downloaded code.\n\n"
-                f"Loading a plugin imports code this package did not ship, so its owner must be on a "
-                f"compile-time allow-list ({', '.join(sorted(AGENT_PLUGIN_TRUSTED_OWNERS))}) and execution "
-                f"requires --trust-remote-code (or {ENV_AGENT_TRUST_REMOTE_CODE}=1). Opting in also hands "
-                f"the plugin your --endpoint and your API token, because it needs credentials to fetch the "
-                f"agent. The plugin itself defaults to {DEFAULT_AGENT_PLUGIN_REPO}; --plugin-repo or "
-                f"{ENV_AGENT_PLUGIN_REPO} overrides it, but the owner still has to be on the allow-list."
+                "operations it implements, and the ones it declares as not yet available.\n\n"
+                f"The plugin is official code selected by a compile-time owner allow-list "
+                f"({', '.join(sorted(AGENT_PLUGIN_TRUSTED_OWNERS))}), which is checked before anything is "
+                f"downloaded and is the whole authorisation -- an allow-listed plugin is fetched and run, "
+                f"with no separate confirmation. It defaults to {DEFAULT_AGENT_PLUGIN_REPO}; --plugin-repo "
+                f"or {ENV_AGENT_PLUGIN_REPO} picks a different one, but its owner still has to be listed. "
+                f"The plugin receives your --endpoint and API token, since it needs credentials to fetch "
+                f"the agent."
             ),
         )
         p_install.add_argument(
@@ -490,16 +485,10 @@ class AgentCommand(CLICommand):
             help="Plugin revision to fetch (default: master; pin a tag for reproducible installs)",
         )
         p_install.add_argument(
-            "--trust-remote-code",
-            action="store_true",
-            help="Allow the downloaded plugin to be imported and executed. Without it (or "
-            "$MODELSCOPE_AGENT_TRUST_REMOTE_CODE=1) the command reports what it would run and stops.",
-        )
-        p_install.add_argument(
             "--dry-run",
             action="store_true",
-            help="Ask the plugin to report instead of change anything. The plugin is still imported, so its "
-            "module-level code runs; to inspect one without executing it, omit --trust-remote-code",
+            help="Ask the plugin to report instead of change anything. The plugin is still downloaded, "
+            "imported and run -- only its writes are suppressed",
         )
         p_install.add_argument("-y", "--yes", action="store_true", help="Answer the plugin's prompts yes")
         p_install.add_argument("--force", action="store_true", help="Let the plugin overwrite an existing agent")
@@ -572,7 +561,6 @@ class AgentCommand(CLICommand):
                 quiet=args.quiet,
                 plugin_repo=args.plugin_repo,
                 plugin_revision=args.plugin_revision,
-                trust_remote_code=args.trust_remote_code,
                 endpoint=endpoint,
                 token=token,
             )

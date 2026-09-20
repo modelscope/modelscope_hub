@@ -961,7 +961,6 @@ USER_INFO_FILE_NAME: str = "user"
 # :mod:`modelscope_hub.agent._plugin`.
 # ---------------------------------------------------------------------------
 ENV_AGENT_PLUGIN_REPO: str = "MODELSCOPE_AGENT_PLUGIN_REPO"
-ENV_AGENT_TRUST_REMOTE_CODE: str = "MODELSCOPE_AGENT_TRUST_REMOTE_CODE"
 
 #: Owners allowed to provide the agent plugin.
 #:
@@ -985,24 +984,9 @@ _env_register(
     "Model repository id ('owner/name') of the agent plugin used by 'ms agent install'",
     "Core",
 )
-_env_register(
-    ENV_AGENT_TRUST_REMOTE_CODE,
-    "false",
-    "Let 'ms agent install' execute plugin code without --trust-remote-code",
-    "Core",
-)
-
-AGENT_TRUST_REMOTE_CODE: bool = _env_bool(
-    ENV_AGENT_TRUST_REMOTE_CODE,
-    False,
-    "Let 'ms agent install' execute plugin code without --trust-remote-code",
-    "Core",
-)
-
 
 __all__ = [
     "AGENT_PLUGIN_TRUSTED_OWNERS",
-    "AGENT_TRUST_REMOTE_CODE",
     "API_CONNECT_TIMEOUT",
     "API_MAX_RETRIES",
     "API_TIMEOUT",
@@ -1031,7 +1015,6 @@ __all__ = [
     "DOWNLOAD_RETRY_TIMES",
     "DOWNLOAD_TIMEOUT",
     "ENV_AGENT_PLUGIN_REPO",
-    "ENV_AGENT_TRUST_REMOTE_CODE",
     "ENV_FILE_LOCK",
     "ENV_CACHE",
     "ENV_INTRA_CLOUD_ACCELERATION",

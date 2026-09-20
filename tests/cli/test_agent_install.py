@@ -60,14 +60,13 @@ ALL_OPTIONS = [
     PLUGIN_REPO,
     "--plugin-revision",
     "v1.0.0",
-    "--trust-remote-code",
     "--dry-run",
     "-y",
     "--force",
     "-q",
 ]
 
-MINIMAL = ["agent", "install", "-r", AGENT_REPO, "--plugin-repo", PLUGIN_REPO, "--trust-remote-code"]
+MINIMAL = ["agent", "install", "-r", AGENT_REPO, "--plugin-repo", PLUGIN_REPO]
 
 
 def build_plugin(root: Path, *, entry_module: str = "cli_fake_plugin") -> Path:
@@ -106,9 +105,7 @@ def spec(revision: str = "v1.0.0") -> PluginSpec:
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
     monkeypatch.setattr(constants, "AGENT_PLUGIN_TRUSTED_OWNERS", frozenset({TRUSTED, "modelscope"}))
-    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", False)
     monkeypatch.delenv(constants.ENV_AGENT_PLUGIN_REPO, raising=False)
-    monkeypatch.delenv(constants.ENV_AGENT_TRUST_REMOTE_CODE, raising=False)
     yield
     sys.modules.pop("cli_fake_plugin", None)
 
@@ -140,13 +137,11 @@ def test_parser_wires_install(parser):
         "/tmp/ws",
     )
     assert (args.plugin_repo, args.plugin_revision) == (PLUGIN_REPO, "v1.0.0")
-    assert args.trust_remote_code is True
     assert args.dry_run and args.yes and args.force and args.quiet
 
 
 def test_parser_install_defaults(parser):
     args = parser.parse_args(["agent", "install", "-r", AGENT_REPO])
-    assert args.trust_remote_code is False
     assert args.plugin_repo is None
     assert args.plugin_revision is None
     assert args.dry_run is False
@@ -167,7 +162,6 @@ def test_forwards_every_option_to_the_sdk(stub_sdk):
     assert stub_sdk["local_dir"] == "/tmp/ws"
     assert stub_sdk["plugin_repo"] == PLUGIN_REPO
     assert stub_sdk["plugin_revision"] == "v1.0.0"
-    assert stub_sdk["trust_remote_code"] is True
     assert stub_sdk["dry_run"] and stub_sdk["yes"]
     assert stub_sdk["force"] and stub_sdk["quiet"]
 
@@ -204,7 +198,7 @@ def test_unfetchable_default_plugin_repo_points_at_the_override(monkeypatch):
         raise NotSupportedError(f"failed to download agent plugin {repo_id}@master: record not found")
 
     monkeypatch.setattr(_plugin, "fetch_plugin", refused)
-    code, out, err = run_cli(["agent", "install", "-r", AGENT_REPO, "--trust-remote-code"])
+    code, out, err = run_cli(["agent", "install", "-r", AGENT_REPO])
     assert code != 0
     combined = out + err
     assert constants.DEFAULT_AGENT_PLUGIN_REPO in combined
@@ -214,9 +208,7 @@ def test_unfetchable_default_plugin_repo_points_at_the_override(monkeypatch):
 
 
 def test_untrusted_plugin_owner_exits_2():
-    code, out, err = run_cli(
-        ["agent", "install", "-r", AGENT_REPO, "--plugin-repo", "evil/plugin", "--trust-remote-code"]
-    )
+    code, out, err = run_cli(["agent", "install", "-r", AGENT_REPO, "--plugin-repo", "evil/plugin"])
     assert code == 2
     assert "evil" in err
     combined = out + err
@@ -226,27 +218,29 @@ def test_untrusted_plugin_owner_exits_2():
     assert "compile-time" in combined
 
 
-def test_trust_gate_refuses_and_explains(monkeypatch, tmp_path):
-    """Without the opt-in the command stops before importing, and says what it
-    would have run."""
+def test_an_allow_listed_plugin_runs_with_no_confirmation(monkeypatch, tmp_path):
+    """The allow-list is the whole authorisation, so an allow-listed plugin is
+    downloaded and executed with nothing for the user to confirm -- and the
+    command no longer accepts a flag that would imply otherwise."""
     directory = build_plugin(tmp_path)
     monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
-
-    code, out, err = run_cli(["agent", "install", "-r", AGENT_REPO, "--plugin-repo", PLUGIN_REPO])
-    assert code == 2
-    combined = out + err
-    for expected in ("--trust-remote-code", PLUGIN_REPO, "9.9.9", "cli_fake_plugin"):
-        assert expected in combined
-
-
-def test_trust_gate_can_be_satisfied_by_env(monkeypatch, tmp_path):
-    directory = build_plugin(tmp_path)
-    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
-    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", True)
 
     code, out, err = run_cli(["agent", "install", "-r", AGENT_REPO, "--plugin-repo", PLUGIN_REPO])
     assert code == 0, err
     assert "Installed" in out
+
+
+def test_the_trust_flag_is_gone(monkeypatch, tmp_path):
+    """Deferred with third-party plugin support. Passing it must be an argparse
+    error rather than a silently ignored extra, so nobody believes they opted in."""
+    directory = build_plugin(tmp_path)
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+
+    code, out, err = run_cli(
+        ["agent", "install", "-r", AGENT_REPO, "--plugin-repo", PLUGIN_REPO, "--trust-remote-code"]
+    )
+    assert code != 0
+    assert "unrecognized arguments" in (out + err) or "--trust-remote-code" in (out + err)
 
 
 # ---------------------------------------------------------------------------

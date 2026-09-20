@@ -9,16 +9,73 @@ directory, which this module resolves for a plugin that only transports bytes --
 it cannot know where such a plugin should write, and the plugin deliberately has
 no default of its own.
 
+Trust model
+-----------
+The **owner allow-list is the authorisation**. It is a compile-time constant
+naming only official organisations, and nothing lets a caller point this command
+at a plugin whose owner is not on it, so by the time a package has been fetched
+the decision to run it was already made by whoever shipped this release. There is
+consequently no per-invocation opt-in: an allow-listed plugin is always downloaded
+*and* executed, and there is no inspect-only mode. A ``--trust-remote-code`` style
+flag is deferred to whichever release supports third-party plugins; exposing one
+now would imply a choice the allow-list has already made.
+
 Integrity comes from ``plugin.json``'s ``content_sha256``, not from the hub's own
 file listing -- that listing has been observed reporting a git blob SHA-1 in a
 ``sha256`` field. Be precise about what that buys: it proves the bytes on disk are
-the bytes the manifest described, and it gives the trust prompt a stable
-fingerprint, so the decision and the import cannot diverge. It is **not**
-authenticity. The manifest ships inside the same unsigned repository as the code
-it describes, so whoever controls the repository controls the hashes and can make
-anything verify. The trust anchor is the owner allow-list plus the opt-in; nothing
-here vouches for who wrote the plugin. Signing would change that and is not done
-yet.
+the bytes the manifest described, and it gives the audit line in
+:func:`log_execution` a stable fingerprint. It is **not** authenticity. The
+manifest ships inside the same unsigned repository as the code it describes, so
+whoever controls the repository controls the hashes and can make anything verify.
+The allow-list is what vouches for the plugin's origin; nothing here vouches for
+its contents beyond "unchanged since it was listed". Signing would change that and
+is not done yet.
+
+Plugin package contract
+-----------------------
+Maintainer-facing record of the format; it is deliberately not in the README,
+which documents only the supported path of installing an official plugin.
+
+A plugin is a **model** repository (``snapshot_download`` rejects
+``repo_type='agent'``) with ``plugin.json`` at its root beside an importable
+package or module named by ``entry_module``.
+
+``plugin.json`` -- two fields are required, the rest are display only and never
+validated:
+
+* ``entry_module`` (str) -- imported from the download root via
+  ``sys.path.insert(0, root)``, so relative imports inside a package work.
+* ``content_sha256`` (dict) -- sha256 of every file, keyed by posix path relative
+  to the root. Checked in both directions: missing, mismatched and unlisted files
+  all fail. Exempt: ``plugin.json`` itself (it cannot hash itself),
+  ``.gitattributes`` (the hub injects it) and ``__pycache__``. Keys are validated
+  as paths before use, since they are attacker-controlled.
+* ``version``, ``frameworks``, ``api``, ``roadmap`` -- feed :meth:`PluginSpec.describe`
+  and :meth:`PluginSpec.scope`, nothing else.
+
+The entry module must expose at least one of ``install``, ``fetch_raw``,
+``download``, tried in that order. ``capabilities()`` returning
+``{"operations": [...], "frameworks": [...], "planned": {...}}`` is authoritative
+when present, so a name that is shipped but not implemented is skipped rather than
+selected; when it is absent, selection falls back to presence, and when it raises
+that is an error rather than an empty declaration.
+
+The chosen operation is called with keyword arguments narrowed to its signature,
+from: ``repo``, ``name``, ``framework``, ``source_framework``, ``local_dir``,
+``dest``, ``dry_run``, ``yes``, ``force``, ``quiet``, ``endpoint``, ``token``.
+Unset optionals are dropped so the plugin's own defaults apply; ``False`` booleans
+are kept; ``dest`` is always resolved. Its return value must carry ``ok`` --
+required, not defaulted, because it is the only signal deciding whether the user
+is told the agent was installed -- plus ``error`` and ``exit_code`` on failure and
+``files_written`` / ``root`` for the success message. Raising is also handled.
+
+Two constraints follow from how loading works. The package must use **relative
+imports** internally, because it is registered under a directory-scoped alias
+rather than its own name so two plugins cannot be served each other's cached
+code. And it must not assume its directory stays on ``sys.path`` after the
+operation returns: the entry is scoped to the call, since a directory parked at
+``sys.path[0]`` lets any file it ships shadow the standard library. Cleaning up
+its own staging directory is the plugin's job, not this module's.
 """
 
 from __future__ import annotations
@@ -296,34 +353,22 @@ def verify_manifest(directory: Path, repo_id: str) -> dict[str, Any]:
     return manifest
 
 
-def require_trust(spec: PluginSpec, *, trust_remote_code: bool) -> None:
-    """Refuse to import the plugin unless execution was opted into.
+def log_execution(spec: PluginSpec) -> None:
+    """Record which build is about to be imported, before it is imported.
 
-    The refusal lists what *would* run so the decision is informed. The opt-in is
-    a flag or an environment variable and is never persisted -- "allow this code
-    to run" is not a preference worth remembering on the user's behalf.
+    There is no per-invocation opt-in to wait for any more. The owner allow-list
+    is the authorisation: it is compile-time, it names only official
+    organisations, and nothing lets a user point this command at a plugin whose
+    owner is not on it. Executing downloaded code still deserves an audit line
+    naming the exact build, emitted *before* the import so that a crash during it
+    leaves a trace of what was being loaded.
+
+    A per-invocation opt-in (``--trust-remote-code``) is deliberately deferred:
+    it belongs with third-party plugins, which this release does not support, and
+    exposing it now would imply a choice the allow-list has already made.
+    Reintroducing it means gating here again and refusing instead of logging.
     """
-    if trust_remote_code:
-        return
-    if constants.AGENT_TRUST_REMOTE_CODE:
-        logger.warning(
-            "Executing plugin %s@%s because %s is set, not because this invocation "
-            "asked for it. That variable applies to every install in this process, "
-            "so an environment you did not build can opt you in.",
-            spec.repo_id,
-            spec.revision,
-            constants.ENV_AGENT_TRUST_REMOTE_CODE,
-        )
-        return
-    raise NotSupportedError(
-        "refusing to execute plugin code without an explicit opt-in. The plugin "
-        "resolved to:\n" + spec.describe() + "\n\n"
-        "Opting in does two things: it imports and runs that code, and it passes "
-        "the plugin your --endpoint and your API token, since it needs credentials "
-        "to fetch the agent. Only continue if you trust the owner to hold both.\n\n"
-        "Re-run with --trust-remote-code to import and run it, or set "
-        f"{constants.ENV_AGENT_TRUST_REMOTE_CODE}=1."
-    )
+    logger.info("Executing agent plugin:\n%s", spec.describe())
 
 
 def _module_alias(spec: PluginSpec) -> str:
@@ -516,24 +561,29 @@ def install_agent(
     quiet: bool = False,
     plugin_repo: str | None = None,
     plugin_revision: str | None = None,
-    trust_remote_code: bool = False,
     endpoint: str | None = None,
     token: str | None = None,
     cache_dir: str | None = None,
 ) -> InstallOutcome:
     """Fetch or install *repo*'s agent through its framework plugin.
 
-    Which of the two happens is the plugin's answer, not this function's: the
-    entry operation is negotiated in :func:`select_operation`, so a plugin that
-    installs into the workspace installs, and one that only transports bytes
+    An allow-listed plugin is always downloaded **and executed** -- there is no
+    inspect-only mode. Authorisation is the compile-time owner allow-list, not a
+    per-invocation opt-in, so by the time this function is past
+    :func:`assert_trusted_owner` the decision has already been made by whoever
+    shipped this package.
+
+    Which of fetch or install happens is the plugin's answer, not this function's:
+    the entry operation is negotiated in :func:`select_operation`, so a plugin
+    that installs into the workspace installs, and one that only transports bytes
     stages them in ``local_dir`` (or :func:`default_staging_dir`) for the install
     layer to place.
 
     *repo* is passed through uninterpreted beyond requiring ``owner/name``.
-    Plugin failures come back as data (``ok`` False); the three gates
-    (:func:`resolve_plugin_repo`, :func:`assert_trusted_owner`,
-    :func:`require_trust`) raise instead, so the CLI can map a misconfigured
-    command line to exit 2 and keep it distinct from a failed install.
+    Plugin failures come back as data (``ok`` False); the two gates
+    (:func:`resolve_plugin_repo`, :func:`assert_trusted_owner`) raise instead, so
+    the CLI can map a misconfigured command line to exit 2 and keep it distinct
+    from a failed install.
     """
     if not repo or not repo.strip():
         raise InvalidParameter("--repo is required, in 'owner/name' form.")
@@ -572,7 +622,7 @@ def install_agent(
         manifest=manifest,
         entry_module=str(manifest["entry_module"]),
     )
-    require_trust(spec, trust_remote_code=trust_remote_code)
+    log_execution(spec)
 
     # The plugin directory is importable for exactly as long as the plugin runs,
     # not for the rest of the process -- see :func:`plugin_syspath`.
@@ -580,12 +630,22 @@ def install_agent(
         try:
             module = load_plugin(spec)
             operation, func = select_operation(module)
-        except NotSupportedError:
-            raise
+        except NotSupportedError as exc:
+            # Imported but nothing was runnable. Say that the download succeeded
+            # and that no agent work happened, or the message reads like a
+            # network failure and sends the user off checking the wrong thing.
+            raise NotSupportedError(
+                f"plugin {plugin_repo_id}@{spec.revision} downloaded and verified, but was "
+                f"NOT executed -- no agent was fetched or installed. {exc}"
+            ) from exc
         except Exception as exc:
             return InstallOutcome(
                 ok=False,
-                error=f"failed to load plugin {plugin_repo_id}: {exc.__class__.__name__}: {exc}",
+                error=(
+                    f"plugin {plugin_repo_id}@{spec.revision} downloaded and verified, but could "
+                    f"not be imported, so it was NOT executed and no agent was fetched or "
+                    f"installed: {exc.__class__.__name__}: {exc}"
+                ),
                 plugin=spec,
                 exit_code=1,
             )
