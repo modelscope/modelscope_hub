@@ -80,17 +80,14 @@ def test_delete_files_rejects_empty_paths() -> None:
     manager, client = _make_manager()
 
     with pytest.raises(InvalidParameter, match="at least one"):
-        manager.delete_files(
-            repo_id="owner/repo", repo_type="model", file_paths=["", ""])
+        manager.delete_files(repo_id="owner/repo", repo_type="model", file_paths=["", ""])
 
     client.create_commit.assert_not_called()
 
 
 @pytest.mark.parametrize("repo_type", ["model", "dataset"])
 @pytest.mark.parametrize("file_paths", [["", "old.bin"], "old.bin"])
-def test_hub_api_delete_files_delegates_to_upload_manager(
-    repo_type: str, file_paths: list[str] | str
-) -> None:
+def test_hub_api_delete_files_delegates_to_upload_manager(repo_type: str, file_paths: list[str] | str) -> None:
     api = HubApi(token="test-token")
     api._uploader = MagicMock()
     api._uploader.delete_files.return_value = {"deleted_files": ["old.bin"]}
@@ -128,7 +125,8 @@ def test_hub_api_delete_patterns_resolve_remote_paths(repo_type: str) -> None:
             SimpleNamespace(path="nested/metadata.json", type="blob"),
             SimpleNamespace(path="weights.bin", type="blob"),
             SimpleNamespace(path="nested", type="tree"),
-        ])
+        ]
+    )
 
     result = api.delete_files(
         "owner/repo",
@@ -138,8 +136,7 @@ def test_hub_api_delete_patterns_resolve_remote_paths(repo_type: str) -> None:
         revision="main",
     )
 
-    api.list_repo_files.assert_called_once_with(
-        "owner/repo", repo_type, revision="main", recursive=True)
+    api.list_repo_files.assert_called_once_with("owner/repo", repo_type, revision="main", recursive=True)
     api._uploader.delete_files.assert_called_once_with(
         repo_id="owner/repo",
         repo_type=repo_type,
@@ -153,11 +150,9 @@ def test_hub_api_delete_patterns_resolve_remote_paths(repo_type: str) -> None:
 def test_hub_api_delete_patterns_with_no_match_is_noop() -> None:
     api = HubApi(token="test-token")
     api._uploader = MagicMock()
-    api.list_repo_files = MagicMock(
-        return_value=[SimpleNamespace(path="weights.bin", type="blob")])
+    api.list_repo_files = MagicMock(return_value=[SimpleNamespace(path="weights.bin", type="blob")])
 
-    result = api.delete_files(
-        "owner/repo", "model", delete_patterns="*.json")
+    result = api.delete_files("owner/repo", "model", delete_patterns="*.json")
 
     api._uploader.delete_files.assert_not_called()
     assert result == {

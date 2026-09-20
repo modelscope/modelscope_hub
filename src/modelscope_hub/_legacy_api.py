@@ -14,6 +14,7 @@ needed for API calls.
 
 from __future__ import annotations
 
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import IO, Any, BinaryIO
@@ -24,18 +25,28 @@ from requests.adapters import HTTPAdapter, Retry
 
 from .constants import (
     API_CONNECT_TIMEOUT,
+    API_CONNECTION_POOL_MAXSIZE,
     API_MAX_RETRIES,
     API_TIMEOUT,
     LEGACY_API_PREFIX,
     REPO_FILES_TRUNCATION_LIMIT,
     REPO_TREE_MAX_REQUESTS,
+    REPO_TREE_PAGE_MAX_ATTEMPTS,
+    REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS,
     REPO_TREE_WALK_WORKERS,
     UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS,
     UPLOAD_BLOB_READ_TIMEOUT_SECONDS,
     UPLOAD_HTTP_RETRY_ALLOWED_METHODS,
     RepoType,
 )
-from .errors import InvalidParameter, NetworkError, RequestTimeoutError, ServerError, raise_for_status
+from .errors import (
+    InvalidParameter,
+    NetworkError,
+    PermissionDeniedError,
+    RequestTimeoutError,
+    ServerError,
+    raise_for_status,
+)
 from .utils.logger import get_logger
 
 logger = get_logger("legacy_api")
@@ -100,6 +111,10 @@ class LegacyClient:
         self._endpoint = endpoint.rstrip("/")
         self._timeout: int | tuple[int, int] = (API_CONNECT_TIMEOUT, timeout)
         self._session_authenticated = False
+        # Set once any file-tree read succeeds. From then on a 403 on a tree
+        # request cannot be an authorization result, so it is retried instead of
+        # aborting an enumeration that spans hundreds of requests.
+        self._tree_reads_ok = False
 
         self._session = requests.Session()
         if user_agent:
@@ -110,7 +125,11 @@ class LegacyClient:
             status_forcelist=[429, 500, 502, 503, 504],
             allowed_methods=UPLOAD_HTTP_RETRY_ALLOWED_METHODS,
         )
-        adapter = HTTPAdapter(max_retries=retry)
+        adapter = HTTPAdapter(
+            max_retries=retry,
+            pool_connections=API_CONNECTION_POOL_MAXSIZE,
+            pool_maxsize=API_CONNECTION_POOL_MAXSIZE,
+        )
         self._session.mount("https://", adapter)
         self._session.mount("http://", adapter)
 
@@ -394,7 +413,12 @@ class LegacyClient:
             params["Root"] = root
 
         suffix = "repo/tree" if _is_dataset(repo_type) else "repo/files"
-        resp = self._request("GET", f"{segment}/{repo_id}/{suffix}", params=params)
+        resp = self._request_repo_tree(
+            f"{segment}/{repo_id}/{suffix}",
+            params,
+            repo_id=repo_id,
+            authorized=self._tree_reads_ok,
+        )
         data = self._json_data(resp)
         if isinstance(data, list):
             return data
@@ -567,6 +591,13 @@ class LegacyClient:
         Datasets can have millions of files, so this method pages through
         ``GET /api/v1/datasets/{repo_id}/repo/tree`` with
         ``PageNumber``/``PageSize`` params.
+
+        A page occasionally answers ``403 无权访问该数据集`` on a repository the
+        caller demonstrably can read. Once any page has succeeded the credential
+        is proven, so a later-page denial is a server-side hiccup rather than an
+        authorization result, and it is retried instead of discarding every page
+        collected so far -- a large listing spans hundreds of pages, which makes
+        hitting it near-certain.
         """
         all_files: list[dict] = []
         page_number = 1
@@ -579,10 +610,11 @@ class LegacyClient:
             }
             if root_path and root_path != "/":
                 params["Root"] = root_path
-            resp = self._request(
-                "GET",
+            resp = self._request_repo_tree(
                 f"datasets/{repo_id}/repo/tree",
-                params=params,
+                params,
+                repo_id=repo_id,
+                authorized=self._tree_reads_ok,
             )
             data = self._json_data(resp)
             if isinstance(data, list):
@@ -597,6 +629,54 @@ class LegacyClient:
                 break
             page_number += 1
         return all_files
+
+    def _request_repo_tree(
+        self,
+        path: str,
+        params: dict[str, Any],
+        *,
+        repo_id: str,
+        authorized: bool,
+    ) -> Any:
+        """Fetch one file-tree listing, retrying a spurious denial.
+
+        The server intermittently answers a tree request with ``403 无权访问该数据
+        集`` on a repository the caller has just read successfully -- observed on
+        both ``PageNumber``-paginated and ``Root``-scoped listings. Enumerating a
+        large repository takes hundreds of such requests, so at that scale a
+        single-request failure rate is effectively a guaranteed whole-listing
+        failure, and it discards every entry gathered so far.
+
+        ``authorized`` means some tree read already succeeded on this client, so
+        the credential is proven and a denial cannot be an authorization result.
+        Until then a 403 is taken at face value, keeping a real permission error
+        fast and honest.
+        """
+        last_error: PermissionDeniedError | None = None
+        for attempt in range(REPO_TREE_PAGE_MAX_ATTEMPTS):
+            try:
+                resp = self._request("GET", path, params=params)
+            except PermissionDeniedError as error:
+                if not authorized:
+                    raise
+                last_error = error
+                if attempt < REPO_TREE_PAGE_MAX_ATTEMPTS - 1:
+                    wait = min(2**attempt, REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS)
+                    logger.warning(
+                        "Repo %s: tree listing (%s) denied on an already-authorized repo, retrying in %ds ...",
+                        repo_id,
+                        params.get("Root") or params.get("PageNumber") or "/",
+                        wait,
+                    )
+                    time.sleep(wait)
+                continue
+            self._tree_reads_ok = True
+            return resp
+        raise NetworkError(
+            f"Repo {repo_id}: tree listing ({params.get('Root') or params.get('PageNumber') or '/'}) kept "
+            f"returning a denial after {REPO_TREE_PAGE_MAX_ATTEMPTS} attempts on an already-authorized "
+            f"repo: {last_error}"
+        ) from last_error
 
     # ------------------------------------------------------------------
     # Revisions

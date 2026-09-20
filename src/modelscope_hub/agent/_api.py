@@ -241,7 +241,7 @@ class AgentApi:
         from an owner with no repositories.
         """
         try:
-            payload = response.json()  # type: ignore[union-attr]
+            payload = response.json()  # type: ignore[attr-defined]
         except (AttributeError, ValueError) as exc:
             raise APIError(
                 "Agent repository list endpoint returned a non-JSON response.",

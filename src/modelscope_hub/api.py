@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import fnmatch
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any, BinaryIO, TypeAlias
 from urllib.parse import urlparse
@@ -1368,6 +1368,8 @@ class HubApi:
         use_cache: bool | None = None,
         disable_tqdm: bool = False,
         sync_remote_repo: bool = False,
+        tracker_path: str | Path | None = None,
+        progress_callback: Callable[[dict], None] | None = None,
     ) -> dict | list[dict] | None:
         """Upload an entire folder to a repository with resumable support.
 
@@ -1406,6 +1408,18 @@ class HubApi:
         sync_remote_repo : bool, optional
             If True, delete remote files that are not present locally after
             a successful upload (sync semantics). Default False.
+        tracker_path : str or Path, optional
+            Where to keep the resumable-upload cache. Defaults to
+            ``.ms_upload_cache`` inside ``folder_path``. Point this outside the
+            uploaded tree when ``folder_path`` is a staging directory that gets
+            discarded between runs, so resume state survives.
+        progress_callback : callable, optional
+            Called with one dict per batch outcome, carrying ``event``
+            (``"batch_committed"`` or ``"batch_failed"``), ``batch_index``,
+            ``num_batches``, ``batch_files``, ``batch_bytes``,
+            ``committed_files``, ``committed_bytes``, ``total_files``,
+            ``total_bytes``, ``skipped_files``, ``elapsed`` and ``error``.
+            Exceptions raised by the callback are logged and swallowed.
 
         Returns
         -------
@@ -1441,6 +1455,8 @@ class HubApi:
             use_cache=use_cache,
             disable_tqdm=disable_tqdm,
             sync_remote_repo=sync_remote_repo,
+            tracker_path=tracker_path,
+            progress_callback=progress_callback,
         )
 
     def download_file(
