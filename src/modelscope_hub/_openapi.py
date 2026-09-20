@@ -30,9 +30,17 @@ from typing import Any, BinaryIO
 from urllib.parse import urljoin, urlsplit
 
 import requests
+from requests.adapters import HTTPAdapter
 
 from .config import HubConfig, get_default_config
-from .constants import API_CONNECT_TIMEOUT, API_MAX_RETRIES, API_TIMEOUT, OPENAPI_PREFIX, TokenScope
+from .constants import (
+    API_CONNECT_TIMEOUT,
+    API_CONNECTION_POOL_MAXSIZE,
+    API_MAX_RETRIES,
+    API_TIMEOUT,
+    OPENAPI_PREFIX,
+    TokenScope,
+)
 from .errors import (
     APIError,
     AuthenticationError,
@@ -200,6 +208,16 @@ class OpenAPIClient:
     ) -> None:
         self._config = config or get_default_config()
         self._session = session or requests.Session()
+        if session is None:
+            # A bare Session caps the pool at urllib3's default of 10, which is
+            # below the concurrency bulk transfers use; the excess connections
+            # are discarded and pay for a new TLS handshake on next use.
+            adapter = HTTPAdapter(
+                pool_connections=API_CONNECTION_POOL_MAXSIZE,
+                pool_maxsize=API_CONNECTION_POOL_MAXSIZE,
+            )
+            self._session.mount("https://", adapter)
+            self._session.mount("http://", adapter)
         self._timeout: float | tuple[float, float] = (
             float(timeout) if timeout is not None else (float(API_CONNECT_TIMEOUT), float(API_TIMEOUT))
         )

@@ -280,6 +280,146 @@ def test_dead_lfs_threshold_is_not_registered() -> None:
     assert "UPLOAD_LFS_THRESHOLD" not in names
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("32KiB", 32 * 1024),
+        ("512K", 512 * 1024),
+        ("65536", 65536),
+        ("1MiB", 1024 * 1024),
+        ("2MB", 2 * 1000 * 1000),
+        ("0", 0),
+    ],
+)
+def test_lfs_threshold_accepts_byte_sizes_and_unit_suffixes(raw: str, expected: int) -> None:
+    # A megabyte-only knob cannot express the sub-MB range that decides whether
+    # small files ride inline in a commit or go to object storage.
+    result = _run_constants(
+        "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
+        env={"MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD": raw},
+    )
+    assert json.loads(result.stdout)["UPLOAD_LFS_FORCE_THRESHOLD_BYTES"] == expected
+    assert "FutureWarning" not in result.stderr
+
+
+def test_deprecated_lfs_threshold_mb_alias_keeps_megabyte_units() -> None:
+    result = _run_constants(
+        "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
+        env={"MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB": "4"},
+    )
+    assert json.loads(result.stdout)["UPLOAD_LFS_FORCE_THRESHOLD_BYTES"] == 4 * 1024 * 1024
+    assert "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB" in result.stderr
+    assert "expects bytes" in result.stderr
+
+
+def test_canonical_lfs_threshold_wins_over_deprecated_aliases() -> None:
+    result = _run_constants(
+        "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
+        env={
+            "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD": "32KiB",
+            "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB": "4",
+            "UPLOAD_LFS_ENFORCE_THRESHOLD": "999",
+        },
+    )
+    assert json.loads(result.stdout)["UPLOAD_LFS_FORCE_THRESHOLD_BYTES"] == 32 * 1024
+    assert "FutureWarning" not in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("env", "constant", "expected", "needle"),
+    [
+        (
+            {"MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD": "32ZB"},
+            "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
+            1024 * 1024,
+            "unknown size unit",
+        ),
+        (
+            {"MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD": "-1"},
+            "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
+            1024 * 1024,
+            "must not be negative",
+        ),
+        (
+            {"MODELSCOPE_UPLOAD_COMMIT_BATCH_MAX_OPERATIONS": "lots"},
+            "UPLOAD_COMMIT_BATCH_MAX_OPERATIONS",
+            256,
+            "not an integer",
+        ),
+        (
+            {"MODELSCOPE_UPLOAD_COMMIT_BATCH_MAX_OPERATIONS": "0"},
+            "UPLOAD_COMMIT_BATCH_MAX_OPERATIONS",
+            256,
+            "must be a positive integer",
+        ),
+        (
+            {"MODELSCOPE_UPLOAD_COMMIT_MAX_INLINE_BYTES": "8bogus"},
+            "UPLOAD_COMMIT_MAX_INLINE_BYTES",
+            8 * 1024 * 1024,
+            "unknown size unit",
+        ),
+    ],
+)
+def test_invalid_upload_env_values_warn_instead_of_silently_reverting(
+    env: dict[str, str],
+    constant: str,
+    expected: int,
+    needle: str,
+) -> None:
+    # Silently falling back made misconfiguration invisible: the value had no
+    # effect and nothing said so.
+    result = _run_constants(constant, env=env)
+    assert json.loads(result.stdout)[constant] == expected
+    assert needle in result.stderr
+    assert "is invalid" in result.stderr
+
+
+def test_commit_rate_governor_accepts_explicit_zero_without_warning() -> None:
+    result = _run_constants(
+        "UPLOAD_COMMIT_MAX_PER_HOUR",
+        env={"MODELSCOPE_UPLOAD_COMMIT_MAX_PER_HOUR": "0"},
+    )
+    assert json.loads(result.stdout)["UPLOAD_COMMIT_MAX_PER_HOUR"] == 0
+    assert "is invalid" not in result.stderr
+
+
+def test_new_upload_knobs_are_registered_under_upload() -> None:
+    result = _run_constants("ENV_REGISTRY")
+    registry = {item["name"]: item for item in json.loads(result.stdout)["ENV_REGISTRY"]}
+    for name in (
+        "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD",
+        "MODELSCOPE_UPLOAD_COMMIT_MAX_INLINE_BYTES",
+        "MODELSCOPE_UPLOAD_COMMIT_MAX_PER_HOUR",
+        "MODELSCOPE_UPLOAD_COMMIT_MAX_RETRY_AFTER_SECONDS",
+        "MODELSCOPE_UPLOAD_INLINE_METADATA_PATHS",
+    ):
+        assert registry[name]["category"] == "Upload"
+    assert registry["MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD"]["default"] == "1MiB"
+    assert "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB" not in registry
+
+
+def test_http_sessions_size_the_pool_for_concurrent_workers() -> None:
+    # urllib3 defaults the pool to 10. A folder upload runs max_workers requests
+    # at once, so the default discarded the excess connections and paid for a
+    # fresh TLS handshake on their next use.
+    from modelscope_hub.constants import API_CONNECTION_POOL_MAXSIZE
+
+    api = HubApi(config=HubConfig(token="ms-test"))
+    for session in (api.legacy._session, api.openapi._session):
+        adapter = session.get_adapter("https://modelscope.cn")
+        pool_kw = adapter.poolmanager.connection_pool_kw
+        assert pool_kw["maxsize"] == API_CONNECTION_POOL_MAXSIZE
+        assert API_CONNECTION_POOL_MAXSIZE >= 16
+
+
+def test_connection_pool_size_is_env_tunable() -> None:
+    result = _run_constants(
+        "API_CONNECTION_POOL_MAXSIZE",
+        env={"MODELSCOPE_API_CONNECTION_POOL_MAXSIZE": "64"},
+    )
+    assert json.loads(result.stdout)["API_CONNECTION_POOL_MAXSIZE"] == 64
+
+
 def _response(data: dict | None = None) -> MagicMock:
     response = MagicMock()
     response.status_code = 200
