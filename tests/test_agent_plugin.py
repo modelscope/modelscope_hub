@@ -14,6 +14,7 @@ into* ``install_agent`` and map to the right exit codes is covered by
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import re
 import sys
@@ -127,6 +128,17 @@ def load_entry(directory: Path, module_name: str):
     return _plugin.load_plugin(spec_for(directory, manifest={"entry_module": module_name}))
 
 
+def loaded(directory: Path, module_name: str):
+    """The module ``install_agent`` loaded from *directory*.
+
+    Reached through the alias, not ``import <module_name>``: registration is
+    directory-scoped on purpose, so the plain name is never in ``sys.modules`` and
+    the plugin directory is off ``sys.path`` again once the call returns.
+    """
+    alias = _plugin._module_alias(spec_for(directory, manifest={"entry_module": module_name}))
+    return sys.modules[alias]
+
+
 # ---------------------------------------------------------------------------
 # resolve_plugin_repo
 # ---------------------------------------------------------------------------
@@ -166,7 +178,29 @@ def test_assert_trusted_owner_rejects_others(allow_list, owner):
     with pytest.raises(InvalidParameter) as excinfo:
         _plugin.assert_trusted_owner(f"{owner}/agent-hub-plugin")
     assert owner in str(excinfo.value)
-    assert constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS in excinfo.value.suggestion
+    assert "AGENT_PLUGIN_TRUSTED_OWNERS" in excinfo.value.suggestion
+
+
+def test_the_allow_list_cannot_be_widened_from_the_environment(monkeypatch):
+    """The allow-list is the trust anchor for a command that executes downloaded
+    code, so a parent process must not be able to move it. The override that used
+    to exist is gone; this pins that it stays gone rather than being reintroduced
+    as a convenience."""
+    monkeypatch.setenv("MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS", "evilcorp")
+    importlib.reload(constants)
+    try:
+        assert "evilcorp" not in constants.AGENT_PLUGIN_TRUSTED_OWNERS
+        assert not hasattr(constants, "ENV_AGENT_PLUGIN_TRUSTED_OWNERS")
+        with pytest.raises(InvalidParameter):
+            _plugin.assert_trusted_owner("evilcorp/agent-hub-plugin")
+    finally:
+        importlib.reload(constants)
+
+
+def test_the_shipped_allow_list_has_no_personal_account():
+    """A personal account in the default list is a supply-chain entry point: if it
+    is compromised, anything it publishes passes the owner gate."""
+    assert constants.AGENT_PLUGIN_TRUSTED_OWNERS == frozenset({"modelscope", "AI-ModelScope"})
 
 
 @pytest.mark.parametrize("owner", ["mushenl", "MUSHENL", "ModelScope", "MODELSCOPE", "ai-modelscope"])
@@ -187,14 +221,6 @@ def test_assert_trusted_owner_empty_list_blocks_everything(monkeypatch):
     monkeypatch.setattr(constants, "AGENT_PLUGIN_TRUSTED_OWNERS", frozenset())
     with pytest.raises(InvalidParameter):
         _plugin.assert_trusted_owner("mushenL/agent-hub-plugin")
-
-
-def test_env_csv_helper_preserves_case(monkeypatch):
-    """The only coverage of the environment parsing behind the allow-list; the
-    gate tests above patch the resolved constant instead."""
-    monkeypatch.setenv("MODELSCOPE_TEST_OWNERS", " mushenL , modelscope ,, ")
-    got = constants._env_csv_frozenset_exact("MODELSCOPE_TEST_OWNERS", "fallback", "test", "Core")
-    assert got == frozenset({"mushenL", "modelscope"})
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +304,24 @@ def test_verify_manifest_exempts_non_plugin_files(tmp_path):
     assert ".gitattributes" not in str(excinfo.value)
 
 
+@pytest.mark.parametrize("key", ["/etc/hosts", "../../etc/hosts", "pkg/../../outside.py"])
+def test_verify_manifest_refuses_keys_pointing_outside_the_package(tmp_path, key):
+    """Manifest keys are attacker-controlled and become paths. ``directory / key``
+    with an absolute key discards the directory outright, so a hostile manifest
+    could have the loader hash a file anywhere on disk. Nothing is returned to the
+    caller, so it is not a disclosure -- but it is a read the manifest has no
+    business requesting, and a package that asks for it is not a corrupt download.
+    """
+    directory = make_plugin(tmp_path)
+    manifest = json.loads((directory / "plugin.json").read_text())
+    manifest["content_sha256"][key] = "0" * 64
+    (directory / "plugin.json").write_text(json.dumps(manifest))
+
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.verify_manifest(directory, PLUGIN_REPO)
+    assert "outside the package" in str(excinfo.value)
+
+
 # ---------------------------------------------------------------------------
 # require_trust
 # ---------------------------------------------------------------------------
@@ -298,6 +342,21 @@ def test_require_trust_allows_with_flag_or_env(tmp_path, monkeypatch, via):
         spec_for(make_plugin(tmp_path)),
         trust_remote_code=(via == "flag"),
     )
+
+
+def test_require_trust_warns_when_the_environment_opted_in(tmp_path, monkeypatch, caplog):
+    """The variable applies to every install in the process, so an environment the
+    user did not build can opt them in without a decision being made here. The
+    flag path stays silent: that one was a choice."""
+    monkeypatch.setattr(constants, "AGENT_TRUST_REMOTE_CODE", True)
+    with caplog.at_level("WARNING", logger="modelscope_hub.agent"):
+        _plugin.require_trust(spec_for(make_plugin(tmp_path)), trust_remote_code=False)
+    assert constants.ENV_AGENT_TRUST_REMOTE_CODE in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="modelscope_hub.agent"):
+        _plugin.require_trust(spec_for(make_plugin(tmp_path / "b")), trust_remote_code=True)
+    assert caplog.text == ""
 
 
 # ---------------------------------------------------------------------------
@@ -347,10 +406,34 @@ def test_fetch_plugin_wraps_download_failure(monkeypatch):
 def test_load_plugin_imports_the_declared_entry_module(tmp_path):
     directory = make_plugin(tmp_path, entry_module="entry_a")
     module = _plugin.load_plugin(spec_for(directory))
-    assert module.__name__ == "entry_a"
+    assert module.__file__ == str(directory / "entry_a.py")
+    # Registered under a directory-scoped alias, not its own name -- see the next
+    # test for why that matters.
+    assert module.__name__.startswith("_ms_agent_plugin_entry_a_")
     assert str(directory) in sys.path
     sys.path.remove(str(directory))
-    sys.modules.pop("entry_a", None)
+    sys.modules.pop(module.__name__, None)
+
+
+def test_load_plugin_does_not_serve_one_directory_another(tmp_path):
+    """Two plugins sharing a repository id, revision and entry module name must
+    not share code. ``import_module`` would have returned the first from
+    ``sys.modules`` for the second, so installing plugin B ran plugin A."""
+    first = make_plugin(tmp_path / "one", dirname="p", entry_module="same_name", entry_source="MARKER = 'first'\n")
+    second = make_plugin(tmp_path / "two", dirname="p", entry_module="same_name", entry_source="MARKER = 'second'\n")
+    loaded = []
+    try:
+        for directory in (first, second):
+            sys.path.insert(0, str(directory))
+            loaded.append(_plugin.load_plugin(spec_for(directory)))
+        assert [m.MARKER for m in loaded] == ["first", "second"]
+        assert loaded[0] is not loaded[1]
+    finally:
+        for m in loaded:
+            sys.modules.pop(m.__name__, None)
+        for directory in (first, second):
+            if str(directory) in sys.path:
+                sys.path.remove(str(directory))
 
 
 def test_load_plugin_restores_sys_path_on_failure(tmp_path):
@@ -369,6 +452,25 @@ def test_load_plugin_restores_sys_path_on_failure(tmp_path):
     with pytest.raises(ImportError):
         _plugin.load_plugin(spec)
     assert sys.path == before
+
+
+def test_plugin_syspath_is_scoped_to_the_block(tmp_path):
+    """A plugin directory left at sys.path[0] lets any file it ships shadow the
+    standard library or a dependency for the rest of the process -- and shipping
+    one is not a rule violation, since every file has to be listed in the
+    manifest. Harmless in a one-shot CLI; a long-lived process calling
+    install_agent would stay poisoned."""
+    directory = make_plugin(tmp_path)
+    before = list(sys.path)
+    with _plugin.plugin_syspath(directory):
+        assert str(directory) in sys.path
+        assert sys.path[0] == str(directory)
+    assert sys.path == before
+
+
+def test_install_agent_leaves_no_plugin_directory_on_sys_path(wired):
+    _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    assert str(wired) not in sys.path
 
 
 def test_select_operation_prefers_install(tmp_path):
@@ -413,6 +515,28 @@ def test_select_operation_rejects_an_undeclared_name(tmp_path):
     with pytest.raises(NotSupportedError) as excinfo:
         _plugin.select_operation(module)
     assert "sel_none" in str(excinfo.value)
+
+
+def test_select_operation_refuses_a_broken_capabilities(tmp_path):
+    """A ``capabilities()`` that exists and fails means the plugin is broken, not
+    that it declares nothing. Swallowing it downgraded selection to "first
+    callable attribute wins", which can pick a placeholder the plugin deliberately
+    left undeclared."""
+    source = textwrap.dedent(
+        """
+        def capabilities():
+            raise RuntimeError("manifest and code disagree")
+
+        def install(repo, **kwargs):
+            raise AssertionError("must not be chosen")
+        """
+    ).lstrip()
+    directory = make_plugin(tmp_path, entry_module="broken_caps", entry_source=source)
+    module = load_entry(directory, "broken_caps")
+    with pytest.raises(NotSupportedError) as excinfo:
+        _plugin.select_operation(module)
+    assert "capabilities() raised" in str(excinfo.value)
+    assert "manifest and code disagree" in str(excinfo.value)
 
 
 def test_select_operation_without_capabilities_uses_presence(tmp_path):
@@ -495,7 +619,7 @@ def wired(monkeypatch, tmp_path):
     directory = make_plugin(tmp_path, entry_module="e2e_plugin")
     monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
     yield directory
-    sys.modules.pop("e2e_plugin", None)
+    sys.modules.pop(_plugin._module_alias(spec_for(directory)), None)
 
 
 def test_install_agent_happy_path_and_option_forwarding(wired):
@@ -505,11 +629,9 @@ def test_install_agent_happy_path_and_option_forwarding(wired):
     assert outcome.plugin.repo_id == PLUGIN_REPO
     assert outcome.plugin.version == "9.9.9"
 
-    # Importable only now: load_plugin put the directory on sys.path.
-    import e2e_plugin
-
-    assert e2e_plugin.CALLS[-1][:2] == ("install", "owner/my-agent")
-    forwarded = e2e_plugin.CALLS[-1][2]
+    entry = loaded(wired, "e2e_plugin")
+    assert entry.CALLS[-1][:2] == ("install", "owner/my-agent")
+    forwarded = entry.CALLS[-1][2]
     # Unset optionals are dropped so the plugin applies its own defaults, but a
     # False boolean is a decision the caller made and is forwarded.
     assert {key: forwarded[key] for key in ("dry_run", "yes", "force", "quiet")} == {
@@ -535,7 +657,7 @@ def test_install_agent_happy_path_and_option_forwarding(wired):
         plugin_repo=PLUGIN_REPO,
         trust_remote_code=True,
     )
-    forwarded = e2e_plugin.CALLS[-1][2]
+    forwarded = entry.CALLS[-1][2]
     assert forwarded["name"] == "sub"
     assert forwarded["local_dir"] == "/tmp/ws"
     assert forwarded["dest"] == "/tmp/ws"
@@ -705,7 +827,7 @@ def fetch_only(wired, monkeypatch):
     )
     monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
     yield directory
-    sys.modules.pop("fetch_plugin", None)
+    sys.modules.pop(_plugin._module_alias(spec_for(directory)), None)
 
 
 def test_install_agent_drives_a_fetch_only_plugin(fetch_only):
@@ -720,9 +842,7 @@ def test_install_agent_drives_a_fetch_only_plugin(fetch_only):
     assert outcome.ok, outcome.error
     assert outcome.operation == "fetch_raw"
 
-    import fetch_plugin
-
-    call = fetch_plugin.CALLS[-1]
+    call = loaded(fetch_only, "fetch_plugin").CALLS[-1]
     assert call["repo"] == "owner/my-agent"
     assert call["framework"] == "qwenpaw"
     assert Path(call["dest"]).parent.name == "agent-staging"
@@ -739,9 +859,7 @@ def test_install_agent_maps_local_dir_onto_dest(fetch_only):
     )
     assert outcome.ok, outcome.error
 
-    import fetch_plugin
-
-    assert fetch_plugin.CALLS[-1]["dest"] == "/tmp/joint/staging"
+    assert loaded(fetch_only, "fetch_plugin").CALLS[-1]["dest"] == "/tmp/joint/staging"
 
 
 def test_dest_is_not_forwarded_to_an_operation_that_does_not_accept_it(wired, monkeypatch):
@@ -771,7 +889,7 @@ def test_dest_is_not_forwarded_to_an_operation_that_does_not_accept_it(wired, mo
     assert outcome.ok, outcome.error
     assert outcome.operation == "download"
 
-    import legacy_plugin
-
-    assert legacy_plugin.CALLS[-1] == {"repo": "owner/my-agent", "local_dir": "/tmp/ws"}
-    sys.modules.pop("legacy_plugin", None)
+    assert loaded(directory, "legacy_plugin").CALLS[-1] == {
+        "repo": "owner/my-agent",
+        "local_dir": "/tmp/ws",
+    }

@@ -11,26 +11,40 @@ no default of its own.
 
 Integrity comes from ``plugin.json``'s ``content_sha256``, not from the hub's own
 file listing -- that listing has been observed reporting a git blob SHA-1 in a
-``sha256`` field.
+``sha256`` field. Be precise about what that buys: it proves the bytes on disk are
+the bytes the manifest described, and it gives the trust prompt a stable
+fingerprint, so the decision and the import cannot diverge. It is **not**
+authenticity. The manifest ships inside the same unsigned repository as the code
+it describes, so whoever controls the repository controls the hashes and can make
+anything verify. The trust anchor is the owner allow-list plus the opt-in; nothing
+here vouches for who wrote the plugin. Signing would change that and is not done
+yet.
 """
 
 from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
 import inspect
 import json
+import logging
 import os
+import re
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .. import constants
 from ..api import HubApi
 from ..errors import InvalidParameter, NotSupportedError
 from ..utils.file_utils import compute_hash, get_cache_dir
+
+logger = logging.getLogger("modelscope_hub.agent")
 
 MANIFEST_NAME = "plugin.json"
 
@@ -154,8 +168,10 @@ def assert_trusted_owner(repo_id: str) -> tuple[str, str]:
             f"Trusted owners: {', '.join(sorted(trusted)) or '(none)'}."
         )
         error.suggestion = (
-            f"Extend the allow-list with {constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS}"
-            "=owner1,owner2 (comma-separated), then retry."
+            "The allow-list is a compile-time constant "
+            "(modelscope_hub.constants.AGENT_PLUGIN_TRUSTED_OWNERS), not an "
+            "environment variable: it is the trust anchor for a command that runs "
+            "downloaded code, so widening it is a reviewed code change."
         )
         raise error
     return owner, name
@@ -206,8 +222,13 @@ NOT_PLUGIN_CONTENT: frozenset[str] = frozenset({MANIFEST_NAME, ".gitattributes"}
 def verify_manifest(directory: Path, repo_id: str) -> dict[str, Any]:
     """Check the downloaded package against its own ``plugin.json``.
 
-    Strict on purpose: this is what makes the subsequent import something other
-    than unconditional code execution.
+    Strict on purpose, and worth being clear about what strictness buys: it proves
+    the files on disk are the files the manifest described, and it makes the
+    digest shown by :func:`require_trust` mean something, so what the user agreed
+    to and what gets imported cannot diverge. It does not prove anything about
+    authorship -- the manifest is unsigned and ships beside the code it describes,
+    so a repository's owner can make any content verify. That is the owner
+    allow-list's job.
     """
     manifest_path = directory / MANIFEST_NAME
     if not manifest_path.is_file():
@@ -230,9 +251,22 @@ def verify_manifest(directory: Path, repo_id: str) -> dict[str, Any]:
             "cannot be verified. Refusing to load it."
         )
 
-    missing, mismatched, unexpected = [], [], []
+    missing, mismatched, unexpected, escaped = [], [], [], []
+    directory_resolved = directory.resolve()
     for rel, expected in sorted(recorded.items()):
+        # Manifest keys are attacker-controlled. ``directory / "/etc/passwd"``
+        # discards the directory entirely, so an absolute or parent-climbing key
+        # would have this loader read -- and hash -- a file outside the package.
+        # Nothing is returned to the caller, so it is not a disclosure, but it is
+        # a read the manifest has no business requesting.
+        parts = PurePosixPath(rel).parts
+        if PurePosixPath(rel).is_absolute() or ".." in parts:
+            escaped.append(rel)
+            continue
         target = directory / rel
+        if not target.resolve().is_relative_to(directory_resolved):
+            escaped.append(rel)
+            continue
         if not target.is_file():
             missing.append(rel)
             continue
@@ -249,6 +283,8 @@ def verify_manifest(directory: Path, repo_id: str) -> dict[str, Any]:
             unexpected.append(rel)
 
     problems = []
+    if escaped:
+        problems.append(f"{len(escaped)} manifest key(s) point outside the package: {', '.join(escaped[:5])}")
     if missing:
         problems.append(f"missing {len(missing)} file(s): {', '.join(missing[:5])}")
     if mismatched:
@@ -267,47 +303,162 @@ def require_trust(spec: PluginSpec, *, trust_remote_code: bool) -> None:
     a flag or an environment variable and is never persisted -- "allow this code
     to run" is not a preference worth remembering on the user's behalf.
     """
-    if trust_remote_code or constants.AGENT_TRUST_REMOTE_CODE:
+    if trust_remote_code:
+        return
+    if constants.AGENT_TRUST_REMOTE_CODE:
+        logger.warning(
+            "Executing plugin %s@%s because %s is set, not because this invocation "
+            "asked for it. That variable applies to every install in this process, "
+            "so an environment you did not build can opt you in.",
+            spec.repo_id,
+            spec.revision,
+            constants.ENV_AGENT_TRUST_REMOTE_CODE,
+        )
         return
     raise NotSupportedError(
         "refusing to execute plugin code without an explicit opt-in. The plugin "
         "resolved to:\n" + spec.describe() + "\n\n"
+        "Opting in does two things: it imports and runs that code, and it passes "
+        "the plugin your --endpoint and your API token, since it needs credentials "
+        "to fetch the agent. Only continue if you trust the owner to hold both.\n\n"
         "Re-run with --trust-remote-code to import and run it, or set "
         f"{constants.ENV_AGENT_TRUST_REMOTE_CODE}=1."
     )
+
+
+def _module_alias(spec: PluginSpec) -> str:
+    """A ``sys.modules`` name unique to the code being loaded.
+
+    ``importlib.import_module(entry_module)`` goes through the global cache, so
+    loading two plugins whose entry modules share a name in one process would
+    silently run the first one's code for the second.
+
+    The discriminator has to be the *directory*, not the repository and revision:
+    those do not identify the bytes. Two checkouts of one repository at one
+    revision -- a re-download into a different cache, a development tree beside a
+    published one -- are different code with the same identity, and aliasing on
+    the pair collides. The entry module name stays in the alias so a traceback is
+    still readable.
+    """
+    resolved = Path(spec.directory).resolve()
+    digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:12]
+    safe = re.sub(r"[^A-Za-z0-9_]", "_", spec.entry_module)
+    return f"_ms_agent_plugin_{safe}_{digest}"
+
+
+@contextmanager
+def plugin_syspath(directory: Path) -> Iterator[None]:
+    """Keep *directory* importable for the duration of the block, then undo it.
+
+    Scoped rather than permanent on purpose. A plugin directory parked at
+    ``sys.path[0]`` lets any module it ships shadow the standard library or a
+    dependency for the rest of the process, and shipping one is not even a rule
+    violation -- every file has to be listed in ``content_sha256``, so a
+    ``json.py`` or ``requests.py`` passes the integrity check like anything else.
+    A one-shot CLI barely notices; a long-lived process calling
+    :func:`install_agent` would stay poisoned.
+
+    It cannot be narrowed to the import alone: plugins import their own sibling
+    packages lazily, at call time, so the directory has to stay reachable until
+    the operation returns.
+    """
+    root = str(directory)
+    inserted = root not in sys.path
+    if inserted:
+        sys.path.insert(0, root)
+    try:
+        yield
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(root)
+            except ValueError:
+                pass
 
 
 def load_plugin(spec: PluginSpec) -> Any:
     """Import the plugin's entry module from its downloaded directory.
 
     The directory goes at the *front* of ``sys.path`` so the fetched revision
-    wins over any same-named installed distribution.
+    wins over any same-named installed distribution, and the module is registered
+    under :func:`_module_alias` rather than its own name so a second plugin cannot
+    be served the first one's cached code. Callers that will also *invoke* the
+    plugin should hold :func:`plugin_syspath` open for the whole operation.
+
+    Residual limitation, not solved here: a plugin's sibling top-level packages
+    (``agent_hub_core`` beside ``agent_hub_plugin``, say) are imported by their own
+    names and still land in the global cache, so two plugins shipping different
+    copies of one would collide. Isolating that needs a subprocess, which in turn
+    needs a serialisable result contract.
     """
     root = str(spec.directory)
     if root not in sys.path:
         sys.path.insert(0, root)
+
+    alias = _module_alias(spec)
+    cached = sys.modules.get(alias)
+    if cached is not None:
+        return cached
+
+    package_init = Path(spec.directory) / spec.entry_module / "__init__.py"
+    single_file = Path(spec.directory) / f"{spec.entry_module}.py"
+    if package_init.is_file():
+        target, search_locations = package_init, [str(package_init.parent)]
+    elif single_file.is_file():
+        target, search_locations = single_file, None
+    else:
+        if root in sys.path:
+            sys.path.remove(root)
+        raise ImportError(f"entry module {spec.entry_module!r} is neither a package nor a module in {root}")
+
+    module_spec = importlib.util.spec_from_file_location(alias, target, submodule_search_locations=search_locations)
+    if module_spec is None or module_spec.loader is None:
+        if root in sys.path:
+            sys.path.remove(root)
+        raise ImportError(f"cannot build an import spec for {target}")
+
+    module = importlib.util.module_from_spec(module_spec)
+    # Registered before executing so the plugin's own relative and recursive
+    # imports resolve to this module rather than re-entering it.
+    sys.modules[alias] = module
     try:
-        return importlib.import_module(spec.entry_module)
-    except ImportError:
+        module_spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(alias, None)
         if root in sys.path:
             sys.path.remove(root)
         raise
+    return module
 
 
 def select_operation(module: Any) -> tuple[str, Any]:
     """Pick the entry operation the plugin actually supports.
 
     ``capabilities()`` is authoritative when present, so a plugin that ships a
-    name without implementing it is not selected.
+    name without implementing it is not selected. When it is *absent* selection
+    falls back to presence, which is what lets a minimal plugin work. When it is
+    present but fails, that is a broken plugin rather than an undeclaring one, so
+    it is an error: silently falling back to presence would pick whatever name
+    happens to exist, including a placeholder the plugin chose not to declare.
     """
     declared = None
     capabilities = getattr(module, "capabilities", None)
     if callable(capabilities):
         try:
             payload = capabilities()
-            declared = set((payload or {}).get("operations") or ())
-        except Exception:
-            declared = None
+        except Exception as exc:
+            raise NotSupportedError(
+                f"plugin {module.__name__}.capabilities() raised "
+                f"{exc.__class__.__name__}: {exc}. Without it there is no way to tell "
+                "which operations the plugin implements, so refusing to guess."
+            ) from exc
+        operations = payload.get("operations") if isinstance(payload, dict) else None
+        if operations is None:
+            raise NotSupportedError(
+                f"plugin {module.__name__}.capabilities() returned no 'operations' "
+                f"(got {type(payload).__name__}); cannot tell which entry points it implements."
+            )
+        declared = set(operations)
 
     for name in ENTRY_OPERATIONS:
         func = getattr(module, name, None)
@@ -407,8 +558,8 @@ def install_agent(
             exc.suggestion = (
                 f"{plugin_repo_id} is the built-in default. If it is not published yet, "
                 f"or you built your own, pass --plugin-repo owner/name (or set "
-                f"{constants.ENV_AGENT_PLUGIN_REPO}) -- its owner must also be listed in "
-                f"{constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS}."
+                f"{constants.ENV_AGENT_PLUGIN_REPO}). Its owner must be one of "
+                f"{', '.join(sorted(constants.AGENT_PLUGIN_TRUSTED_OWNERS))}."
             )
         raise
     manifest = verify_manifest(directory, plugin_repo_id)
@@ -423,49 +574,52 @@ def install_agent(
     )
     require_trust(spec, trust_remote_code=trust_remote_code)
 
-    try:
-        module = load_plugin(spec)
-        operation, func = select_operation(module)
-    except NotSupportedError:
-        raise
-    except Exception as exc:
-        return InstallOutcome(
-            ok=False,
-            error=f"failed to load plugin {plugin_repo_id}: {exc.__class__.__name__}: {exc}",
-            plugin=spec,
-            exit_code=1,
-        )
+    # The plugin directory is importable for exactly as long as the plugin runs,
+    # not for the rest of the process -- see :func:`plugin_syspath`.
+    with plugin_syspath(spec.directory):
+        try:
+            module = load_plugin(spec)
+            operation, func = select_operation(module)
+        except NotSupportedError:
+            raise
+        except Exception as exc:
+            return InstallOutcome(
+                ok=False,
+                error=f"failed to load plugin {plugin_repo_id}: {exc.__class__.__name__}: {exc}",
+                plugin=spec,
+                exit_code=1,
+            )
 
-    candidates: dict[str, Any] = {
-        "repo": repo,
-        "name": name,
-        "framework": framework,
-        "source_framework": framework,
-        "local_dir": local_dir,
-        # A fetch-only plugin writes where it is told and has no default, so the
-        # destination is always resolved here: the caller's --local-dir, else a
-        # staging directory. Operations that do not declare ``dest`` never see it.
-        "dest": local_dir or str(default_staging_dir(repo)),
-        "dry_run": dry_run,
-        "yes": yes,
-        "force": force,
-        "quiet": quiet,
-        "endpoint": endpoint,
-        "token": token,
-    }
-    # Unset optionals are dropped so the plugin applies its own defaults; a False
-    # boolean is kept because that is a decision the caller made.
-    provided = {key: value for key, value in candidates.items() if value is not None}
-    try:
-        result = func(**_accepted_kwargs(func, provided))
-    except Exception as exc:
-        return InstallOutcome(
-            ok=False,
-            error=f"plugin {operation}() failed: {exc.__class__.__name__}: {exc}",
-            operation=operation,
-            plugin=spec,
-            exit_code=1,
-        )
+        candidates: dict[str, Any] = {
+            "repo": repo,
+            "name": name,
+            "framework": framework,
+            "source_framework": framework,
+            "local_dir": local_dir,
+            # A fetch-only plugin writes where it is told and has no default, so the
+            # destination is always resolved here: the caller's --local-dir, else a
+            # staging directory. Operations that do not declare ``dest`` never see it.
+            "dest": local_dir or str(default_staging_dir(repo)),
+            "dry_run": dry_run,
+            "yes": yes,
+            "force": force,
+            "quiet": quiet,
+            "endpoint": endpoint,
+            "token": token,
+        }
+        # Unset optionals are dropped so the plugin applies its own defaults; a False
+        # boolean is kept because that is a decision the caller made.
+        provided = {key: value for key, value in candidates.items() if value is not None}
+        try:
+            result = func(**_accepted_kwargs(func, provided))
+        except Exception as exc:
+            return InstallOutcome(
+                ok=False,
+                error=f"plugin {operation}() failed: {exc.__class__.__name__}: {exc}",
+                operation=operation,
+                plugin=spec,
+                exit_code=1,
+            )
 
     # ``ok`` is required, not defaulted. It is the only signal deciding whether
     # the user is told the agent was installed, so defaulting it to True let a

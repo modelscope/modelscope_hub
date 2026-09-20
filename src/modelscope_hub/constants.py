@@ -961,44 +961,23 @@ USER_INFO_FILE_NAME: str = "user"
 # :mod:`modelscope_hub.agent._plugin`.
 # ---------------------------------------------------------------------------
 ENV_AGENT_PLUGIN_REPO: str = "MODELSCOPE_AGENT_PLUGIN_REPO"
-ENV_AGENT_PLUGIN_TRUSTED_OWNERS: str = "MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS"
 ENV_AGENT_TRUST_REMOTE_CODE: str = "MODELSCOPE_AGENT_TRUST_REMOTE_CODE"
 
-#: Owners allowed to provide the agent plugin. ``modelscope`` and
-#: ``AI-ModelScope`` are the published homes for it; ``mushenL`` is a personal
-#: account used while the plugin is still being developed there, and should be
-#: dropped before this ships. Removing it is this line alone -- nothing else reads
-#: the default, and no test pins it (the gate tests set the resolved constant
-#: themselves). Until then an override is enough:
-#: ``MODELSCOPE_AGENT_PLUGIN_TRUSTED_OWNERS=modelscope,AI-ModelScope``.
-DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS: str = "modelscope,AI-ModelScope,mushenL"
+#: Owners allowed to provide the agent plugin.
+#:
+#: A compile-time constant with **no environment override**, on purpose. This list
+#: is the trust anchor for a command that executes downloaded code, and an anchor
+#: any parent process can rewrite through the environment is not an anchor: a
+#: script that can set env vars could point ``ms agent install`` at a repository
+#: it controls. Deciding who is trusted is a reviewed code change.
+#:
+#: ``MODELSCOPE_AGENT_PLUGIN_REPO`` *is* overridable and that is safe: it chooses
+#: which repository to fetch, but the owner still has to appear here, so it can
+#: pick among already-trusted owners without widening trust.
+AGENT_PLUGIN_TRUSTED_OWNERS: frozenset[str] = frozenset({"modelscope", "AI-ModelScope"})
+
 DEFAULT_AGENT_PLUGIN_REPO: str = "modelscope/agent-hub-plugin"
 DEFAULT_AGENT_PLUGIN_REVISION: str = "master"
-
-_AGENT_TRUSTED_OWNERS_DESCRIPTION = "Comma-separated owners allowed to provide the agent plugin"
-
-
-def _env_csv_frozenset_exact(
-    name: str,
-    default: str,
-    description: str,
-    category: str,
-    *deprecated_names: str,
-) -> frozenset[str]:
-    """Read a comma-separated set from the environment, preserving case.
-
-    Case is preserved so the list can be shown back to a user exactly as they or
-    the default wrote it. It is **not** an identity rule: the registry resolves
-    repository ids case-insensitively and normalises them (``ModelScope/x`` and
-    ``modelscope/x`` are one repository), so matching happens case-insensitively
-    at the comparison site in :mod:`modelscope_hub.agent._plugin`. Do not
-    "simplify" this into :func:`_env_csv_frozenset`, which upper-cases every item
-    and would turn ``AI-ModelScope`` into ``AI-MODELSCOPE`` in messages.
-    """
-    _env_register(name, default, description, category, deprecated_names=deprecated_names)
-    raw = _env(name, *deprecated_names) or default
-    return frozenset(item.strip() for item in raw.split(",") if item.strip())
-
 
 _env_register(
     ENV_AGENT_PLUGIN_REPO,
@@ -1013,12 +992,6 @@ _env_register(
     "Core",
 )
 
-AGENT_PLUGIN_TRUSTED_OWNERS: frozenset[str] = _env_csv_frozenset_exact(
-    ENV_AGENT_PLUGIN_TRUSTED_OWNERS,
-    DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS,
-    _AGENT_TRUSTED_OWNERS_DESCRIPTION,
-    "Core",
-)
 AGENT_TRUST_REMOTE_CODE: bool = _env_bool(
     ENV_AGENT_TRUST_REMOTE_CODE,
     False,
@@ -1038,7 +1011,6 @@ __all__ = [
     "DATASET_LFS_SUFFIX",
     "DEFAULT_AGENT_PLUGIN_REPO",
     "DEFAULT_AGENT_PLUGIN_REVISION",
-    "DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS",
     "DEFAULT_CACHE_DIR_NAME",
     "DEFAULT_CREDENTIALS_PATH",
     "DEFAULT_DATASET_REVISION",
@@ -1059,7 +1031,6 @@ __all__ = [
     "DOWNLOAD_RETRY_TIMES",
     "DOWNLOAD_TIMEOUT",
     "ENV_AGENT_PLUGIN_REPO",
-    "ENV_AGENT_PLUGIN_TRUSTED_OWNERS",
     "ENV_AGENT_TRUST_REMOTE_CODE",
     "ENV_FILE_LOCK",
     "ENV_CACHE",

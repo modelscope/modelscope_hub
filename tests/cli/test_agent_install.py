@@ -209,7 +209,8 @@ def test_unfetchable_default_plugin_repo_points_at_the_override(monkeypatch):
     combined = out + err
     assert constants.DEFAULT_AGENT_PLUGIN_REPO in combined
     assert "--plugin-repo" in combined
-    assert constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS in combined
+    for owner in sorted(constants.AGENT_PLUGIN_TRUSTED_OWNERS):
+        assert owner in combined
 
 
 def test_untrusted_plugin_owner_exits_2():
@@ -218,7 +219,11 @@ def test_untrusted_plugin_owner_exits_2():
     )
     assert code == 2
     assert "evil" in err
-    assert constants.ENV_AGENT_PLUGIN_TRUSTED_OWNERS in out + err
+    combined = out + err
+    # The refusal must say the list is compiled in, so nobody hunts for an
+    # environment variable that no longer exists.
+    assert "AGENT_PLUGIN_TRUSTED_OWNERS" in combined
+    assert "compile-time" in combined
 
 
 def test_trust_gate_refuses_and_explains(monkeypatch, tmp_path):

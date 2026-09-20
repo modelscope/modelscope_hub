@@ -32,6 +32,7 @@ from ._plugin import (
     fetch_plugin,
     install_agent,
     load_plugin,
+    plugin_syspath,
     resolve_plugin_repo,
     select_operation,
     verify_manifest,
@@ -52,6 +53,7 @@ __all__ = [
     "fetch_plugin",
     "verify_manifest",
     "load_plugin",
+    "plugin_syspath",
     "select_operation",
     "default_staging_dir",
 ]

@@ -21,10 +21,9 @@ from pathlib import Path
 
 from ..agent import AgentApi, agent_last_modified, agent_visibility_label, install_agent, is_lfs_file
 from ..constants import (
+    AGENT_PLUGIN_TRUSTED_OWNERS,
     DEFAULT_AGENT_PLUGIN_REPO,
-    DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS,
     ENV_AGENT_PLUGIN_REPO,
-    ENV_AGENT_PLUGIN_TRUSTED_OWNERS,
     ENV_AGENT_TRUST_REMOTE_CODE,
     Visibility,
 )
@@ -452,11 +451,12 @@ class AgentCommand(CLICommand):
                 "operations it implements, and the ones it declares as not yet available. Run without "
                 "--trust-remote-code to see that summary plus the resolved plugin and its manifest digest "
                 "without executing any downloaded code.\n\n"
-                f"Loading a plugin imports code this package did not ship, so its owner must be on the "
-                f"allow-list ({ENV_AGENT_PLUGIN_TRUSTED_OWNERS}, default: "
-                f"{DEFAULT_AGENT_PLUGIN_TRUSTED_OWNERS}) and execution requires --trust-remote-code "
-                f"(or {ENV_AGENT_TRUST_REMOTE_CODE}=1). The plugin itself defaults to "
-                f"{DEFAULT_AGENT_PLUGIN_REPO}; --plugin-repo or {ENV_AGENT_PLUGIN_REPO} overrides it."
+                f"Loading a plugin imports code this package did not ship, so its owner must be on a "
+                f"compile-time allow-list ({', '.join(sorted(AGENT_PLUGIN_TRUSTED_OWNERS))}) and execution "
+                f"requires --trust-remote-code (or {ENV_AGENT_TRUST_REMOTE_CODE}=1). Opting in also hands "
+                f"the plugin your --endpoint and your API token, because it needs credentials to fetch the "
+                f"agent. The plugin itself defaults to {DEFAULT_AGENT_PLUGIN_REPO}; --plugin-repo or "
+                f"{ENV_AGENT_PLUGIN_REPO} overrides it, but the owner still has to be on the allow-list."
             ),
         )
         p_install.add_argument(
@@ -495,7 +495,12 @@ class AgentCommand(CLICommand):
             help="Allow the downloaded plugin to be imported and executed. Without it (or "
             "$MODELSCOPE_AGENT_TRUST_REMOTE_CODE=1) the command reports what it would run and stops.",
         )
-        p_install.add_argument("--dry-run", action="store_true", help="Report what would happen, change nothing")
+        p_install.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Ask the plugin to report instead of change anything. The plugin is still imported, so its "
+            "module-level code runs; to inspect one without executing it, omit --trust-remote-code",
+        )
         p_install.add_argument("-y", "--yes", action="store_true", help="Answer the plugin's prompts yes")
         p_install.add_argument("--force", action="store_true", help="Let the plugin overwrite an existing agent")
         p_install.add_argument("-q", "--quiet", action="store_true", help="Suppress the plugin's progress output")
