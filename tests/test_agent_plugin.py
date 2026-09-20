@@ -615,6 +615,31 @@ def test_install_agent_contains_a_plugin_exception(wired, monkeypatch):
     sys.modules.pop("boom_plugin", None)
 
 
+@pytest.mark.parametrize("returned", ["None", "'done'", "{}"])
+def test_install_agent_refuses_a_result_without_ok(wired, monkeypatch, returned):
+    """``ok`` is the only signal that decides whether the user is told the agent
+    was installed, so a result without it must fail closed. Defaulting it to True
+    meant a plugin returning None, a bare string or an empty dict reported
+    "Installed" for an install nobody could verify."""
+    source = textwrap.dedent(
+        f"""
+        def capabilities():
+            return {{"operations": ("install",)}}
+
+        def install(repo, **kwargs):
+            return {returned}
+        """
+    ).lstrip()
+    directory = make_plugin(wired.parent, dirname="no_ok_plugin", entry_module="no_ok_plugin", entry_source=source)
+    monkeypatch.setattr(_plugin, "fetch_plugin", lambda repo_id, **kwargs: directory)
+
+    outcome = _plugin.install_agent("owner/my-agent", plugin_repo=PLUGIN_REPO, trust_remote_code=True)
+    assert not outcome.ok
+    assert outcome.exit_code == 1
+    assert "no 'ok' attribute" in outcome.error
+    sys.modules.pop("no_ok_plugin", None)
+
+
 # ---------------------------------------------------------------------------
 # fetch-only plugins
 # ---------------------------------------------------------------------------
@@ -731,7 +756,7 @@ def test_dest_is_not_forwarded_to_an_operation_that_does_not_accept_it(wired, mo
 
         def download(repo, *, local_dir=None, dry_run=False):
             CALLS.append({"repo": repo, "local_dir": local_dir})
-            return "ok"
+            return type("R", (), {"ok": True})()
         """
     ).lstrip()
     directory = make_plugin(wired.parent, dirname="legacy_plugin", entry_module="legacy_plugin", entry_source=source)

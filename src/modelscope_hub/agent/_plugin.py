@@ -467,8 +467,25 @@ def install_agent(
             exit_code=1,
         )
 
-    ok = bool(getattr(result, "ok", True))
-    if ok:
+    # ``ok`` is required, not defaulted. It is the only signal deciding whether
+    # the user is told the agent was installed, so defaulting it to True let a
+    # plugin returning None, a bare string or an empty dict report success. Every
+    # other gate here fails closed; this one has to as well.
+    if not hasattr(result, "ok"):
+        return InstallOutcome(
+            ok=False,
+            error=(
+                f"plugin {operation}() returned {type(result).__name__} with no 'ok' attribute. "
+                "An entry operation must return a result carrying at least 'ok', plus 'error' "
+                "and 'exit_code' on failure. Refusing to report an unverifiable install as success."
+            ),
+            operation=operation,
+            plugin=spec,
+            result=result,
+            exit_code=1,
+        )
+
+    if bool(result.ok):
         return InstallOutcome(ok=True, operation=operation, plugin=spec, result=result)
 
     error = getattr(result, "error", None) or f"plugin {operation}() reported failure"
