@@ -16,6 +16,7 @@ from modelscope_hub._upload import (
     UploadManager,
     _calculate_adaptive_batch_size,
     _is_inline_metadata,
+    _normalize_path_in_repo,
     _plan_commit_batches,
     _upload_mode,
 )
@@ -215,6 +216,57 @@ def test_upload_folder_routes_small_files_to_blob_storage(tmp_path: Path, monkey
     assert client.validate_blobs.call_count == 1
     assert len(client.validate_blobs.call_args.kwargs["objects"]) == 4
     assert client.upload_blob.call_count == 4
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", ""),
+        (".", ""),
+        ("./", ""),
+        ("/", ""),
+        ("  .  ", ""),
+        ("sub", "sub"),
+        ("./sub", "sub"),
+        ("sub/", "sub"),
+        ("/sub/", "sub"),
+        ("a/./b", "a/b"),
+        ("a/../b", "b"),
+        ("data\\shard", "data/shard"),
+    ],
+)
+def test_normalize_path_in_repo_collapses_root_aliases(raw: str, expected: str) -> None:
+    assert _normalize_path_in_repo(raw) == expected
+
+
+@pytest.mark.parametrize("escaping", ["..", "../x", "a/../../b"])
+def test_normalize_path_in_repo_refuses_escaping_root(escaping: str) -> None:
+    with pytest.raises(InvalidParameter):
+        _normalize_path_in_repo(escaping)
+
+
+def test_upload_folder_dot_path_in_repo_commits_root_relative_paths(tmp_path: Path, monkeypatch) -> None:
+    # `ms upload REPO LOCAL .` passes path_in_repo=".". Left literal it became a
+    # "./" prefix on every commit action path, which the Hub rejects wholesale
+    # as an invalid commit action (E3021). "." must map to the repo root.
+    manager, client = _make_manager()
+    (tmp_path / "README.md").write_bytes(b"# card")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "train.txt").write_bytes(b"rows")
+
+    manager.upload_folder(
+        repo_id="owner/repo",
+        repo_type="dataset",
+        folder_path=tmp_path,
+        path_in_repo=".",
+        max_workers=2,
+        use_cache=False,
+        disable_tqdm=True,
+    )
+
+    operations = client.create_commit.call_args.kwargs["operations"]
+    assert sorted(op["path"] for op in operations) == ["README.md", "data/train.txt"]
+    assert not any(op["path"].startswith("./") for op in operations)
 
 
 def test_upload_folder_batch_presigns_in_configured_group_size(tmp_path: Path, monkeypatch) -> None:

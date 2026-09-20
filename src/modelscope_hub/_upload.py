@@ -20,6 +20,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import tempfile
 import threading
 import time
@@ -238,6 +239,26 @@ def _safe_size(file_path: str) -> int:
         return os.stat(file_path).st_size
     except OSError:
         return 0
+
+
+def _normalize_path_in_repo(path_in_repo: str | None) -> str:
+    """Collapse a repo destination prefix to a clean, root-relative form.
+
+    ``"."``, ``"./"``, ``""`` and ``"/"`` all denote the repository root and
+    must yield no prefix. Left literal, a value like ``"."`` becomes a ``"./"``
+    prefix on every file and rides into each commit action's ``path``, which the
+    Hub rejects wholesale as an invalid commit action (E3021). Separators are
+    normalized and ``.``/``..`` segments resolved; a path that escapes the root
+    is refused rather than silently rewritten.
+    """
+    if not path_in_repo:
+        return ""
+    cleaned = posixpath.normpath(path_in_repo.strip().replace("\\", "/")).strip("/")
+    if cleaned in ("", "."):
+        return ""
+    if cleaned == ".." or cleaned.startswith("../"):
+        raise InvalidParameter(f"path_in_repo must stay within the repository root, got {path_in_repo!r}")
+    return cleaned
 
 
 def _compute_file_hash(
@@ -745,6 +766,8 @@ class UploadManager:
         """Upload a single file to a repository."""
         if path_or_fileobj is None:
             raise InvalidParameter("Path or file object cannot be None!")
+
+        path_in_repo = _normalize_path_in_repo(path_in_repo)
 
         if isinstance(path_or_fileobj, (str, Path)):
             path_or_fileobj = os.path.abspath(os.path.expanduser(str(path_or_fileobj)))
@@ -2226,7 +2249,13 @@ class UploadManager:
             ignore_patterns=ignore_patterns,
         )
 
-        prefix = f"{path_in_repo.strip('/')}/" if path_in_repo else ""
+        # ``path_in_repo`` is a destination prefix, and "." / "./" / "" / "/"
+        # all mean the repo root. Collapsing them is not cosmetic: a literal
+        # value like "." otherwise rides into every commit action's ``path`` as
+        # a "./" prefix, which the Hub rejects wholesale with E3021 "invalid
+        # commit action".
+        norm_prefix = _normalize_path_in_repo(path_in_repo)
+        prefix = f"{norm_prefix}/" if norm_prefix else ""
         prepared = [(prefix + relpath, relpath_to_abspath[relpath]) for relpath in filtered_keys]
 
         logger.info("Prepared %d files for upload.", len(prepared))
