@@ -23,7 +23,6 @@ from ..agent import AgentApi, agent_last_modified, agent_visibility_label, insta
 from ..constants import (
     AGENT_PLUGIN_TRUSTED_OWNERS,
     DEFAULT_AGENT_PLUGIN_REPO,
-    ENV_AGENT_PLUGIN_REPO,
     Visibility,
 )
 from ..errors import APIError
@@ -436,22 +435,16 @@ class AgentCommand(CLICommand):
             help="Install an agent into its framework via the agent plugin",
             formatter_class=RawDescriptionHelpFormatter,
             description=(
-                "Download an agent repository and hand it to the framework plugin.\n\n"
-                "What the plugin does with it is negotiated, not assumed: a plugin with an install entry "
-                "point places the agent into the framework's workspace and completes the framework's own "
-                "registration steps, while one that only transports bytes writes the repository's files "
-                "into a destination directory and leaves placement to whatever runs next. The command "
-                "reports which of the two happened.\n\n"
-                "Supported scope comes from the plugin, not from this package, so it cannot go stale here: "
-                "every run prints a 'scope :' line naming the frameworks that plugin build covers, the "
-                "operations it implements, and the ones it declares as not yet available.\n\n"
-                f"The plugin is official code selected by a compile-time owner allow-list "
-                f"({', '.join(sorted(AGENT_PLUGIN_TRUSTED_OWNERS))}), which is checked before anything is "
-                f"downloaded and is the whole authorisation -- an allow-listed plugin is fetched and run, "
-                f"with no separate confirmation. It defaults to {DEFAULT_AGENT_PLUGIN_REPO}; --plugin-repo "
-                f"or {ENV_AGENT_PLUGIN_REPO} picks a different one, but its owner still has to be listed. "
-                f"The plugin receives your --endpoint and API token, since it needs credentials to fetch "
-                f"the agent."
+                "Download an agent repository and hand it to the framework plugin. A plugin with an "
+                "install entry point places the agent into the framework's workspace; one that only "
+                "transports bytes writes the files into a destination directory and leaves placement "
+                "to whatever runs next. Every run prints a 'scope :' line with what that plugin build "
+                "supports.\n\n"
+                f"The plugin is official code chosen by a compile-time owner allow-list "
+                f"({', '.join(sorted(AGENT_PLUGIN_TRUSTED_OWNERS))}), checked before any download and "
+                f"the whole authorisation: an allow-listed plugin is fetched and run with no separate "
+                f"confirmation. It receives your --endpoint and API token, since it needs credentials "
+                f"to fetch the agent."
             ),
         )
         p_install.add_argument(
@@ -467,17 +460,16 @@ class AgentCommand(CLICommand):
         p_install.add_argument(
             "--local-dir",
             default=None,
-            help="Where the agent repository is downloaded. A plugin that only fetches leaves the files "
-            "there and stops; one that installs then places the agent in the framework's own home "
-            "(e.g. ~/.ms_agent, ~/.qwenpaw) and leaves the download behind, since a directory you named "
-            "is never treated as scratch. Omitted, downloads go to "
+            help="Where the agent repository is downloaded, not where it is installed: an installing "
+            "plugin still puts the agent in the framework's own home (e.g. ~/.ms_agent, ~/.qwenpaw) "
+            "and leaves your directory alone. Omitted, downloads go to "
             "$MODELSCOPE_CACHE/agent/agent-staging/ and are cleaned up on success.",
         )
         p_install.add_argument(
             "--plugin-repo",
             default=None,
-            help=f"Plugin model repository, owner/name (default: ${ENV_AGENT_PLUGIN_REPO}, else "
-            f"{DEFAULT_AGENT_PLUGIN_REPO}). Its owner must be on the allow-list.",
+            help=f"Plugin model repository, owner/name (default: {DEFAULT_AGENT_PLUGIN_REPO}). "
+            f"Its owner must be on the allow-list.",
         )
         p_install.add_argument(
             "--plugin-revision",
