@@ -440,6 +440,12 @@ _BUSINESS_CODE_MAP: dict[int, type[APIError]] = {
     10010202004: AlreadyExistsError,  # 国际站 - 名称已被使用
 }
 
+# The legacy commit endpoint overloads 400/409 for optimistic branch conflicts
+# and repository-side commit policy throttling.  The numeric code is scoped to
+# that endpoint so it must not globally turn unrelated invalid requests into
+# retryable server failures.
+_COMMIT_RETRYABLE_BUSINESS_CODES: frozenset[int] = frozenset({10030000001})
+
 
 # ---------------------------------------------------------------------------
 # OpenAPI string error-code -> exception mapping
@@ -583,7 +589,13 @@ def raise_for_status(response: Response) -> None:
     business_cls: type[APIError] | None = None
     if status < 500:
         code = _business_code(body)
-        business_cls = _BUSINESS_CODE_MAP.get(code) if code is not None else None
+        is_commit_request = isinstance(url, str) and "/commit/" in urlparse(url).path
+        if code in _COMMIT_RETRYABLE_BUSINESS_CODES and is_commit_request:
+            # A branch race or repository-side policy gate is transient even
+            # though the endpoint reports it with a client-error HTTP status.
+            business_cls = ServerError
+        else:
+            business_cls = _BUSINESS_CODE_MAP.get(code) if code is not None else None
         if business_cls is None:
             # The OpenAPI surface publishes a string code instead of a numeric one.
             openapi_code = _openapi_code(body)

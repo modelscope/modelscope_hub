@@ -931,12 +931,20 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MODELSCOPE_UPLOAD_MAX_CONCURRENT_WORKERS` | `min(8, cpu+4)` | Default parallel worker threads |
-| `MODELSCOPE_UPLOAD_CACHE_ENABLED` | `true` | Enable resumable upload cache |
+| `MODELSCOPE_UPLOAD_CACHE_ENABLED` | `true` | Enable resumable upload cache; only committed files are skipped on a later run |
 | `MODELSCOPE_UPLOAD_IGNORE_FILE_PATTERN` | — | File pattern excluded by legacy `push_to_hub` uploads |
-| `MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB` | `102400` | Max single file size (MB, default 100 GB) |
-| `MODELSCOPE_UPLOAD_MAX_FILE_COUNT` | `100000` | Max total files per upload |
+| `MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB` | `102400` | Advisory single-file warning threshold (MB); uploads continue above it |
+| `MODELSCOPE_UPLOAD_MAX_FILE_COUNT` | `100000` | Advisory total file-count warning threshold; uploads continue above it |
+| `MODELSCOPE_UPLOAD_MAX_FILES_PER_DIRECTORY` | `50000` | Advisory per-directory file-count warning threshold |
+| `MODELSCOPE_UPLOAD_NORMAL_FILES_TOTAL_SIZE_MB` | `500` | Advisory total inline-file size warning threshold (MB) |
+| `MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD` | `1MiB` | Route larger non-metadata files through LFS; accepts byte-unit suffixes |
+| `MODELSCOPE_UPLOAD_COMMIT_BATCH_MAX_OPERATIONS` | `256` | Target actions per commit, clamped to the server hard ceiling |
+| `MODELSCOPE_UPLOAD_COMMIT_MAX_INLINE_BYTES` | `8MiB` | Estimated commit request-body budget used as the secondary batch constraint |
+| `MODELSCOPE_UPLOAD_COMMIT_MAX_ATTEMPTS` | `5` | Maximum attempts for one transient commit failure |
 | `MODELSCOPE_UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS` | `30` | Blob upload connect timeout (seconds) |
 | `MODELSCOPE_UPLOAD_BLOB_READ_TIMEOUT_SECONDS` | `3600` | Blob upload read timeout (seconds) |
+
+Capacity thresholds are advisory and emit warnings without blocking upload. Structural errors (invalid paths, missing inputs, changed files) still fail immediately, while the server's per-commit action ceiling is always enforced by splitting. A manual rerun retries every file not marked committed, including files whose previous run ended with a non-retryable error.
 
 **Logging:**
 

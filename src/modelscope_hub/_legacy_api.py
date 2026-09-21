@@ -40,6 +40,7 @@ from .constants import (
     RepoType,
 )
 from .errors import (
+    APIError,
     InvalidParameter,
     NetworkError,
     PermissionDeniedError,
@@ -815,7 +816,19 @@ class LegacyClient:
             f"repos/{segment}/{repo_id}/commit/{revision}",
             json_body=payload,
         )
-        return self._json_data(resp)
+        body = resp.json()
+        if isinstance(body, dict) and (body.get("Success") is False or body.get("success") is False):
+            message = body.get("Message") or body.get("message") or "Commit was rejected by the server"
+            request_id = body.get("RequestId") or body.get("requestId") or body.get("request_id")
+            raise APIError(
+                str(message),
+                status_code=resp.status_code,
+                request_id=request_id,
+                response_body=body,
+                url=resp.url,
+                method="POST",
+            )
+        return body.get("Data", body) if isinstance(body, dict) else body
 
     # ------------------------------------------------------------------
     # Blob Upload (LFS)
