@@ -9,8 +9,9 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from ._cache_paths import endpoint_cache_root
 from .config import get_default_config
-from .constants import RepoType
+from .constants import DEFAULT_ENDPOINT, RepoType
 from .errors import CacheError
 from .types import CachedRepoInfo, CacheInfo, CacheVerification, VerificationMismatch
 from .utils.file_utils import compute_hash
@@ -22,7 +23,7 @@ logger = get_logger("cache")
 _DEFAULT_SCAN_TYPES = [RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.MCP]
 
 
-def scan_cache(cache_dir: Path | None = None) -> CacheInfo:
+def scan_cache(cache_dir: Path | None = None, *, endpoint: str | None = DEFAULT_ENDPOINT) -> CacheInfo:
     """Scan the local cache and return metadata about cached repositories.
 
     Parameters
@@ -36,7 +37,7 @@ def scan_cache(cache_dir: Path | None = None) -> CacheInfo:
         Summary of all cached repositories, total size, etc.
     """
     config = get_default_config()
-    root = Path(cache_dir) if cache_dir else config.cache_dir
+    root = endpoint_cache_root(Path(cache_dir) if cache_dir else config.cache_dir, endpoint)
 
     if not root.is_dir():
         return CacheInfo(repos=[], total_size=0, cache_dir=str(root))
@@ -136,6 +137,8 @@ def clear_cache(
     cache_dir: Path | None = None,
     repo_type: str | None = None,
     repo_id: str | None = None,
+    *,
+    endpoint: str | None = DEFAULT_ENDPOINT,
 ) -> int:
     """Remove cached data from disk.
 
@@ -160,7 +163,7 @@ def clear_cache(
         On filesystem errors.
     """
     config = get_default_config()
-    root = Path(cache_dir) if cache_dir else config.cache_dir
+    root = endpoint_cache_root(Path(cache_dir) if cache_dir else config.cache_dir, endpoint)
 
     # Guard against accidental nuke: passing only ``repo_id`` would otherwise
     # silently fall through to the "clear everything" branch below.
@@ -223,6 +226,7 @@ def verify_cache(
     revision: str | None = None,
     cache_dir: str | Path | None = None,
     local_dir: str | Path | None = None,
+    endpoint: str | None = DEFAULT_ENDPOINT,
 ) -> CacheVerification:
     """Compare a cached snapshot or local directory with remote SHA-256 values."""
     root, resolved_revision = _resolve_verification_root(
@@ -231,6 +235,7 @@ def verify_cache(
         revision=revision,
         cache_dir=cache_dir,
         local_dir=local_dir,
+        endpoint=endpoint,
     )
     local_by_path = {
         relative.as_posix(): path
@@ -275,6 +280,7 @@ def _resolve_verification_root(
     revision: str | None,
     cache_dir: str | Path | None,
     local_dir: str | Path | None,
+    endpoint: str | None = DEFAULT_ENDPOINT,
 ) -> tuple[Path, str]:
     if local_dir is not None:
         root = Path(local_dir).expanduser().resolve()
@@ -282,7 +288,10 @@ def _resolve_verification_root(
             raise CacheError(f"Local directory does not exist: {root}")
         return root, revision or "master"
 
-    cache_root = Path(cache_dir or get_default_config().cache_dir).expanduser().resolve()
+    cache_root = endpoint_cache_root(
+        Path(cache_dir or get_default_config().cache_dir).expanduser().resolve(),
+        endpoint,
+    )
     segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
     repo_root = cache_root / segment / repo_id.replace("/", "--")
     snapshots = repo_root / "snapshots"
