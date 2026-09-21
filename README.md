@@ -33,6 +33,10 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**Unreleased**
+- **Feature**: `ms-hub agent install -r owner/name` fetches the official framework plugin from a model repository and delegates to the entry operation it declares, plus the `modelscope_hub.agent.install_agent` SDK entry. The hub gains no framework knowledge.
+- **Quality**: loading a plugin executes code this package did not ship, so it is gated by a compile-time owner allow-list checked before any download and a `content_sha256` manifest verified against every file before import.
+
 **v0.4.0** (2026-09-01)
 - **Feature**: complete OpenAPI coverage for Agent-IDP, MCP, and Studios — Agent Ed25519 identities, OIDC discovery/JWKS and signed JWT issuance (`HubApi`, `ms-hub agent-idp`); Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier. Agent private JWKs are only written to an explicitly requested owner-only file.
 - **Fix**: Studio compat calls no longer leak connection options or API tokens, or drop cover images; errors distinguish permission, quota and conflicts; anonymous Studio info and log pagination work
@@ -640,12 +644,17 @@ ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
 
 ### `ms-hub agent`
 
-Low-level raw file transfer for remote agent repositories: `download`, `upload`, `list`. This command transfers files as-is, with **no framework awareness**.
+Remote agent repositories: raw file transfer (`download`, `upload`, `list`) and plugin-driven `install`.
 
 ```bash
 ms-hub agent download -r user/my-agent --local-dir ./my-agent   # download raw files
 ms-hub agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw
+ms-hub agent install  -r user/my-agent                          # install into the framework
 ```
+
+`download` / `upload` / `list` transfer files as-is, with **no framework awareness**.
+
+`install` is different: it fetches an official plugin and hands the agent id to it, leaving every framework decision to the plugin. See [`ms-hub agent install`](#ms-hub-agent-install) for the details and the security model.
 
 > **Framework-aware operations** (cross-framework `convert`, `watch`/bidirectional sync, `status`, `backups`, `restore`, `stop`) live in **[modelscope-agent](https://github.com/modelscope/ms-agent)** — use `ms-agent agent ...` instead. For example, to download and convert in one step: `ms-agent agent download -f qoder -r user/my-agent --target-framework qwenpaw`.
 
@@ -682,6 +691,59 @@ ms-hub agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 | `--local-dir DIR` | no | Source path (file or directory) to upload (default: CWD) |
 | `--revision REV` | no | Repository revision (default: `master`) |
 | `--dry-run` | no | List files that would be uploaded without uploading |
+
+#### `ms-hub agent install`
+
+Download an agent and hand it to its **framework plugin**. A plugin with an `install` entry point places the agent into the framework's workspace; one that only transports bytes writes the repository's files into a destination directory and leaves placement to whatever runs next. The command reports which happened (`Installed …` vs `Fetched …`).
+
+```bash
+ms-hub agent install -r user/my-agent
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `-r, --repo REPO` | yes | Agent repository to install (`owner/name`) |
+| `--plugin-revision REV` | no | Plugin revision (default: `master`; pin a tag for reproducible installs) |
+| `-n, --name NAME` | no | Sub-agent name, passed through to the plugin |
+| `--framework FW` | no | Override the plugin's framework detection |
+| `--local-dir DIR` | no | Where the agent repository is **downloaded**, not where it is installed. Omitted, downloads go to `$MODELSCOPE_CACHE/agent/agent-staging/<owner>--<name>-<timestamp>/` and are cleaned up on success |
+| `--dry-run` | no | Ask the plugin to report instead of change anything. The plugin is still downloaded, imported and run — only its writes are suppressed |
+| `-y, --yes` / `--force` / `-q, --quiet` | no | Passed through to the plugin |
+
+Exit codes: `0` success, `2` a gate refused or the command line is wrong, otherwise **the plugin's own code** — the install layer uses `3` (already exists), `4` (refused to overwrite), `5` (install or self-check failed), `6` (framework mismatch).
+
+##### Supported scope
+
+This package supports **no frameworks**; what can be installed is a property of the plugin build it fetches, so the authoritative list is printed every run:
+
+```
+plugin: modelscope/agent-hub-plugin@v0.3.1 (version 0.3.1)
+entry : agent_hub_plugin.install()          # negotiated: install > fetch_raw > download
+scope : frameworks ms-agent, qwenpaw | operations fetch_raw, install, list_backups, restore | planned convert (P2), upload (P1)
+Installed user/my-agent
+```
+
+`planned` names operations the plugin declares but has not implemented; calling one returns `ok=False` naming the planned release.
+
+##### Security model
+
+Where the plugin may come from is fixed at compile time, not at the command line:
+
+1. **Owner allow-list** — `modelscope_hub.constants.AGENT_PLUGIN_TRUSTED_OWNERS`, currently `modelscope` and `AI-ModelScope`. Checked before anything is downloaded, with no environment override and no per-invocation confirmation: an allow-listed plugin is fetched and run. Widening the list is a reviewed code change.
+2. **Manifest integrity** — `plugin.json`'s `content_sha256` is verified against the files on disk before import. That proves the bytes are the ones the manifest described; it is **not** authenticity, since the manifest is unsigned and ships beside the code it describes. Origin rests on the allow-list alone.
+
+Which build is about to run is logged before the import. The plugin receives your `--endpoint` and your API token, since it needs credentials to fetch the agent.
+
+Plugins from other owners are not supported. The package format is documented for maintainers in the `modelscope_hub.agent._plugin` module docstring.
+
+##### Python API
+
+```python
+from modelscope_hub.agent import install_agent
+
+outcome = install_agent("owner/my-agent", plugin_revision="v0.3.1")
+print(outcome.ok, outcome.operation, outcome.exit_code, outcome.error)
+```
 
 </details>
 

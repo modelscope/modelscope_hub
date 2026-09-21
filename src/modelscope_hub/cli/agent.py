@@ -1,11 +1,15 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
-"""``ms agent`` command -- low-level raw file transfer for agent repositories.
+"""``ms agent`` command -- agent repository transfer and plugin-driven install.
 
-This is the *slim* Hub CLI. It supports only ``download``/``upload``/``list``
-for raw file transfer to and from remote agent repositories; Agent-IDP identity,
-Ed25519-key, and token operations live in ``ms agent-idp``. Framework-aware
-operations (convert, watch/sync, status, backups, restore, stop) live in
-**modelscope-agent** -- use ``ms-agent agent ...``.
+``download`` / ``upload`` / ``list`` are the *slim* Hub CLI: raw file transfer to
+and from remote agent repositories, with no framework awareness. Agent-IDP
+identity, Ed25519-key and token operations live in ``ms agent-idp``.
+Framework-aware operations (convert, watch/sync, status, backups, restore, stop)
+live in **modelscope-agent** -- use ``ms-agent agent ...``.
+
+``install`` is the exception, and it keeps that boundary by delegating rather
+than knowing: it fetches a framework plugin and hands the agent id over, so no
+framework file layout enters this distribution.
 """
 
 from __future__ import annotations
@@ -15,10 +19,15 @@ import sys
 from argparse import RawDescriptionHelpFormatter
 from pathlib import Path
 
-from ..agent import AgentApi, agent_last_modified, agent_visibility_label, is_lfs_file
-from ..constants import Visibility
+from ..agent import AgentApi, agent_last_modified, agent_visibility_label, install_agent, is_lfs_file
+from ..constants import (
+    AGENT_PLUGIN_TRUSTED_OWNERS,
+    DEFAULT_AGENT_PLUGIN_REPO,
+    Visibility,
+)
 from ..errors import APIError
-from .base import CLICommand, SubParsers
+from .base import CLICommand, SubParsers, info, success
+from .compat import add_subcmd_token_endpoint
 
 _CONVERT_HINT = (
     "This command transfers raw files only. For framework-aware conversion, "
@@ -250,11 +259,80 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
     return 0
 
 
+def _cmd_install(
+    repo,
+    *,
+    name,
+    framework,
+    local_dir,
+    dry_run,
+    yes,
+    force,
+    quiet,
+    plugin_repo,
+    plugin_revision,
+    endpoint,
+    token,
+) -> int:
+    """Install an agent through its framework plugin.
+
+    The gates in :func:`install_agent` raise rather than return a code, and are
+    deliberately not caught here so ``run_cmd`` maps them to exit 2: a
+    misconfigured command line is a different failure from a failed install.
+
+    The plugin's exit code passes through unchanged. The install layer gives
+    3/4/5/6 distinct meanings (already exists, refused to overwrite, install or
+    self-check failed, framework mismatch); collapsing them to 1 would discard
+    the only machine-readable signal a caller has.
+    """
+    outcome = install_agent(
+        repo,
+        name=name,
+        framework=framework,
+        local_dir=local_dir,
+        dry_run=dry_run,
+        yes=yes,
+        force=force,
+        quiet=quiet,
+        plugin_repo=plugin_repo,
+        plugin_revision=plugin_revision,
+        endpoint=endpoint,
+        token=token,
+    )
+
+    plugin = outcome.plugin
+    if plugin is not None and not quiet:
+        info(f"plugin: {plugin.repo_id}@{plugin.revision} (version {plugin.version})")
+        if outcome.operation:
+            info(f"entry : {plugin.entry_module}.{outcome.operation}()")
+        info(f"scope : {plugin.scope()}")
+
+    if not outcome.ok:
+        _fail(outcome.error or "install failed")
+        return outcome.exit_code or 1
+    if outcome.exit_code:
+        # Reported success but a non-zero code; trust the code.
+        return outcome.exit_code
+
+    if not quiet:
+        result = outcome.result
+        written = getattr(result, "files_written", None)
+        root = getattr(result, "root", None)
+        # ``fetch_raw`` stages files for the install layer to place; reporting
+        # "Installed" would hide that no framework was touched.
+        verb, where = ("Fetched", "to") if outcome.operation == "fetch_raw" else ("Installed", "under")
+        if written is not None and root is not None:
+            success(f"{verb} {repo}: {len(written)} file(s) {where} {root}")
+        else:
+            success(f"{verb} {repo}")
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # CLI command
 # ---------------------------------------------------------------------------
 class AgentCommand(CLICommand):
-    """Raw agent-repository file transfer: download, upload, list."""
+    """Agent repositories: raw file transfer, plus plugin-driven install."""
 
     @staticmethod
     def register(subparsers: SubParsers) -> None:
@@ -263,19 +341,28 @@ class AgentCommand(CLICommand):
             "  download  -r REPO [--local-dir DIR] [--revision REV]\n"
             "  upload    -r REPO [--local-dir DIR] [--revision REV] [--dry-run]\n"
             "  list      [--owner OWNER] [--page N] [--page-size N]\n"
+            "  install   -r REPO [--plugin-repo OWNER/NAME]\n"
+            "            [-n NAME] [--framework FW] [--local-dir DIR] [--plugin-revision REV]\n"
+            "            [--dry-run] [-y] [--force] [-q]\n"
             "\n"
             "note:\n"
             f"  {_CONVERT_HINT}\n"
+            "  `install` delegates to a framework plugin; see `ms agent install --help`.\n"
             "\n"
             "examples:\n"
             "  ms agent download -r user/my-agent --local-dir ./my-agent\n"
             "  ms agent upload -r user/my-agent --local-dir ./my-agent\n"
             "  ms agent list --owner user\n"
+            "  ms agent install -r user/my-agent\n"
         )
         agent_parser = subparsers.add_parser(
             "agent",
-            help="Transfer raw agent repository files (download, upload, list).",
-            description="Low-level raw file transfer for remote agent repositories. " + _CONVERT_HINT,
+            help="Agent repositories: raw file transfer (download, upload, list) and install.",
+            description=(
+                "Work with remote agent repositories. `download`/`upload`/`list` are low-level raw "
+                "file transfer. " + _CONVERT_HINT + " `install` instead resolves a framework plugin, "
+                "fetches it from a model repository, and delegates the install to it."
+            ),
             epilog=_epilog,
             formatter_class=RawDescriptionHelpFormatter,
         )
@@ -342,6 +429,64 @@ class AgentCommand(CLICommand):
             "--page-size", dest="page_size", type=int, default=10, help="Number of items per page (default: 10)"
         )
 
+        # ---- install ----
+        p_install = agent_sub.add_parser(
+            "install",
+            help="Install an agent into its framework via the agent plugin",
+            formatter_class=RawDescriptionHelpFormatter,
+            description=(
+                "Download an agent repository and hand it to the framework plugin. A plugin with an "
+                "install entry point places the agent into the framework's workspace; one that only "
+                "transports bytes writes the files into a destination directory and leaves placement "
+                "to whatever runs next. Every run prints a 'scope :' line with what that plugin build "
+                "supports.\n\n"
+                f"The plugin is official code chosen by a compile-time owner allow-list "
+                f"({', '.join(sorted(AGENT_PLUGIN_TRUSTED_OWNERS))}), checked before any download and "
+                f"the whole authorisation: an allow-listed plugin is fetched and run with no separate "
+                f"confirmation. It receives your --endpoint and API token, since it needs credentials "
+                f"to fetch the agent."
+            ),
+        )
+        p_install.add_argument(
+            "-r",
+            "--repo",
+            required=True,
+            help="Agent repository to install, in owner/name format (e.g. user/my-agent)",
+        )
+        p_install.add_argument(
+            "-n", "--name", default=None, help="Sub-agent name to install (default: the plugin's choice)"
+        )
+        p_install.add_argument("--framework", default=None, help="Override framework detection")
+        p_install.add_argument(
+            "--local-dir",
+            default=None,
+            help="Where the agent repository is downloaded, not where it is installed: an installing "
+            "plugin still puts the agent in the framework's own home (e.g. ~/.ms_agent, ~/.qwenpaw) "
+            "and leaves your directory alone. Omitted, downloads go to "
+            "$MODELSCOPE_CACHE/agent/agent-staging/ and are cleaned up on success.",
+        )
+        p_install.add_argument(
+            "--plugin-repo",
+            default=None,
+            help=f"Plugin model repository, owner/name (default: {DEFAULT_AGENT_PLUGIN_REPO}). "
+            f"Its owner must be on the allow-list.",
+        )
+        p_install.add_argument(
+            "--plugin-revision",
+            default=None,
+            help="Plugin revision to fetch (default: master; pin a tag for reproducible installs)",
+        )
+        p_install.add_argument(
+            "--dry-run",
+            action="store_true",
+            help="Ask the plugin to report instead of change anything. The plugin is still downloaded, "
+            "imported and run -- only its writes are suppressed",
+        )
+        p_install.add_argument("-y", "--yes", action="store_true", help="Answer the plugin's prompts yes")
+        p_install.add_argument("--force", action="store_true", help="Let the plugin overwrite an existing agent")
+        p_install.add_argument("-q", "--quiet", action="store_true", help="Suppress the plugin's progress output")
+        add_subcmd_token_endpoint(p_install)
+
     def execute(self) -> None:
         args = self.args
         action = args.agent_command
@@ -393,6 +538,21 @@ class AgentCommand(CLICommand):
                 owner=args.owner,
                 page_number=args.page_number,
                 page_size=args.page_size,
+                endpoint=endpoint,
+                token=token,
+            )
+        elif action == "install":
+            rc = _cmd_install(
+                args.repo,
+                name=args.name,
+                framework=args.framework,
+                local_dir=args.local_dir,
+                dry_run=args.dry_run,
+                yes=args.yes,
+                force=args.force,
+                quiet=args.quiet,
+                plugin_repo=args.plugin_repo,
+                plugin_revision=args.plugin_revision,
                 endpoint=endpoint,
                 token=token,
             )

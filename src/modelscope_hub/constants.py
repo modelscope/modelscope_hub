@@ -1241,7 +1241,40 @@ GIT_TOKEN_FILE_NAME: str = "git_token"
 USER_INFO_FILE_NAME: str = "user"
 
 
+# ---------------------------------------------------------------------------
+# Agent plugin loading (``ms agent install``)
+#
+# These constrain where the plugin that ``ms agent install`` imports may come
+# from. The security model they serve is documented in
+# :mod:`modelscope_hub.agent._plugin`.
+# ---------------------------------------------------------------------------
+ENV_AGENT_PLUGIN_REPO: str = "MODELSCOPE_AGENT_PLUGIN_REPO"
+
+#: Owners allowed to provide the agent plugin.
+#:
+#: A compile-time constant with **no environment override**, on purpose. This list
+#: is the trust anchor for a command that executes downloaded code, and an anchor
+#: any parent process can rewrite through the environment is not an anchor: a
+#: script that can set env vars could point ``ms agent install`` at a repository
+#: it controls. Deciding who is trusted is a reviewed code change.
+#:
+#: ``MODELSCOPE_AGENT_PLUGIN_REPO`` *is* overridable and that is safe: it chooses
+#: which repository to fetch, but the owner still has to appear here, so it can
+#: pick among already-trusted owners without widening trust.
+AGENT_PLUGIN_TRUSTED_OWNERS: frozenset[str] = frozenset({"modelscope", "AI-ModelScope"})
+
+DEFAULT_AGENT_PLUGIN_REPO: str = "modelscope/agent-hub-plugin"
+DEFAULT_AGENT_PLUGIN_REVISION: str = "master"
+
+_env_register(
+    ENV_AGENT_PLUGIN_REPO,
+    DEFAULT_AGENT_PLUGIN_REPO,
+    "Model repository id ('owner/name') of the agent plugin used by 'ms agent install'",
+    "Core",
+)
+
 __all__ = [
+    "AGENT_PLUGIN_TRUSTED_OWNERS",
     "API_CONNECT_TIMEOUT",
     "API_CONNECTION_POOL_MAXSIZE",
     "API_MAX_RETRIES",
@@ -1250,6 +1283,8 @@ __all__ = [
     "COMMIT_MAX_ACTIONS_PER_REQUEST",
     "CONFIG_DIR_NAME",
     "DATASET_LFS_SUFFIX",
+    "DEFAULT_AGENT_PLUGIN_REPO",
+    "DEFAULT_AGENT_PLUGIN_REVISION",
     "DEFAULT_CACHE_DIR_NAME",
     "DEFAULT_CREDENTIALS_PATH",
     "DEFAULT_DATASET_REVISION",
@@ -1269,6 +1304,7 @@ __all__ = [
     "DOWNLOAD_PART_SIZE",
     "DOWNLOAD_RETRY_TIMES",
     "DOWNLOAD_TIMEOUT",
+    "ENV_AGENT_PLUGIN_REPO",
     "ENV_FILE_LOCK",
     "ENV_CACHE",
     "ENV_INTRA_CLOUD_ACCELERATION",
