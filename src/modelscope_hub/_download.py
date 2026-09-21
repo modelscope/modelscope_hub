@@ -37,6 +37,7 @@ import requests
 from tqdm.auto import tqdm
 from urllib3.util.retry import Retry
 
+from ._cache_paths import endpoint_cache_root
 from .constants import (
     DOWNLOAD_CHUNK_SIZE,
     DOWNLOAD_PARALLEL_THRESHOLD,
@@ -1024,7 +1025,7 @@ class DownloadManager:
         cache_dir: Path | None = None,
     ) -> Path:
         """Compute the repo cache directory path without creating it."""
-        base = cache_dir or self._config.cache_dir
+        base = endpoint_cache_root(cache_dir or self._config.cache_dir, self._client.endpoint)
         segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
         safe_id = repo_id.replace("/", "--")
         return base / segment / safe_id
@@ -1059,7 +1060,9 @@ class DownloadManager:
         Returns the first existing, non-empty candidate, or ``None`` when the
         cache is clean (so the caller falls back to the new layout).
         """
-        base = cache_dir or self._config.cache_dir
+        base = endpoint_cache_root(cache_dir or self._config.cache_dir, self._client.endpoint)
+        if base != Path(cache_dir or self._config.cache_dir):
+            return None
         segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
         parts = repo_id.split("/", 1)
         if len(parts) != 2:
@@ -1096,7 +1099,7 @@ class DownloadManager:
         (repo type + repo id + optional file path), but store only a stable
         SHA-256 digest in the basename.
         """
-        base = cache_dir or self._config.cache_dir
+        base = endpoint_cache_root(cache_dir or self._config.cache_dir, self._client.endpoint)
         scope = "file" if file_path is not None else "repo"
         key = "\0".join(
             (
