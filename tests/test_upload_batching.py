@@ -14,13 +14,21 @@ import modelscope_hub._upload as upload_module
 from modelscope_hub._upload import (
     BatchTracker,
     UploadManager,
+    UploadTracker,
     _calculate_adaptive_batch_size,
     _is_inline_metadata,
     _normalize_path_in_repo,
     _plan_commit_batches,
     _upload_mode,
 )
-from modelscope_hub.errors import InvalidParameter, NetworkError, RateLimitError
+from modelscope_hub.errors import (
+    AlreadyExistsError,
+    APIError,
+    InvalidParameter,
+    NetworkError,
+    RateLimitError,
+    StorageError,
+)
 
 
 def _make_manager() -> tuple[UploadManager, MagicMock]:
@@ -68,9 +76,11 @@ def test_adaptive_batch_size_is_monotonic_and_never_exceeds_cap() -> None:
     assert max(sizes) == 256
 
 
-def test_batch_plan_closes_on_inline_bytes_before_operation_cap(tmp_path: Path) -> None:
+def test_batch_plan_closes_on_inline_bytes_before_operation_cap(tmp_path: Path, monkeypatch) -> None:
     # 8 inline files of 100 KiB: the operation cap would take all 8 in one
-    # commit, but their base64 form exceeds a 512 KiB inline budget.
+    # commit, but their base64 form exceeds a 512 KiB inline budget. Pin the LFS
+    # threshold above their size so they really travel inline under any default.
+    monkeypatch.setattr(upload_module, "UPLOAD_LFS_FORCE_THRESHOLD_BYTES", 2 * 1024 * 1024)
     files = []
     sizes = {}
     for index in range(8):
@@ -114,9 +124,72 @@ def test_batch_plan_ignores_lfs_bytes_in_the_inline_budget(tmp_path: Path) -> No
     assert plan == [8]
 
 
-def test_batch_plan_keeps_one_oversized_inline_file_per_batch(tmp_path: Path) -> None:
-    # Below the 1 MiB LFS threshold, so these really do travel inline; each one
+def test_four_25gb_lfs_files_share_one_commit_plan() -> None:
+    files = [(f"shard-{index}.bin", f"/virtual/shard-{index}.bin") for index in range(4)]
+    sizes = {local: 25 * 1024**3 for _, local in files}
+
+    plan = _plan_commit_batches(
+        files,
+        "dataset",
+        max_operations=256,
+        max_inline_bytes=8 * 1024 * 1024,
+        sizes=sizes,
+    )
+
+    assert plan == [4]
+
+
+def test_four_oversized_inline_metadata_files_require_four_commits() -> None:
+    files = [(f"part-{index}/README.md", f"/virtual/part-{index}/README.md") for index in range(4)]
+    sizes = {local: 10 * 1024**2 for _, local in files}
+
+    plan = _plan_commit_batches(
+        files,
+        "dataset",
+        max_operations=256,
+        max_inline_bytes=8 * 1024 * 1024,
+        sizes=sizes,
+    )
+
+    assert plan == [1, 1, 1, 1]
+
+
+def test_forty_thousand_small_files_use_count_target() -> None:
+    files = [(f"part-{index}.txt", f"/virtual/part-{index}.txt") for index in range(40_000)]
+    sizes = dict.fromkeys((local for _, local in files), 1)
+
+    plan = _plan_commit_batches(
+        files,
+        "dataset",
+        max_operations=256,
+        max_inline_bytes=8 * 1024 * 1024,
+        sizes=sizes,
+    )
+
+    assert len(plan) == 157
+    assert sum(plan) == 40_000
+    assert max(plan) == 256
+
+
+def test_tiny_tail_batch_is_rebalanced_without_adding_commits() -> None:
+    files = [(f"part-{index}.txt", f"/virtual/part-{index}.txt") for index in range(257)]
+    sizes = dict.fromkeys((local for _, local in files), 1)
+
+    plan = _plan_commit_batches(
+        files,
+        "dataset",
+        max_operations=256,
+        max_inline_bytes=8 * 1024 * 1024,
+        sizes=sizes,
+    )
+
+    assert plan == [129, 128]
+
+
+def test_batch_plan_keeps_one_oversized_inline_file_per_batch(tmp_path: Path, monkeypatch) -> None:
+    # Pinned above the LFS threshold, so these really do travel inline; each one
     # alone blows the inline budget, which must not stall the plan.
+    monkeypatch.setattr(upload_module, "UPLOAD_LFS_FORCE_THRESHOLD_BYTES", 2 * 1024 * 1024)
     files = []
     sizes = {}
     for index in range(3):
@@ -479,6 +552,77 @@ def test_external_tracker_lets_a_second_run_skip_committed_files(tmp_path: Path)
 
     # The second run recognises the committed file and issues no new commit.
     assert client.create_commit.call_count == 1
+
+
+def test_resume_replans_only_pending_files_into_compact_batches(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(upload_module, "UPLOAD_COMMIT_BATCH_MAX_OPERATIONS", 4)
+    monkeypatch.setattr(upload_module, "UPLOAD_ADAPTIVE_BATCHING_ENABLED", False)
+    manager, client = _make_manager()
+    cache_path = tmp_path / ".ms_upload_cache"
+    tracker = UploadTracker(cache_path, repo_id="owner/repo")
+
+    pending = []
+    for index in range(8):
+        path = tmp_path / f"file-{index}.txt"
+        path.write_bytes(bytes([index]))
+        stat = path.stat()
+        tracker.put_hash(
+            path.name,
+            stat.st_mtime,
+            stat.st_size,
+            {"file_hash": f"{index:064x}", "file_size": stat.st_size},
+        )
+        if index % 2 == 0:
+            tracker.mark_committed_batch([(path.name, stat.st_mtime, stat.st_size)])
+        else:
+            pending.append(path.name)
+            tracker.mark_failed(path.name, stat.st_mtime, stat.st_size, error_type="commit_permanent")
+    tracker.save()
+
+    manager.upload_folder(
+        repo_id="owner/repo",
+        repo_type="dataset",
+        folder_path=tmp_path,
+        max_workers=1,
+        use_cache=True,
+        disable_tqdm=True,
+    )
+
+    client.create_commit.assert_called_once()
+    assert [op["path"] for op in client.create_commit.call_args.kwargs["operations"]] == pending
+    saved = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert all(entry.get("status") == "c" for entry in saved["files"].values())
+    assert all("error_type" not in entry for entry in saved["files"].values())
+
+
+def test_terminal_commit_failure_is_reported_and_manual_rerun_retries(tmp_path: Path) -> None:
+    manager, client = _make_manager()
+    (tmp_path / "README.md").write_bytes(b"hello")
+    client.create_commit.side_effect = [InvalidParameter("path is not allowed"), {"ok": True}]
+
+    with pytest.raises(StorageError, match="1 file"):
+        manager.upload_folder(
+            repo_id="owner/repo",
+            repo_type="model",
+            folder_path=tmp_path,
+            max_workers=1,
+            use_cache=True,
+            disable_tqdm=True,
+            sync_remote_repo=True,
+        )
+
+    client.list_repo_files.assert_not_called()
+    result = manager.upload_folder(
+        repo_id="owner/repo",
+        repo_type="model",
+        folder_path=tmp_path,
+        max_workers=1,
+        use_cache=True,
+        disable_tqdm=True,
+    )
+
+    assert result == {"ok": True}
+    assert client.create_commit.call_count == 2
 
 
 # ------------------------------------------------------------ progress events
@@ -848,6 +992,84 @@ def test_upload_file_honors_retry_after(monkeypatch) -> None:
     assert slept == [7.0]
 
 
+def test_upload_file_manual_rerun_retries_a_permanent_failure() -> None:
+    manager, client = _make_manager()
+    client.create_commit.side_effect = [InvalidParameter("path is not allowed"), {"ok": True}]
+
+    with pytest.raises(InvalidParameter):
+        manager.upload_file(
+            repo_id="owner/repo",
+            repo_type="model",
+            path_or_fileobj=b"hello",
+            path_in_repo="README.md",
+            disable_tqdm=True,
+        )
+
+    assert manager.upload_file(
+        repo_id="owner/repo",
+        repo_type="model",
+        path_or_fileobj=b"hello",
+        path_in_repo="README.md",
+        disable_tqdm=True,
+    ) == {"ok": True}
+    assert client.create_commit.call_count == 2
+
+
+def test_branch_changed_409_is_retried_in_commit_context(monkeypatch) -> None:
+    manager, client = _make_manager()
+    monkeypatch.setattr(upload_module.time, "sleep", lambda _seconds: None)
+    client.create_commit.side_effect = [
+        AlreadyExistsError(
+            "branch changed, please retry",
+            status_code=409,
+            response_body={"Code": 10030000001, "Message": "branch changed, please retry"},
+        ),
+        {"ok": True},
+    ]
+
+    assert manager._commit_with_retry(
+        repo_id="owner/repo",
+        repo_type="dataset",
+        operations=[{"action": "create", "path": "a.txt"}],
+        commit_message="retry branch race",
+    ) == {"ok": True}
+    assert client.create_commit.call_count == 2
+
+
+def test_policy_rejected_commit_splits_without_reuploading_blobs(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(upload_module, "UPLOAD_LFS_FORCE_THRESHOLD_BYTES", 0)
+    monkeypatch.setattr(upload_module, "UPLOAD_COMMIT_MAX_ATTEMPTS", 2)
+    monkeypatch.setattr(upload_module.time, "sleep", lambda _seconds: None)
+    manager, client = _make_manager()
+    for index in range(4):
+        (tmp_path / f"blob-{index}.dat").write_bytes(bytes([index + 1]) * 32)
+
+    def create_commit(**kwargs):
+        operations = kwargs["operations"]
+        if len(operations) == 4:
+            raise APIError(
+                "commit rejected by repository policy",
+                status_code=400,
+                response_body={"Code": 10030000001},
+            )
+        return {"ok": True}
+
+    client.create_commit.side_effect = create_commit
+    manager.upload_folder(
+        repo_id="owner/repo",
+        repo_type="dataset",
+        folder_path=tmp_path,
+        max_workers=1,
+        use_cache=False,
+        disable_tqdm=True,
+    )
+
+    assert client.upload_blob.call_count == 4
+    sent_sizes = [len(call.kwargs["operations"]) for call in client.create_commit.call_args_list]
+    assert sent_sizes[-2:] == [2, 2]
+    assert all(size == 4 for size in sent_sizes[:-2])
+
+
 def test_upload_file_still_fails_fast_on_a_permanent_error() -> None:
     manager, client = _make_manager()
     client.create_commit.side_effect = InvalidParameter("path is not allowed")
@@ -862,6 +1084,53 @@ def test_upload_file_still_fails_fast_on_a_permanent_error() -> None:
         )
 
     assert client.create_commit.call_count == 1
+
+
+def test_folder_capacity_limits_warn_but_do_not_block_upload(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(upload_module, "UPLOAD_MAX_FILE_COUNT", 1)
+    monkeypatch.setattr(upload_module, "UPLOAD_MAX_FILES_PER_DIRECTORY", 1)
+    monkeypatch.setattr(upload_module, "UPLOAD_MAX_FILE_SIZE_BYTES", 1)
+    monkeypatch.setattr(upload_module, "UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES", 1)
+    manager, client = _make_manager()
+    warnings = MagicMock()
+    monkeypatch.setattr(upload_module.logger, "warning", warnings)
+    (tmp_path / "a.txt").write_bytes(b"aa")
+    (tmp_path / "b.txt").write_bytes(b"bb")
+
+    manager.upload_folder(
+        repo_id="owner/repo",
+        repo_type="dataset",
+        folder_path=tmp_path,
+        max_workers=1,
+        use_cache=False,
+        disable_tqdm=True,
+    )
+
+    client.create_commit.assert_called_once()
+    messages = " ".join(call.args[0] for call in warnings.call_args_list)
+    assert "advisory limit" in messages
+    assert "continuing" in messages
+
+
+def test_upload_file_capacity_limit_warns_but_does_not_block(monkeypatch) -> None:
+    monkeypatch.setattr(upload_module, "UPLOAD_MAX_FILE_SIZE_BYTES", 1)
+    monkeypatch.setattr(upload_module, "UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES", 1)
+    manager, client = _make_manager()
+    warnings = MagicMock()
+    monkeypatch.setattr(upload_module.logger, "warning", warnings)
+
+    manager.upload_file(
+        repo_id="owner/repo",
+        repo_type="model",
+        path_or_fileobj=b"hello",
+        path_in_repo="notes.txt",
+        disable_tqdm=True,
+    )
+
+    client.create_commit.assert_called_once()
+    messages = " ".join(call.args[0] for call in warnings.call_args_list)
+    assert "single-file limit" in messages
+    assert "normal (non-LFS)" in messages
 
 
 def test_prepare_upload_folder_reports_sizes_for_reuse(tmp_path: Path) -> None:

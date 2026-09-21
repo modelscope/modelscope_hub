@@ -839,17 +839,15 @@ UPLOAD_ADAPTIVE_BATCHING_ENABLED: bool = _env_bool(
 UPLOAD_COMMIT_MAX_INLINE_BYTES: int = _env_bytes(
     "MODELSCOPE_UPLOAD_COMMIT_MAX_INLINE_BYTES",
     8 * 1024 * 1024,
-    "Maximum inlined (non-LFS) content carried by one commit request",
+    "Advisory estimated request-body budget for one upload commit",
     "Upload",
 )
-"""Byte ceiling on the base64 content a single commit may carry.
+"""Advisory byte budget for an estimated commit request body.
 
-Non-LFS files travel *inside* the commit request body, so a batch sized purely
-by file count can produce a request tens of megabytes large -- big enough for
-the server to time out mid-read, which surfaces on the client as an unrelated
-write timeout. Batching therefore closes a batch on whichever limit is reached
-first, this one or :data:`UPLOAD_COMMIT_BATCH_MAX_OPERATIONS`. LFS files
-contribute only a pointer, so they do not count against it.
+Normal files contribute their base64-expanded content plus operation JSON; LFS
+files contribute only pointer/action metadata. Batching closes on this budget or
+the operation target, whichever comes first. A single oversized inline file is
+still sent alone so this advisory budget never blocks an upload.
 """
 UPLOAD_COMMIT_MAX_PER_HOUR: int = _env_int(
     "MODELSCOPE_UPLOAD_COMMIT_MAX_PER_HOUR",
@@ -1012,7 +1010,7 @@ UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 # Upload: limits
 UPLOAD_LFS_FORCE_THRESHOLD_BYTES: int = _env_bytes(
     "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD",
-    1024 * 1024,
+    64 * 1024,
     "File size above which LFS mode is forced (bytes; accepts a unit suffix, 0 forces LFS for every file)",
     "Upload",
     deprecated_mb_names=("MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB",),
@@ -1049,7 +1047,7 @@ checked before the size and suffix rules.
 UPLOAD_MAX_FILE_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
     "MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB",
     100 * 1024,
-    "Maximum single upload file size (MB, default 100 GB)",
+    "Advisory single upload file size warning threshold (MB, default 100 GB)",
     "Upload",
     deprecated_mb_names=("UPLOAD_MAX_FILE_SIZE_MB",),
     deprecated_byte_names=("UPLOAD_MAX_FILE_SIZE",),
@@ -1057,21 +1055,21 @@ UPLOAD_MAX_FILE_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
 UPLOAD_MAX_FILE_COUNT: int = _env_int(
     "MODELSCOPE_UPLOAD_MAX_FILE_COUNT",
     100_000,
-    "Maximum total files per upload",
+    "Advisory total file-count warning threshold per upload",
     "Upload",
     "UPLOAD_MAX_FILE_COUNT",
 )
 UPLOAD_MAX_FILES_PER_DIRECTORY: int = _env_int(
     "MODELSCOPE_UPLOAD_MAX_FILES_PER_DIRECTORY",
     50_000,
-    "Maximum files in one uploaded directory",
+    "Advisory per-directory file-count warning threshold",
     "Upload",
     "UPLOAD_MAX_FILE_COUNT_IN_DIR",
 )
 UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
     "MODELSCOPE_UPLOAD_NORMAL_FILES_TOTAL_SIZE_MB",
     500,
-    "Maximum total size of normal (non-LFS) files (MB)",
+    "Advisory total normal-file size warning threshold (MB)",
     "Upload",
     deprecated_byte_names=("UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT",),
 )
@@ -1241,7 +1239,40 @@ GIT_TOKEN_FILE_NAME: str = "git_token"
 USER_INFO_FILE_NAME: str = "user"
 
 
+# ---------------------------------------------------------------------------
+# Agent plugin loading (``ms agent install``)
+#
+# These constrain where the plugin that ``ms agent install`` imports may come
+# from. The security model they serve is documented in
+# :mod:`modelscope_hub.agent._plugin`.
+# ---------------------------------------------------------------------------
+ENV_AGENT_PLUGIN_REPO: str = "MODELSCOPE_AGENT_PLUGIN_REPO"
+
+#: Owners allowed to provide the agent plugin.
+#:
+#: A compile-time constant with **no environment override**, on purpose. This list
+#: is the trust anchor for a command that executes downloaded code, and an anchor
+#: any parent process can rewrite through the environment is not an anchor: a
+#: script that can set env vars could point ``ms agent install`` at a repository
+#: it controls. Deciding who is trusted is a reviewed code change.
+#:
+#: ``MODELSCOPE_AGENT_PLUGIN_REPO`` *is* overridable and that is safe: it chooses
+#: which repository to fetch, but the owner still has to appear here, so it can
+#: pick among already-trusted owners without widening trust.
+AGENT_PLUGIN_TRUSTED_OWNERS: frozenset[str] = frozenset({"modelscope", "AI-ModelScope"})
+
+DEFAULT_AGENT_PLUGIN_REPO: str = "modelscope/agent-hub-plugin"
+DEFAULT_AGENT_PLUGIN_REVISION: str = "master"
+
+_env_register(
+    ENV_AGENT_PLUGIN_REPO,
+    DEFAULT_AGENT_PLUGIN_REPO,
+    "Model repository id ('owner/name') of the agent plugin used by 'ms agent install'",
+    "Core",
+)
+
 __all__ = [
+    "AGENT_PLUGIN_TRUSTED_OWNERS",
     "API_CONNECT_TIMEOUT",
     "API_CONNECTION_POOL_MAXSIZE",
     "API_MAX_RETRIES",
@@ -1250,6 +1281,8 @@ __all__ = [
     "COMMIT_MAX_ACTIONS_PER_REQUEST",
     "CONFIG_DIR_NAME",
     "DATASET_LFS_SUFFIX",
+    "DEFAULT_AGENT_PLUGIN_REPO",
+    "DEFAULT_AGENT_PLUGIN_REVISION",
     "DEFAULT_CACHE_DIR_NAME",
     "DEFAULT_CREDENTIALS_PATH",
     "DEFAULT_DATASET_REVISION",
@@ -1269,6 +1302,7 @@ __all__ = [
     "DOWNLOAD_PART_SIZE",
     "DOWNLOAD_RETRY_TIMES",
     "DOWNLOAD_TIMEOUT",
+    "ENV_AGENT_PLUGIN_REPO",
     "ENV_FILE_LOCK",
     "ENV_CACHE",
     "ENV_INTRA_CLOUD_ACCELERATION",

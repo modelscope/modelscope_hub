@@ -15,6 +15,7 @@ import json
 import pytest
 import requests
 
+from modelscope_hub._legacy_api import LegacyClient
 from modelscope_hub._openapi import _RETRYABLE_EXC
 from modelscope_hub.errors import (
     AlreadyExistsError,
@@ -126,6 +127,57 @@ def test_413_maps_to_invalid_parameter():
     """POST /files/upload answers 413 when the body exceeds 5 MiB."""
     with pytest.raises(InvalidParameter):
         raise_for_status(_plain_error(413))
+
+
+def test_commit_policy_business_code_is_retryable_only_on_commit_endpoint():
+    body = {
+        "Code": 10030000001,
+        "Message": "commit rejected by repository policy",
+        "Success": False,
+    }
+    commit_response = requests.Response()
+    commit_response.status_code = 400
+    commit_response._content = json.dumps(body).encode()
+    commit_response.headers["Content-Type"] = "application/json"
+    commit_response.url = "https://modelscope.cn/api/v1/repos/datasets/owner/repo/commit/master"
+
+    with pytest.raises(ServerError) as excinfo:
+        raise_for_status(commit_response)
+    assert excinfo.value.retryable is True
+    assert excinfo.value.status_code == 400
+
+    non_commit_response = requests.Response()
+    non_commit_response.status_code = 400
+    non_commit_response._content = json.dumps(body).encode()
+    non_commit_response.headers["Content-Type"] = "application/json"
+    non_commit_response.url = "https://modelscope.cn/api/v1/login"
+    with pytest.raises(InvalidParameter):
+        raise_for_status(non_commit_response)
+
+
+def test_legacy_commit_rejects_http_200_success_false(monkeypatch):
+    response = requests.Response()
+    response.status_code = 200
+    response._content = json.dumps(
+        {
+            "Code": 10030000001,
+            "Message": "commit rejected by repository policy",
+            "Success": False,
+        }
+    ).encode()
+    response.headers["Content-Type"] = "application/json"
+    response.url = "https://modelscope.cn/api/v1/repos/datasets/owner/repo/commit/master"
+    client = LegacyClient(endpoint="https://modelscope.cn", token="test")
+    monkeypatch.setattr(client, "_request", lambda *args, **kwargs: response)
+
+    with pytest.raises(APIError, match="repository policy") as excinfo:
+        client.create_commit(
+            repo_id="owner/repo",
+            repo_type="dataset",
+            operations=[{"action": "create", "path": "a.txt"}],
+            commit_message="test",
+        )
+    assert excinfo.value.response_body["Success"] is False
 
 
 # ---------------------------------------------------------------------------

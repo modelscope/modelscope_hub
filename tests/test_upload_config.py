@@ -331,13 +331,13 @@ def test_canonical_lfs_threshold_wins_over_deprecated_aliases() -> None:
         (
             {"MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD": "32ZB"},
             "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
-            1024 * 1024,
+            64 * 1024,
             "unknown size unit",
         ),
         (
             {"MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD": "-1"},
             "UPLOAD_LFS_FORCE_THRESHOLD_BYTES",
-            1024 * 1024,
+            64 * 1024,
             "must not be negative",
         ),
         (
@@ -394,7 +394,7 @@ def test_new_upload_knobs_are_registered_under_upload() -> None:
         "MODELSCOPE_UPLOAD_INLINE_METADATA_PATHS",
     ):
         assert registry[name]["category"] == "Upload"
-    assert registry["MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD"]["default"] == "1MiB"
+    assert registry["MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD"]["default"] == "64KiB"
     assert "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB" not in registry
 
 

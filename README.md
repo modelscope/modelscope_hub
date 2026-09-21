@@ -640,12 +640,17 @@ ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
 
 ### `ms-hub agent`
 
-Low-level raw file transfer for remote agent repositories: `download`, `upload`, `list`. This command transfers files as-is, with **no framework awareness**.
+Remote agent repositories: raw file transfer (`download`, `upload`, `list`) and plugin-driven `install`.
 
 ```bash
 ms-hub agent download -r user/my-agent --local-dir ./my-agent   # download raw files
 ms-hub agent upload   -r user/my-agent --local-dir ./my-agent   # upload raw
+ms-hub agent install  -r user/my-agent                          # install into the framework
 ```
+
+`download` / `upload` / `list` transfer files as-is, with **no framework awareness**.
+
+`install` is different: it fetches an official plugin and hands the agent id to it, leaving every framework decision to the plugin. See [`ms-hub agent install`](#ms-hub-agent-install) for the details and the security model.
 
 > **Framework-aware operations** (cross-framework `convert`, `watch`/bidirectional sync, `status`, `backups`, `restore`, `stop`) live in **[modelscope-agent](https://github.com/modelscope/ms-agent)** — use `ms-agent agent ...` instead. For example, to download and convert in one step: `ms-agent agent download -f qoder -r user/my-agent --target-framework qwenpaw`.
 
@@ -682,6 +687,59 @@ ms-hub agent upload -r user/my-agent --local-dir ./my-agent --dry-run
 | `--local-dir DIR` | no | Source path (file or directory) to upload (default: CWD) |
 | `--revision REV` | no | Repository revision (default: `master`) |
 | `--dry-run` | no | List files that would be uploaded without uploading |
+
+#### `ms-hub agent install`
+
+Download an agent and hand it to its **framework plugin**. A plugin with an `install` entry point places the agent into the framework's workspace; one that only transports bytes writes the repository's files into a destination directory and leaves placement to whatever runs next. The command reports which happened (`Installed …` vs `Fetched …`).
+
+```bash
+ms-hub agent install -r user/my-agent
+```
+
+| Option | Required | Description |
+|--------|----------|-------------|
+| `-r, --repo REPO` | yes | Agent repository to install (`owner/name`) |
+| `--plugin-revision REV` | no | Plugin revision (default: `master`; pin a tag for reproducible installs) |
+| `-n, --name NAME` | no | Sub-agent name, passed through to the plugin |
+| `--framework FW` | no | Override the plugin's framework detection |
+| `--local-dir DIR` | no | Where the agent repository is **downloaded**, not where it is installed. Omitted, downloads go to `$MODELSCOPE_CACHE/agent/agent-staging/<owner>--<name>-<timestamp>/` and are cleaned up on success |
+| `--dry-run` | no | Ask the plugin to report instead of change anything. The plugin is still downloaded, imported and run — only its writes are suppressed |
+| `-y, --yes` / `--force` / `-q, --quiet` | no | Passed through to the plugin |
+
+Exit codes: `0` success, `2` a gate refused or the command line is wrong, otherwise **the plugin's own code** — the install layer uses `3` (already exists), `4` (refused to overwrite), `5` (install or self-check failed), `6` (framework mismatch).
+
+##### Supported scope
+
+This package supports **no frameworks**; what can be installed is a property of the plugin build it fetches, so the authoritative list is printed every run:
+
+```
+plugin: modelscope/agent-hub-plugin@v0.3.1 (version 0.3.1)
+entry : agent_hub_plugin.install()          # negotiated: install > fetch_raw > download
+scope : frameworks ms-agent, qwenpaw | operations fetch_raw, install, list_backups, restore | planned convert (P2), upload (P1)
+Installed user/my-agent
+```
+
+`planned` names operations the plugin declares but has not implemented; calling one returns `ok=False` naming the planned release.
+
+##### Security model
+
+Where the plugin may come from is fixed at compile time, not at the command line:
+
+1. **Owner allow-list** — `modelscope_hub.constants.AGENT_PLUGIN_TRUSTED_OWNERS`, currently `modelscope` and `AI-ModelScope`. Checked before anything is downloaded, with no environment override and no per-invocation confirmation: an allow-listed plugin is fetched and run. Widening the list is a reviewed code change.
+2. **Manifest integrity** — `plugin.json`'s `content_sha256` is verified against the files on disk before import. That proves the bytes are the ones the manifest described; it is **not** authenticity, since the manifest is unsigned and ships beside the code it describes. Origin rests on the allow-list alone.
+
+Which build is about to run is logged before the import. The plugin receives your `--endpoint` and your API token, since it needs credentials to fetch the agent.
+
+Plugins from other owners are not supported. The package format is documented for maintainers in the `modelscope_hub.agent._plugin` module docstring.
+
+##### Python API
+
+```python
+from modelscope_hub.agent import install_agent
+
+outcome = install_agent("owner/my-agent", plugin_revision="v0.3.1")
+print(outcome.ok, outcome.operation, outcome.exit_code, outcome.error)
+```
 
 </details>
 
@@ -869,12 +927,20 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MODELSCOPE_UPLOAD_MAX_CONCURRENT_WORKERS` | `min(8, cpu+4)` | Default parallel worker threads |
-| `MODELSCOPE_UPLOAD_CACHE_ENABLED` | `true` | Enable resumable upload cache |
+| `MODELSCOPE_UPLOAD_CACHE_ENABLED` | `true` | Enable resumable upload cache; only committed files are skipped on a later run |
 | `MODELSCOPE_UPLOAD_IGNORE_FILE_PATTERN` | — | File pattern excluded by legacy `push_to_hub` uploads |
-| `MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB` | `102400` | Max single file size (MB, default 100 GB) |
-| `MODELSCOPE_UPLOAD_MAX_FILE_COUNT` | `100000` | Max total files per upload |
+| `MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB` | `102400` | Advisory single-file warning threshold (MB); uploads continue above it |
+| `MODELSCOPE_UPLOAD_MAX_FILE_COUNT` | `100000` | Advisory total file-count warning threshold; uploads continue above it |
+| `MODELSCOPE_UPLOAD_MAX_FILES_PER_DIRECTORY` | `50000` | Advisory per-directory file-count warning threshold |
+| `MODELSCOPE_UPLOAD_NORMAL_FILES_TOTAL_SIZE_MB` | `500` | Advisory total inline-file size warning threshold (MB) |
+| `MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD` | `1MiB` | Route larger non-metadata files through LFS; accepts byte-unit suffixes |
+| `MODELSCOPE_UPLOAD_COMMIT_BATCH_MAX_OPERATIONS` | `256` | Target actions per commit, clamped to the server hard ceiling |
+| `MODELSCOPE_UPLOAD_COMMIT_MAX_INLINE_BYTES` | `8MiB` | Estimated commit request-body budget used as the secondary batch constraint |
+| `MODELSCOPE_UPLOAD_COMMIT_MAX_ATTEMPTS` | `5` | Maximum attempts for one transient commit failure |
 | `MODELSCOPE_UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS` | `30` | Blob upload connect timeout (seconds) |
 | `MODELSCOPE_UPLOAD_BLOB_READ_TIMEOUT_SECONDS` | `3600` | Blob upload read timeout (seconds) |
+
+Capacity thresholds are advisory and emit warnings without blocking upload. Structural errors (invalid paths, missing inputs, changed files) still fail immediately, while the server's per-commit action ceiling is always enforced by splitting. A manual rerun retries every file not marked committed, including files whose previous run ended with a non-retryable error.
 
 **Logging:**
 
