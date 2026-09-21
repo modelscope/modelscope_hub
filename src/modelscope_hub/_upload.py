@@ -178,21 +178,32 @@ def _upload_mode(path: str | Path, size: int, repo_type: str) -> str:
 
 
 def _calculate_adaptive_batch_size(total_files: int, max_operations: int) -> int:
-    """Commit batch size from the file count alone, capped by *max_operations*.
+    """Return the operation target, always below the server's hard ceiling.
 
-    Fewer, fuller commits are strictly better: the Hub throttles commits per
-    repository, so commit count -- not commit size -- is the scarce resource.
-    The only reason to stop growing a batch is the operation cap, or the inlined
-    content limit that :func:`_plan_commit_batches` applies on top of this.
-
-    The cap is itself clamped to :data:`COMMIT_MAX_ACTIONS_PER_REQUEST`, which
-    the server rejects outright rather than truncating.
+    File count is the primary constraint because repository publishing is more
+    sensitive to action count than to blob volume. Request bytes are enforced
+    independently by :func:`_plan_commit_batches`.
     """
     if total_files <= 0:
         return 1
     ceiling = max(1, COMMIT_MAX_ACTIONS_PER_REQUEST)
     cap = max_operations if max_operations > 0 else total_files
     return max(1, min(cap, ceiling, total_files))
+
+
+_COMMIT_ENVELOPE_ESTIMATED_BYTES = 512
+_COMMIT_OPERATION_ESTIMATED_BYTES = 192
+_LFS_POINTER_ESTIMATED_BYTES = 128
+
+
+def _estimate_commit_operation_bytes(path_in_repo: str, size: int, repo_type: str) -> int:
+    """Estimate the JSON bytes one create operation contributes to a commit."""
+    path_bytes = len(path_in_repo.encode("utf-8"))
+    scalar_bytes = len(str(max(0, size)))
+    if _is_lfs(path_in_repo, size, repo_type):
+        return _COMMIT_OPERATION_ESTIMATED_BYTES + _LFS_POINTER_ESTIMATED_BYTES + path_bytes + scalar_bytes
+    encoded_bytes = (max(0, size) + 2) // 3 * 4
+    return _COMMIT_OPERATION_ESTIMATED_BYTES + path_bytes + scalar_bytes + encoded_bytes
 
 
 def _plan_commit_batches(
@@ -203,35 +214,60 @@ def _plan_commit_batches(
     max_inline_bytes: int,
     sizes: dict[str, int] | None = None,
 ) -> list[int]:
-    """Split *files* into commit batches, returning each batch's file count.
+    """Split files by action count first and estimated request bytes second.
 
-    Two limits close a batch, whichever is reached first: ``max_operations``
-    files, or ``max_inline_bytes`` of content that will ride *inside* the commit
-    request. Only non-LFS files contribute to the byte total -- an LFS file adds
-    a fixed-size pointer -- and base64 expansion is accounted for, because the
-    request carries the encoded form. A batch always holds at least one file, so
-    a single oversized inline file still makes progress instead of deadlocking.
+    Normal content is counted after base64 expansion. LFS blob bytes are not in
+    the commit request, but their pointer/action JSON still consumes a small
+    amount of space. A single oversized inline operation is allowed to make
+    progress and emits a warning. A tiny final count-only batch is rebalanced
+    with its predecessor when both balanced batches still fit all constraints.
     """
     if not files:
         return []
     cap = max_operations if max_operations > 0 else len(files)
     cap = max(1, min(cap, max(1, COMMIT_MAX_ACTIONS_PER_REQUEST)))
-
-    batches: list[int] = []
-    count = 0
-    inline_bytes = 0
+    weights: list[int] = []
     for path_in_repo, file_path in files:
         size = sizes.get(file_path, 0) if sizes is not None else _safe_size(file_path)
-        encoded = 0 if _is_lfs(path_in_repo, size, repo_type) else (size + 2) // 3 * 4
-        if count > 0 and (count >= cap or (max_inline_bytes > 0 and inline_bytes + encoded > max_inline_bytes)):
-            batches.append(count)
-            count = 0
-            inline_bytes = 0
-        count += 1
-        inline_bytes += encoded
-    if count:
-        batches.append(count)
-    return batches
+        is_lfs = _is_lfs(path_in_repo, size, repo_type)
+        weight = _estimate_commit_operation_bytes(path_in_repo, size, repo_type)
+        weights.append(weight)
+        if not is_lfs and max_inline_bytes > 0 and _COMMIT_ENVELOPE_ESTIMATED_BYTES + weight > max_inline_bytes:
+            logger.warning(
+                "Inline file %s alone exceeds the advisory commit request budget (%d > %d bytes); "
+                "sending it in a dedicated commit.",
+                path_in_repo,
+                _COMMIT_ENVELOPE_ESTIMATED_BYTES + weight,
+                max_inline_bytes,
+            )
+
+    batch_indexes: list[list[int]] = []
+    current: list[int] = []
+    request_bytes = _COMMIT_ENVELOPE_ESTIMATED_BYTES
+    for index, weight in enumerate(weights):
+        exceeds_bytes = max_inline_bytes > 0 and request_bytes + weight > max_inline_bytes
+        if current and (len(current) >= cap or exceeds_bytes):
+            batch_indexes.append(current)
+            current = []
+            request_bytes = _COMMIT_ENVELOPE_ESTIMATED_BYTES
+        current.append(index)
+        request_bytes += weight
+    if current:
+        batch_indexes.append(current)
+
+    if len(batch_indexes) >= 2 and len(batch_indexes[-1]) * 4 < len(batch_indexes[-2]):
+        combined = batch_indexes[-2] + batch_indexes[-1]
+        midpoint = (len(combined) + 1) // 2
+        candidates = (combined[:midpoint], combined[midpoint:])
+
+        def _fits(candidate: list[int]) -> bool:
+            estimated = _COMMIT_ENVELOPE_ESTIMATED_BYTES + sum(weights[i] for i in candidate)
+            return len(candidate) <= cap and (max_inline_bytes <= 0 or estimated <= max_inline_bytes)
+
+        if all(_fits(candidate) for candidate in candidates):
+            batch_indexes[-2:] = [list(candidates[0]), list(candidates[1])]
+
+    return [len(batch) for batch in batch_indexes]
 
 
 def _safe_size(file_path: str) -> int:
@@ -239,6 +275,61 @@ def _safe_size(file_path: str) -> int:
         return os.stat(file_path).st_size
     except OSError:
         return 0
+
+
+def _warn_advisory_upload_limits(
+    files: list[tuple[str, str]],
+    sizes: dict[str, int],
+    repo_type: str,
+) -> None:
+    """Warn about advisory scale limits without refusing a valid upload."""
+    if len(files) > UPLOAD_MAX_FILE_COUNT:
+        logger.warning(
+            "Upload contains %d files, above the advisory limit of %d; continuing.",
+            len(files),
+            UPLOAD_MAX_FILE_COUNT,
+        )
+
+    directory_counts: dict[str, int] = {}
+    oversized: list[tuple[str, int]] = []
+    normal_size = 0
+    for path_in_repo, file_path in files:
+        directory = posixpath.dirname(path_in_repo)
+        directory_counts[directory] = directory_counts.get(directory, 0) + 1
+        size = sizes.get(file_path, 0)
+        if size > UPLOAD_MAX_FILE_SIZE_BYTES:
+            oversized.append((path_in_repo, size))
+        if not _is_lfs(path_in_repo, size, repo_type):
+            normal_size += size
+
+    crowded = [
+        (path or "/", count) for path, count in directory_counts.items() if count > UPLOAD_MAX_FILES_PER_DIRECTORY
+    ]
+    if crowded:
+        preview = ", ".join(f"{path} ({count})" for path, count in crowded[:3])
+        suffix = f" and {len(crowded) - 3} more" if len(crowded) > 3 else ""
+        logger.warning(
+            "Upload has directories above the advisory %d-file limit: %s%s; continuing.",
+            UPLOAD_MAX_FILES_PER_DIRECTORY,
+            preview,
+            suffix,
+        )
+    if oversized:
+        preview = ", ".join(f"{path} ({size} bytes)" for path, size in oversized[:3])
+        suffix = f" and {len(oversized) - 3} more" if len(oversized) > 3 else ""
+        logger.warning(
+            "Upload has files above the advisory %d-byte single-file limit: %s%s; continuing.",
+            UPLOAD_MAX_FILE_SIZE_BYTES,
+            preview,
+            suffix,
+        )
+    if normal_size > UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES:
+        logger.warning(
+            "Total normal (non-LFS) content is %d bytes, above the advisory limit of %d; continuing. "
+            "Consider lowering MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD.",
+            normal_size,
+            UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES,
+        )
 
 
 def _normalize_path_in_repo(path_in_repo: str | None) -> str:
@@ -349,13 +440,38 @@ _CATEGORY_BY_ERROR_CODE: dict[str, str] = {
 }
 
 
-def classify_error(error: Exception) -> str:
-    """Classify an exception for retry strategy using the SDK error hierarchy.
+_RETRYABLE_COMMIT_BUSINESS_CODES = frozenset({10030000001})
+_RETRYABLE_COMMIT_MESSAGE_MARKERS = (
+    "branch changed",
+    "could not update refs",
+    "please retry",
+    "try again",
+    "commit rejected by repository policy",
+)
 
-    For :class:`HubError` instances, classification is driven by
-    :attr:`~HubError.error_code` via a lookup table — no ``isinstance``
-    chains or string-matching heuristics needed for known error types.
-    """
+
+def _is_retryable_commit_error(error: Exception) -> bool:
+    """Return whether a commit failure is transient in commit context."""
+    if isinstance(error, HubError) and error.retryable:
+        return True
+    body = getattr(error, "response_body", None)
+    if isinstance(body, dict):
+        raw_code = body.get("Code") if body.get("Code") is not None else body.get("code")
+        try:
+            if raw_code is not None and int(raw_code) in _RETRYABLE_COMMIT_BUSINESS_CODES:
+                return True
+        except (TypeError, ValueError):
+            pass
+    message = getattr(error, "message", None) or str(error)
+    lowered = str(message).lower()
+    status_code = getattr(error, "status_code", None)
+    return status_code in (400, 409) and any(marker in lowered for marker in _RETRYABLE_COMMIT_MESSAGE_MARKERS)
+
+
+def classify_error(error: Exception, *, commit_context: bool = False) -> str:
+    """Classify an exception for retry strategy using the SDK error hierarchy."""
+    if commit_context and _is_retryable_commit_error(error):
+        return _ErrorCategory.TRANSIENT_SERVER
     if isinstance(error, HubError):
         code = getattr(error, "error_code", None)
         if code and code in _CATEGORY_BY_ERROR_CODE:
@@ -438,11 +554,24 @@ class UploadTracker:
             entry = self._files.get(key)
         return entry.get("status") if entry else None
 
+    def begin_attempt(self, rel_path: str, mtime: float, size: int) -> None:
+        """Clear stale failure metadata when a later run retries a file."""
+        key = self._make_key(rel_path, mtime, size)
+        with self._lock:
+            entry = self._files.get(key)
+            if entry is None or entry.get("status") == FileStatus.COMMITTED:
+                return
+            if entry.get("status") == FileStatus.FAILED:
+                entry.pop("status", None)
+            entry.pop("error_type", None)
+            self._dirty = True
+
     def mark_uploaded(self, rel_path: str, mtime: float, size: int) -> None:
         key = self._make_key(rel_path, mtime, size)
         with self._lock:
             if key in self._files:
                 self._files[key]["status"] = FileStatus.UPLOADED
+                self._files[key].pop("error_type", None)
                 self._dirty = True
 
     def mark_committed_batch(self, file_keys: list[tuple[str, float, int]]) -> None:
@@ -451,6 +580,7 @@ class UploadTracker:
                 key = self._make_key(rel_path, mtime, size)
                 if key in self._files:
                     self._files[key]["status"] = FileStatus.COMMITTED
+                    self._files[key].pop("error_type", None)
             self._dirty = True
 
     def mark_failed(self, rel_path: str, mtime: float, size: int, error_type: str = "") -> None:
@@ -573,6 +703,9 @@ class NullTracker:
 
     def get_status(self, rel_path: str, mtime: float, size: int) -> None:
         return None
+
+    def begin_attempt(self, rel_path: str, mtime: float, size: int) -> None:
+        pass
 
     def mark_uploaded(self, rel_path: str, mtime: float, size: int) -> None:
         pass
@@ -779,6 +912,12 @@ class UploadManager:
         hash_info = _compute_file_hash(path_or_fileobj, buffer_size_mb)
         file_hash = hash_info["file_hash"]
         file_size = hash_info["file_size"]
+        warning_source = str(path_or_fileobj) if isinstance(path_or_fileobj, (str, Path)) else path_in_repo
+        _warn_advisory_upload_limits(
+            [(path_in_repo, warning_source)],
+            {warning_source: file_size},
+            repo_type,
+        )
         # If BinaryIO was consumed, _compute_file_hash returns the bytes
         if not isinstance(path_or_fileobj, (str, Path, bytes)):
             path_or_fileobj = hash_info["file_path_or_obj"]
@@ -971,6 +1110,7 @@ class UploadManager:
                 repo_type=repo_type,
                 allow_patterns=None,
                 ignore_patterns=None,
+                warn_limits=False,
             )
             all_local_paths_in_repo = {p for p, _ in all_local_files_in_repo}
         else:
@@ -984,61 +1124,73 @@ class UploadManager:
         if self._create_repo_fn is not None:
             self._create_repo_fn(repo_id, repo_type)
 
-        # Sort for deterministic batch assignment
+        # Sort for deterministic assignment, then remove committed files before
+        # planning. Otherwise a resume with four pending files in four old batch
+        # ranges needlessly creates four one-file commits.
         sorted_files = sorted(sorted_files, key=lambda x: x[0])
 
-        # Plan commit batches. The operation cap bounds the file count; the
-        # inline-content cap bounds how many bytes a commit body carries, which
-        # only non-LFS files add to.
-        max_operations = (
-            _calculate_adaptive_batch_size(len(sorted_files), UPLOAD_COMMIT_BATCH_MAX_OPERATIONS)
-            if UPLOAD_ADAPTIVE_BATCHING_ENABLED
-            else (UPLOAD_COMMIT_BATCH_MAX_OPERATIONS if UPLOAD_COMMIT_BATCH_MAX_OPERATIONS > 0 else len(sorted_files))
-        )
-        batch_plan = _plan_commit_batches(
-            sorted_files,
-            repo_type,
-            max_operations=max_operations,
-            max_inline_bytes=UPLOAD_COMMIT_MAX_INLINE_BYTES,
-            sizes=file_sizes,
-        )
-        logger.info(
-            "Commit plan: %d batch(es) for %d file(s) (max %d ops, max %d inline bytes per commit).",
-            len(batch_plan),
-            len(sorted_files),
-            max_operations,
-            UPLOAD_COMMIT_MAX_INLINE_BYTES,
-        )
-
-        # Initialize tracker. The cache normally lives in the uploaded folder,
-        # but a caller that stages files into a throwaway tree (a link tree, a
-        # per-chunk directory) must be able to keep it outside, or every run
-        # rediscovers hashes and re-commits what was already committed.
+        # The cache normally lives in the uploaded folder, but a caller that
+        # stages files into a throwaway tree can keep it outside.
         folder_path_resolved = Path(folder_path).resolve()
         if use_cache:
             cache_path = Path(tracker_path).expanduser() if tracker_path else folder_path_resolved / UPLOAD_CACHE_FILE
             tracker: UploadTracker | NullTracker = UploadTracker(cache_path, repo_id=repo_id)
         else:
             tracker = NullTracker()
-        batch_tracker = BatchTracker(len(sorted_files), batch_plan)
 
-        # Skip individually committed files
-        files_to_upload: list[tuple[int, tuple[str, str]]] = []
-        skipped_indices: set[int] = set()
-        for file_idx, (file_path_in_repo, file_path) in enumerate(sorted_files):
+        pending_files: list[tuple[str, str]] = []
+        skipped_count = 0
+        for file_path_in_repo, file_path in sorted_files:
             try:
                 st = os.stat(file_path)
                 if tracker.is_committed(file_path_in_repo, st.st_mtime, st.st_size):
-                    skipped_indices.add(file_idx)
-                    batch_tracker.mark_file_skipped(file_idx)
+                    skipped_count += 1
                     continue
+                tracker.begin_attempt(file_path_in_repo, st.st_mtime, st.st_size)
             except OSError as e:
                 logger.warning(
                     "Cannot stat file %s, will re-upload: %s",
                     file_path_in_repo,
                     e,
                 )
-            files_to_upload.append((file_idx, (file_path_in_repo, file_path)))
+            pending_files.append((file_path_in_repo, file_path))
+        tracker.save()
+
+        max_operations = (
+            _calculate_adaptive_batch_size(len(pending_files), UPLOAD_COMMIT_BATCH_MAX_OPERATIONS)
+            if UPLOAD_ADAPTIVE_BATCHING_ENABLED
+            else (UPLOAD_COMMIT_BATCH_MAX_OPERATIONS if UPLOAD_COMMIT_BATCH_MAX_OPERATIONS > 0 else len(pending_files))
+        )
+        batch_plan = _plan_commit_batches(
+            pending_files,
+            repo_type,
+            max_operations=max_operations,
+            max_inline_bytes=UPLOAD_COMMIT_MAX_INLINE_BYTES,
+            sizes=file_sizes,
+        )
+        batch_tracker = BatchTracker(len(pending_files), batch_plan)
+        files_to_upload = list(enumerate(pending_files))
+
+        plan_details: list[str] = []
+        offset = 0
+        for count in batch_plan:
+            batch_files = pending_files[offset : offset + count]
+            estimated = _COMMIT_ENVELOPE_ESTIMATED_BYTES + sum(
+                _estimate_commit_operation_bytes(path, file_sizes.get(local, 0), repo_type)
+                for path, local in batch_files
+            )
+            lfs_count = sum(1 for path, local in batch_files if _is_lfs(path, file_sizes.get(local, 0), repo_type))
+            plan_details.append(f"{count} ops/{estimated} bytes/{lfs_count} LFS")
+            offset += count
+        logger.info(
+            "Commit plan: %d batch(es), %d pending, %d skipped (target %d ops, request budget %d bytes): %s",
+            len(batch_plan),
+            len(pending_files),
+            skipped_count,
+            max_operations,
+            UPLOAD_COMMIT_MAX_INLINE_BYTES,
+            "; ".join(plan_details[:8]) + (f"; ... {len(plan_details) - 8} more" if len(plan_details) > 8 else ""),
+        )
 
         # Batch pre-validation for every LFS candidate.
         #
@@ -1135,7 +1287,6 @@ class UploadManager:
                 deduped_bytes,
             )
 
-        skipped_count = len(skipped_indices)
         if skipped_count > 0:
             logger.info("%d file(s) already committed, skipping.", skipped_count)
 
@@ -1189,7 +1340,9 @@ class UploadManager:
         # Pipeline: consume batches in order
         commit_infos: list[dict] = []
         all_results: list[dict] = []
-        total_failed_files: list[tuple] = []
+        retry_failed_files: list[tuple] = []
+        terminal_failures: list[tuple] = []
+        retry_commit_batches: list[tuple[list[dict], Exception]] = []
         num_batches = batch_tracker.num_batches
         committed_files = 0
         committed_bytes = 0
@@ -1345,15 +1498,6 @@ class UploadManager:
                     total=num_batches,
                     disable=disable_tqdm,
                 ):
-                    batch_start, batch_end = batch_tracker.batch_range(batch_idx)
-                    if all(i in skipped_indices for i in range(batch_start, batch_end)):
-                        logger.info(
-                            "Batch %d/%d fully committed, skipping.",
-                            batch_idx + 1,
-                            num_batches,
-                        )
-                        continue
-
                     results, failures = batch_tracker.wait_for_batch(batch_idx)
                     # Every file of this batch has finished its transfer by now,
                     # so publish the bytes the throttle may still be holding
@@ -1361,7 +1505,7 @@ class UploadManager:
                     _flush_wire()
 
                     if failures:
-                        total_failed_files.extend(failures)
+                        retry_failed_files.extend(failures)
                         for item, err in failures:
                             logger.error("  Failed: %s - %s", item[0], err)
 
@@ -1393,7 +1537,7 @@ class UploadManager:
                                 num_batches,
                                 len(orphaned),
                             )
-                            total_failed_files.extend(
+                            retry_failed_files.extend(
                                 (
                                     (item_r["file_path_in_repo"], item_r["file_path"]),
                                     StorageError("shared blob upload failed"),
@@ -1454,7 +1598,7 @@ class UploadManager:
                             sum(r["file_size_on_disk"] for r in results),
                             error=str(e),
                         )
-                        category = classify_error(e)
+                        category = classify_error(e, commit_context=True)
                         if not _ErrorCategory.is_retryable(category):
                             for r in results:
                                 tracker.mark_failed(
@@ -1463,30 +1607,26 @@ class UploadManager:
                                     r["file_size_on_disk"],
                                     error_type="commit_" + category,
                                 )
+                                terminal_failures.append(((r["file_path_in_repo"], r["file_path"]), e))
                             logger.error(
-                                "Batch %d/%d: permanent failure (%s), %d file(s) will not be retried.",
+                                "Batch %d/%d: terminal failure for this run (%s); %d file(s) will not be retried "
+                                "automatically. Rerun upload to retry them.",
                                 batch_idx + 1,
                                 num_batches,
                                 category,
                                 len(results),
                             )
-                            consecutive_failures += 1
                         else:
-                            for r in results:
-                                total_failed_files.append(
-                                    (
-                                        (r["file_path_in_repo"], r["file_path"]),
-                                        e,
-                                    )
-                                )
+                            retry_commit_batches.append((list(results), e))
                             logger.warning(
-                                "Batch %d/%d: %d file(s) recovered to retry queue (error_category=%s).",
+                                "Batch %d/%d: retained %d uploaded file(s) for commit-only recovery "
+                                "(error_category=%s).",
                                 batch_idx + 1,
                                 num_batches,
                                 len(results),
                                 category,
                             )
-                            consecutive_failures += 1
+                        consecutive_failures += 1
 
                         if consecutive_failures >= UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES:
                             raise RuntimeError(
@@ -1530,9 +1670,23 @@ class UploadManager:
                 }
             )
 
-        if total_failed_files and UPLOAD_RECOVERY_ENABLED:
-            total_failed_files, react_commits, react_results = self._retry_failed_files_react(
-                failed_files=total_failed_files,
+        if retry_commit_batches:
+            commit_failures, recovered_commits, recovered_results = self._retry_failed_commits(
+                failed_batches=retry_commit_batches,
+                tracker=tracker,
+                repo_id=repo_id,
+                repo_type=repo_type,
+                commit_message=commit_message,
+                revision=revision,
+                on_committed=_report_recovery,
+            )
+            terminal_failures.extend(commit_failures)
+            commit_infos.extend(recovered_commits)
+            all_results.extend(recovered_results)
+
+        if retry_failed_files and UPLOAD_RECOVERY_ENABLED:
+            retry_failed_files, react_commits, react_results = self._retry_failed_files_react(
+                failed_files=retry_failed_files,
                 tracker=tracker,
                 repo_id=repo_id,
                 repo_type=repo_type,
@@ -1545,9 +1699,9 @@ class UploadManager:
             )
             commit_infos.extend(react_commits)
             all_results.extend(react_results)
-        elif total_failed_files:
-            total_failed_files = self._retry_failed_simple(
-                failed_files=total_failed_files,
+        elif retry_failed_files:
+            retry_failed_files = self._retry_failed_simple(
+                failed_files=retry_failed_files,
                 tracker=tracker,
                 repo_id=repo_id,
                 repo_type=repo_type,
@@ -1562,10 +1716,11 @@ class UploadManager:
             )
 
         tracker.save()
+        all_failures = terminal_failures + retry_failed_files
 
-        # Sync: delete remote orphan files
+        # Sync: delete remote orphan files only after every upload commit landed.
         deleted_count = 0
-        if sync_remote_repo and not total_failed_files:
+        if sync_remote_repo and not all_failures:
             prefix = path_in_repo.strip("/") if path_in_repo else ""
             orphans = self._compute_remote_orphans(
                 repo_id=repo_id,
@@ -1597,7 +1752,7 @@ class UploadManager:
         # Upload report
         elapsed = time.time() - start_time
         total_files = len(sorted_files)
-        failed_count = len(total_failed_files)
+        failed_count = len(all_failures)
         lfs_reused_count = sum(1 for r in all_results if r.get("upload_mode") == "lfs" and r.get("is_reused"))
         lfs_uploaded_count = sum(1 for r in all_results if r.get("is_blob_uploaded"))
         normal_count = sum(1 for r in all_results if r.get("upload_mode") == "normal")
@@ -1617,8 +1772,8 @@ class UploadManager:
         print(f"  Elapsed           : {elapsed:.1f}s")
         print("=" * 60)
 
-        if total_failed_files:
-            for (path_in_repo_f, _), err in total_failed_files:
+        if all_failures:
+            for (path_in_repo_f, _), err in all_failures:
                 logger.error("  - %s: %s: %s", path_in_repo_f, type(err).__name__, err)
             succeeded = total_files - failed_count
             raise StorageError(
@@ -2043,11 +2198,8 @@ class UploadManager:
                     revision=revision,
                 )
             except HubError as e:
-                if not e.retryable:
-                    error_str = str(e)
-                    retryable_patterns = ["Could not update refs", "try again"]
-                    if not any(p in error_str for p in retryable_patterns):
-                        raise
+                if not _is_retryable_commit_error(e):
+                    raise
                 last_error = e
             except (ConnectionError, TimeoutError) as e:
                 last_error = e
@@ -2182,6 +2334,118 @@ class UploadManager:
         )
         tracker.save()
 
+    def _plan_result_batches(self, results: list[dict], repo_type: str) -> list[list[dict]]:
+        """Apply the normal commit planner to already-uploaded results."""
+        if not results:
+            return []
+        files = [(r["file_path_in_repo"], r["file_path"]) for r in results]
+        sizes = {r["file_path"]: r["file_size_on_disk"] for r in results}
+        max_operations = _calculate_adaptive_batch_size(len(files), UPLOAD_COMMIT_BATCH_MAX_OPERATIONS)
+        counts = _plan_commit_batches(
+            files,
+            repo_type,
+            max_operations=max_operations,
+            max_inline_bytes=UPLOAD_COMMIT_MAX_INLINE_BYTES,
+            sizes=sizes,
+        )
+        batches: list[list[dict]] = []
+        offset = 0
+        for count in counts:
+            batches.append(results[offset : offset + count])
+            offset += count
+        return batches
+
+    @staticmethod
+    def _should_split_commit_failure(error: Exception) -> bool:
+        body = getattr(error, "response_body", None)
+        raw_code = body.get("Code") if isinstance(body, dict) else None
+        if raw_code is None and isinstance(body, dict):
+            raw_code = body.get("code")
+        try:
+            policy_code = raw_code is not None and int(raw_code) in _RETRYABLE_COMMIT_BUSINESS_CODES
+        except (TypeError, ValueError):
+            policy_code = False
+        message = str(getattr(error, "message", None) or error).lower()
+        return "repository policy" in message or (policy_code and getattr(error, "status_code", None) == 400)
+
+    def _retry_failed_commits(
+        self,
+        *,
+        failed_batches: list[tuple[list[dict], Exception]],
+        tracker: UploadTracker | NullTracker,
+        repo_id: str,
+        repo_type: str,
+        commit_message: str,
+        revision: str,
+        on_committed: Any = None,
+    ) -> tuple[list[tuple], list[dict], list[dict]]:
+        """Retry commits without re-uploading blobs, splitting policy rejects."""
+        failures: list[tuple] = []
+        commit_infos: list[dict] = []
+        committed_results: list[dict] = []
+
+        def commit_batch(
+            batch: list[dict],
+            label: str,
+            prior_error: Exception,
+            *,
+            split_before_attempt: bool = False,
+        ) -> None:
+            if split_before_attempt and self._should_split_commit_failure(prior_error) and len(batch) > 1:
+                midpoint = (len(batch) + 1) // 2
+                logger.warning(
+                    "Commit-only recovery is splitting a policy-rejected batch of %d into %d and %d files.",
+                    len(batch),
+                    midpoint,
+                    len(batch) - midpoint,
+                )
+                commit_batch(batch[:midpoint], label + "a", prior_error)
+                commit_batch(batch[midpoint:], label + "b", prior_error)
+                return
+
+            try:
+                commit_info = self._commit_with_retry(
+                    repo_id=repo_id,
+                    repo_type=repo_type,
+                    operations=self._build_batch_operations(batch, repo_type),
+                    commit_message=f"{commit_message} (commit recovery {label})",
+                    revision=revision,
+                )
+            except Exception as error:
+                if self._should_split_commit_failure(error) and len(batch) > 1:
+                    midpoint = (len(batch) + 1) // 2
+                    commit_batch(batch[:midpoint], label + "a", error)
+                    commit_batch(batch[midpoint:], label + "b", error)
+                    return
+                category = classify_error(error, commit_context=True)
+                for result in batch:
+                    tracker.mark_failed(
+                        result["file_path_in_repo"],
+                        result["file_mtime"],
+                        result["file_size_on_disk"],
+                        error_type="commit_" + category,
+                    )
+                    failures.append(((result["file_path_in_repo"], result["file_path"]), error))
+                logger.error("Commit-only recovery %s failed for %d file(s): %s", label, len(batch), error)
+                return
+
+            commit_infos.append(commit_info)
+            committed_results.extend(batch)
+            self._track_committed_batch(tracker, batch)
+            if on_committed is not None:
+                on_committed(batch, f"commit recovery {label}")
+            logger.info("Commit-only recovery %s committed %d file(s).", label, len(batch))
+
+        for batch_index, (results, error) in enumerate(failed_batches, start=1):
+            for part_index, batch in enumerate(self._plan_result_batches(results, repo_type), start=1):
+                commit_batch(
+                    batch,
+                    f"{batch_index}.{part_index}",
+                    error,
+                    split_before_attempt=True,
+                )
+        return failures, commit_infos, committed_results
+
     # ------------------------------------------------------------------
     # Internal: file collection
     # ------------------------------------------------------------------
@@ -2193,56 +2457,14 @@ class UploadManager:
         allow_patterns: list[str] | None = None,
         ignore_patterns: list[str] | None = None,
         sizes_out: dict[str, int] | None = None,
+        warn_limits: bool = True,
     ) -> list[tuple[str, str]]:
         folder = Path(folder_path).expanduser().resolve()
         if not folder.is_dir():
             raise InvalidParameter(f"Provided path: '{folder}' is not a directory")
 
         all_files = sorted(path for path in folder.glob("**/*") if path.is_file())
-
-        if len(all_files) > UPLOAD_MAX_FILE_COUNT:
-            raise InvalidParameter(f"Too many files ({len(all_files)}) in folder, max allowed: {UPLOAD_MAX_FILE_COUNT}")
-
-        # Per-directory file count check
-        dir_counts: dict[str, int] = {}
-        for path in all_files:
-            parent = str(path.parent)
-            dir_counts[parent] = dir_counts.get(parent, 0) + 1
-        for dir_path, count in dir_counts.items():
-            if count > UPLOAD_MAX_FILES_PER_DIRECTORY:
-                raise InvalidParameter(
-                    f"Too many files ({count}) in directory {dir_path}, "
-                    f"max allowed per directory: {UPLOAD_MAX_FILES_PER_DIRECTORY}"
-                )
-
-        # File size checks. Sizes are handed back through ``sizes_out`` because
-        # batch planning needs them next; re-stating a large tree costs one
-        # syscall per file for no new information.
-        total_size = 0
-        normal_size = 0
-        for path in all_files:
-            fsize = path.stat().st_size
-            if fsize > UPLOAD_MAX_FILE_SIZE_BYTES:
-                raise InvalidParameter(
-                    f"File too large: {path} ({fsize / 1024 / 1024:.1f} MB), "
-                    f"max allowed: {UPLOAD_MAX_FILE_SIZE_BYTES / 1024 / 1024:.0f} MB"
-                )
-            total_size += fsize
-            if not _is_lfs(str(path), fsize, repo_type):
-                normal_size += fsize
-            if sizes_out is not None:
-                sizes_out[str(path)] = fsize
-
-        if normal_size > UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES:
-            logger.warning(
-                "Total normal (non-LFS) file size %d bytes exceeds soft "
-                "limit %d bytes. Consider using LFS for large files.",
-                normal_size,
-                UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES,
-            )
-
         relpath_to_abspath = {path.relative_to(folder).as_posix(): str(path) for path in all_files}
-
         filtered_keys = _filter_repo_objects(
             list(relpath_to_abspath.keys()),
             allow_patterns=allow_patterns,
@@ -2250,13 +2472,18 @@ class UploadManager:
         )
 
         # ``path_in_repo`` is a destination prefix, and "." / "./" / "" / "/"
-        # all mean the repo root. Collapsing them is not cosmetic: a literal
-        # value like "." otherwise rides into every commit action's ``path`` as
-        # a "./" prefix, which the Hub rejects wholesale with E3021 "invalid
-        # commit action".
+        # all mean the repository root.
         norm_prefix = _normalize_path_in_repo(path_in_repo)
         prefix = f"{norm_prefix}/" if norm_prefix else ""
         prepared = [(prefix + relpath, relpath_to_abspath[relpath]) for relpath in filtered_keys]
+
+        selected_sizes: dict[str, int] = {}
+        for _path_in_repo, file_path in prepared:
+            selected_sizes[file_path] = Path(file_path).stat().st_size
+        if sizes_out is not None:
+            sizes_out.update(selected_sizes)
+        if warn_limits:
+            _warn_advisory_upload_limits(prepared, selected_sizes, repo_type)
 
         logger.info("Prepared %d files for upload.", len(prepared))
         return prepared
@@ -2314,21 +2541,18 @@ class UploadManager:
                 "name": "Round 1 (parallel)",
                 "parallel": True,
                 "workers": max(1, max_workers // 2),
-                "batch_size": 16,
                 "delay": 0,
             },
             {
                 "name": "Round 2 (serial+backoff)",
                 "parallel": False,
                 "workers": 1,
-                "batch_size": 8,
                 "delay": UPLOAD_RECOVERY_SERIAL_BACKOFF_BASE_SECONDS,
             },
             {
                 "name": "Round 3 (single-file)",
                 "parallel": False,
                 "workers": 1,
-                "batch_size": 1,
                 "delay": UPLOAD_RECOVERY_SINGLE_FILE_DELAY_SECONDS,
             },
         ]
@@ -2406,13 +2630,8 @@ class UploadManager:
                         )
                         round_failures.append(((path_in_repo_r, file_path_r), e))
 
-            all_successes.extend(round_successes)
-
-            batch_size = min(cfg["batch_size"], max(1, len(round_successes)))
-            for batch_start in range(0, len(round_successes), batch_size):
-                batch = round_successes[batch_start : batch_start + batch_size]
-                self._track_uploaded_batch(tracker, batch)
-
+            self._track_uploaded_batch(tracker, round_successes)
+            for batch in self._plan_result_batches(round_successes, repo_type):
                 operations = self._build_batch_operations(batch, repo_type)
                 if not operations:
                     continue
@@ -2425,6 +2644,7 @@ class UploadManager:
                         revision=revision,
                     )
                     commit_infos.append(commit_info)
+                    all_successes.extend(batch)
                     self._track_committed_batch(tracker, batch)
                     if on_committed is not None:
                         on_committed(batch, round_name)
@@ -2435,18 +2655,18 @@ class UploadManager:
                     )
                 except Exception as e:
                     logger.error("[ReAct] %s commit failed: %s", round_name, e)
-                    category = classify_error(e)
-                    if not _ErrorCategory.is_retryable(category):
-                        for r in batch:
-                            tracker.mark_failed(
-                                r["file_path_in_repo"],
-                                r["file_mtime"],
-                                r["file_size_on_disk"],
-                                error_type="commit_" + category,
-                            )
-                    else:
-                        for r in batch:
-                            round_failures.append(((r["file_path_in_repo"], r["file_path"]), e))
+                    commit_failures, recovered_commits, recovered_results = self._retry_failed_commits(
+                        failed_batches=[(batch, e)],
+                        tracker=tracker,
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        commit_message=commit_message,
+                        revision=revision,
+                        on_committed=on_committed,
+                    )
+                    permanent_failures.extend(commit_failures)
+                    commit_infos.extend(recovered_commits)
+                    all_successes.extend(recovered_results)
 
             new_retryable = []
             for item_err in round_failures:
@@ -2531,6 +2751,7 @@ class UploadManager:
         on_committed: Any = None,
     ) -> list[tuple]:
         total_failed_files = list(failed_files)
+        terminal_failures: list[tuple] = []
         for retry_round in range(UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS):
             if not total_failed_files:
                 break
@@ -2560,8 +2781,10 @@ class UploadManager:
                     retry_failures.append(((path_in_repo_r, file_path_r), e))
             if retry_successes:
                 self._track_uploaded_batch(tracker, retry_successes)
-                operations = self._build_batch_operations(retry_successes, repo_type)
-                if operations:
+                for batch in self._plan_result_batches(retry_successes, repo_type):
+                    operations = self._build_batch_operations(batch, repo_type)
+                    if not operations:
+                        continue
                     try:
                         commit_info = self._commit_with_retry(
                             repo_id=repo_id,
@@ -2571,14 +2794,14 @@ class UploadManager:
                             revision=revision,
                         )
                         commit_infos.append(commit_info)
-                        all_results.extend(retry_successes)
-                        self._track_committed_batch(tracker, retry_successes)
+                        all_results.extend(batch)
+                        self._track_committed_batch(tracker, batch)
                         if on_committed is not None:
-                            on_committed(retry_successes, f"retry round {retry_round + 1}")
+                            on_committed(batch, f"retry round {retry_round + 1}")
                         logger.info(
                             "  Retry round %d: committed %d file(s).",
                             retry_round + 1,
-                            len(retry_successes),
+                            len(batch),
                         )
                     except Exception as e:
                         logger.error(
@@ -2586,25 +2809,17 @@ class UploadManager:
                             retry_round + 1,
                             e,
                         )
-                        category = classify_error(e)
-                        if not _ErrorCategory.is_retryable(category):
-                            for result in retry_successes:
-                                tracker.mark_failed(
-                                    result["file_path_in_repo"],
-                                    result["file_mtime"],
-                                    result["file_size_on_disk"],
-                                    error_type="commit_" + category,
-                                )
-                        else:
-                            for result in retry_successes:
-                                retry_failures.append(
-                                    (
-                                        (
-                                            result["file_path_in_repo"],
-                                            result.get("file_path", ""),
-                                        ),
-                                        e,
-                                    )
-                                )
+                        commit_failures, recovered_commits, recovered_results = self._retry_failed_commits(
+                            failed_batches=[(batch, e)],
+                            tracker=tracker,
+                            repo_id=repo_id,
+                            repo_type=repo_type,
+                            commit_message=commit_message,
+                            revision=revision,
+                            on_committed=on_committed,
+                        )
+                        terminal_failures.extend(commit_failures)
+                        commit_infos.extend(recovered_commits)
+                        all_results.extend(recovered_results)
             total_failed_files = retry_failures
-        return total_failed_files
+        return terminal_failures + total_failed_files

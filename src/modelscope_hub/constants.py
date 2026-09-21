@@ -839,17 +839,15 @@ UPLOAD_ADAPTIVE_BATCHING_ENABLED: bool = _env_bool(
 UPLOAD_COMMIT_MAX_INLINE_BYTES: int = _env_bytes(
     "MODELSCOPE_UPLOAD_COMMIT_MAX_INLINE_BYTES",
     8 * 1024 * 1024,
-    "Maximum inlined (non-LFS) content carried by one commit request",
+    "Advisory estimated request-body budget for one upload commit",
     "Upload",
 )
-"""Byte ceiling on the base64 content a single commit may carry.
+"""Advisory byte budget for an estimated commit request body.
 
-Non-LFS files travel *inside* the commit request body, so a batch sized purely
-by file count can produce a request tens of megabytes large -- big enough for
-the server to time out mid-read, which surfaces on the client as an unrelated
-write timeout. Batching therefore closes a batch on whichever limit is reached
-first, this one or :data:`UPLOAD_COMMIT_BATCH_MAX_OPERATIONS`. LFS files
-contribute only a pointer, so they do not count against it.
+Normal files contribute their base64-expanded content plus operation JSON; LFS
+files contribute only pointer/action metadata. Batching closes on this budget or
+the operation target, whichever comes first. A single oversized inline file is
+still sent alone so this advisory budget never blocks an upload.
 """
 UPLOAD_COMMIT_MAX_PER_HOUR: int = _env_int(
     "MODELSCOPE_UPLOAD_COMMIT_MAX_PER_HOUR",
@@ -1012,7 +1010,7 @@ UPLOAD_LEGACY_PROGRESS_FILE: str = ".ms_upload_progress"
 # Upload: limits
 UPLOAD_LFS_FORCE_THRESHOLD_BYTES: int = _env_bytes(
     "MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD",
-    1024 * 1024,
+    64 * 1024,
     "File size above which LFS mode is forced (bytes; accepts a unit suffix, 0 forces LFS for every file)",
     "Upload",
     deprecated_mb_names=("MODELSCOPE_UPLOAD_LFS_FORCE_THRESHOLD_MB",),
@@ -1049,7 +1047,7 @@ checked before the size and suffix rules.
 UPLOAD_MAX_FILE_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
     "MODELSCOPE_UPLOAD_MAX_FILE_SIZE_MB",
     100 * 1024,
-    "Maximum single upload file size (MB, default 100 GB)",
+    "Advisory single upload file size warning threshold (MB, default 100 GB)",
     "Upload",
     deprecated_mb_names=("UPLOAD_MAX_FILE_SIZE_MB",),
     deprecated_byte_names=("UPLOAD_MAX_FILE_SIZE",),
@@ -1057,21 +1055,21 @@ UPLOAD_MAX_FILE_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
 UPLOAD_MAX_FILE_COUNT: int = _env_int(
     "MODELSCOPE_UPLOAD_MAX_FILE_COUNT",
     100_000,
-    "Maximum total files per upload",
+    "Advisory total file-count warning threshold per upload",
     "Upload",
     "UPLOAD_MAX_FILE_COUNT",
 )
 UPLOAD_MAX_FILES_PER_DIRECTORY: int = _env_int(
     "MODELSCOPE_UPLOAD_MAX_FILES_PER_DIRECTORY",
     50_000,
-    "Maximum files in one uploaded directory",
+    "Advisory per-directory file-count warning threshold",
     "Upload",
     "UPLOAD_MAX_FILE_COUNT_IN_DIR",
 )
 UPLOAD_NORMAL_FILES_TOTAL_SIZE_BYTES: int = _env_int_mb_with_deprecated_units(
     "MODELSCOPE_UPLOAD_NORMAL_FILES_TOTAL_SIZE_MB",
     500,
-    "Maximum total size of normal (non-LFS) files (MB)",
+    "Advisory total normal-file size warning threshold (MB)",
     "Upload",
     deprecated_byte_names=("UPLOAD_NORMAL_FILE_SIZE_TOTAL_LIMIT",),
 )
