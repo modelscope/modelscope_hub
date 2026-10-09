@@ -335,10 +335,15 @@ class DownloadManager:
         self._client = legacy_client
         self._config = config
         self._cached_region: str | None = None
-        # Cache resolved inter-region probe results to avoid redundant HEAD probes
-        # when downloading multiple files from the same repo in parallel.
-        self._inter_region_cache: dict[tuple[str, str], tuple[str | None, str]] = {}
+        # Cache only confirmed OSS-internal resolutions. A repository can contain
+        # Git metadata and LFS objects behind different download routes, so cache
+        # entries are scoped to repo/type/revision plus the redirect endpoint.
+        self._inter_region_cache: dict[tuple[str, str, str, str], tuple[str | None, str]] = {}
+        # Guard the cache and the per-route in-flight probes. The probe itself is
+        # deliberately performed outside this lock so distinct storage routes can
+        # resolve in parallel.
         self._inter_region_lock = threading.Lock()
+        self._inter_region_inflight: dict[tuple[str, str, str, str], threading.Event] = {}
 
     # ------------------------------------------------------------------
     # User-agent & headers
@@ -422,6 +427,24 @@ class DownloadManager:
             pass
         return ""
 
+    @staticmethod
+    def _storage_route_key(redirect_url: str) -> str | None:
+        """Return a stable identity for the storage endpoint behind a redirect.
+
+        Presigned query parameters and object paths are intentionally excluded:
+        they differ per file and request, whereas the endpoint hostname is the
+        stable route boundary that must isolate inter-region cache entries.
+        """
+        try:
+            parsed = urlparse(redirect_url)
+            host = parsed.hostname
+            if not parsed.scheme or not host:
+                return None
+            port = f":{parsed.port}" if parsed.port is not None else ""
+            return f"{parsed.scheme.lower()}://{host.lower()}{port}"
+        except (TypeError, ValueError):
+            return None
+
     def _get_inter_cloud_regions(self) -> list[str]:
         """Read the inter-cloud peer region list from the environment."""
         from .constants import _env
@@ -435,6 +458,7 @@ class DownloadManager:
         headers: dict[str, str],
         cookies: dict | None = None,
         peer_regions: list[str] | None = None,
+        initial_redirect_url: str | None = None,
     ) -> tuple[dict[str, str], str]:
         """Probe peer regions and return headers with the best region for OSS internal download.
 
@@ -453,8 +477,12 @@ class DownloadManager:
 
         current_region = headers.get("x-aliyun-region-id", "").lower()
 
-        # Step 1: Probe with current (local) region
-        redirect_url = self._probe_redirect_url(url, headers, cookies)
+        # Step 1: Probe with current (local) region. Callers that already
+        # established the storage route pass the initial redirect to avoid an
+        # identical second HEAD request.
+        redirect_url = (
+            self._probe_redirect_url(url, headers, cookies) if initial_redirect_url is None else initial_redirect_url
+        )
         if self._is_oss_internal_url(redirect_url):
             logger.debug("Inter-region: local region already yields OSS internal URL, skipping.")
             return headers, "local"
@@ -1127,57 +1155,83 @@ class DownloadManager:
 
         download_headers = self._build_download_headers(user_agent)
 
-        # Inter-region acceleration: probe peer regions for OSS internal URL.
-        # Cache per (repo_id, repo_type) — all files in the same repo share one
-        # OSS bucket so one probe is sufficient for the entire download session.
+        # Inter-region acceleration: first discover the file's storage route,
+        # then cache only a confirmed internal resolution for that exact route.
+        # Git metadata may return 200 without a redirect while LFS objects use
+        # OSS; a metadata miss must therefore never suppress an LFS probe.
         # Progress bar prefix: "⚡ " = local OSS, "⇄ " = peer OSS, "  " = CDN, "" = not configured
         source_prefix = ""
         peer_regions = self._get_inter_cloud_regions()
         if peer_regions:
-            cache_key = (repo_id, repo_type)
-            with self._inter_region_lock:
-                cached = self._inter_region_cache.get(cache_key)
-                if cached is None:
-                    # First thread for this repo — do the probe under lock so
-                    # other threads wait instead of issuing redundant HEAD reqs.
-                    try:
-                        probe_url = self._client.get_download_url(
-                            repo_id,
-                            repo_type,
-                            file_path,
-                            revision,
-                        )
-                        cookies = None
-                        if self._client.token:
-                            cookies = {"m_session_id": self._client.token}
-                        download_headers, source = self._resolve_inter_region_headers(
-                            probe_url,
-                            download_headers,
-                            cookies,
-                            peer_regions=peer_regions,
-                        )
-                        resolved_region = download_headers.get("x-aliyun-region-id")
-                        self._inter_region_cache[cache_key] = (resolved_region, source)
-                    except Exception as exc:
-                        logger.warning(
-                            "Failed to resolve inter-region acceleration: %s. Falling back to default.",
-                            exc,
-                        )
-                        self._inter_region_cache[cache_key] = (None, "default")
-                        cached = (None, "default")
+            source = "default"
+            cached: tuple[str | None, str] | None = None
+            probe_event: threading.Event | None = None
+            try:
+                probe_url = self._client.get_download_url(repo_id, repo_type, file_path, revision)
+                cookies = {"m_session_id": self._client.token} if self._client.token else None
+                initial_redirect_url = self._probe_redirect_url(probe_url, download_headers, cookies)
+                route_key = self._storage_route_key(initial_redirect_url)
 
-            if cached is None:
-                cached = self._inter_region_cache.get(cache_key)
+                if route_key is not None:
+                    cache_key = (repo_id, repo_type, revision, route_key)
+                    while cached is None:
+                        is_probe_owner = False
+                        with self._inter_region_lock:
+                            cached = self._inter_region_cache.get(cache_key)
+                            if cached is not None:
+                                break
+                            probe_event = self._inter_region_inflight.get(cache_key)
+                            if probe_event is None:
+                                probe_event = threading.Event()
+                                self._inter_region_inflight[cache_key] = probe_event
+                                is_probe_owner = True
 
-            if cached is not None:
-                resolved_region, source = cached
-                if resolved_region is not None:
-                    download_headers["x-aliyun-region-id"] = resolved_region
-                source_prefix = {
-                    "local": "\u26a1 ",
-                    "peer": "\u21c4 ",
-                    "default": "  ",
-                }[source]
+                        if not is_probe_owner:
+                            assert probe_event is not None
+                            probe_event.wait()
+                            continue
+
+                        try:
+                            download_headers, source = self._resolve_inter_region_headers(
+                                probe_url,
+                                download_headers,
+                                cookies,
+                                peer_regions=peer_regions,
+                                initial_redirect_url=initial_redirect_url,
+                            )
+                            resolved_region = download_headers.get("x-aliyun-region-id")
+                            if source != "default":
+                                with self._inter_region_lock:
+                                    self._inter_region_cache[cache_key] = (resolved_region, source)
+                                cached = (resolved_region, source)
+                        finally:
+                            with self._inter_region_lock:
+                                self._inter_region_inflight.pop(cache_key, None)
+                                assert probe_event is not None
+                                probe_event.set()
+
+                        # A non-internal result is intentionally not cached. The
+                        # current file falls back now; a waiting file retries as
+                        # the next single-flight owner instead of inheriting it.
+                        if cached is None:
+                            break
+
+                    if cached is not None:
+                        resolved_region, source = cached
+                        if resolved_region is not None:
+                            download_headers["x-aliyun-region-id"] = resolved_region
+            except Exception as exc:
+                logger.warning(
+                    "Failed to resolve inter-region acceleration: %s. Falling back to default.",
+                    exc,
+                )
+                source = "default"
+
+            source_prefix = {
+                "local": "\u26a1 ",
+                "peer": "\u21c4 ",
+                "default": "  ",
+            }[source]
 
         if use_parallel:
             assert file_size is not None  # guaranteed by use_parallel above
