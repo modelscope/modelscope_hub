@@ -2454,6 +2454,7 @@ class HubApi:
             revision=revision,
             cache_dir=cache_dir,
             local_dir=local_dir,
+            endpoint=self._config.endpoint,
         )
         files = self.list_repo_files(repo_id, rt, revision=resolved_revision, recursive=True)
         expected = {file.path: file.sha256 for file in files if not file.is_dir and file.path}
@@ -2464,6 +2465,7 @@ class HubApi:
             revision=resolved_revision,
             cache_dir=Path(cache_dir) if cache_dir else None,
             local_dir=Path(local_dir) if local_dir else None,
+            endpoint=self._config.endpoint,
         )
 
     def scan_cache(self, cache_dir: str | Path | None = None) -> CacheInfo:
@@ -2487,7 +2489,10 @@ class HubApi:
         >>> [r.repo_id for r in info.repos][:3]
         ['alice/llama-7b', 'bob/imagenet', 'carol/whisper-base']
         """
-        return _scan_cache(Path(cache_dir) if cache_dir else None)
+        return _scan_cache(
+            Path(cache_dir) if cache_dir else None,
+            endpoint=self._config.endpoint,
+        )
 
     def clear_cache(
         self,
@@ -2530,4 +2535,5 @@ class HubApi:
             cache_dir=Path(cache_dir) if cache_dir else None,
             repo_type=rt_value,
             repo_id=repo_id,
+            endpoint=self._config.endpoint,
         )
