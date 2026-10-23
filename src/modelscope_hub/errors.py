@@ -18,10 +18,13 @@ status codes.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse, urlunparse
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
+    from os import PathLike
+
     from requests import Response
 
 # ---------------------------------------------------------------------------
@@ -347,12 +350,71 @@ class StorageError(HubError):
     suggestion = "File upload/download failed (storage service error). Please retry later."
 
 
+class FileDownloadError(StorageError):
+    """Raised after a snapshot download attempted every file and some failed (E1003).
+
+    Files that downloaded successfully stay in place, so re-running the same
+    call fetches only the paths in :attr:`failed_files`. :attr:`retryable` is
+    true only when every individual failure is itself retryable.
+    """
+
+    suggestion = (
+        "Some files failed to download; completed files are kept. "
+        "Re-run the same command to retry only the failed files."
+    )
+    _MAX_LISTED = 10
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failed_files: Mapping[str, BaseException] | None = None,
+        total: int | None = None,
+        output_dir: str | PathLike[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.failed_files: dict[str, BaseException] = dict(failed_files or {})
+        self.total = total
+        self.output_dir = output_dir
+        self.retryable = bool(self.failed_files) and all(
+            getattr(exc, "retryable", False) for exc in self.failed_files.values()
+        )
+
+    def __str__(self) -> str:
+        lines = [super().__str__()]
+        for path, exc in list(self.failed_files.items())[: self._MAX_LISTED]:
+            # Only the headline: API errors append multi-line request detail.
+            text = str(exc)
+            lines.append(f"  - {path}: {text.splitlines()[0] if text else exc.__class__.__name__}")
+        hidden = len(self.failed_files) - self._MAX_LISTED
+        if hidden > 0:
+            lines.append(f"  ... and {hidden} more")
+        return "\n".join(lines)
+
+
 class FileIntegrityError(HubError):
     """Raised when a downloaded or uploaded file fails integrity validation (E2020)."""
 
     error_code = "E2020"
     retryable = True
     suggestion = "File SHA256 checksum mismatch. Will retry automatically."
+
+
+class FileSizeMismatchError(FileIntegrityError):
+    """Raised when the server delivers a different number of bytes than the repository lists (E2020).
+
+    The transfer itself completed, so the remote object (or the replica / CDN
+    node serving it) is empty, truncated or out of date rather than the
+    connection being cut. Repeating the same request rarely helps, so it is not
+    marked retryable: the download makes one more attempt over the default
+    route and then reports the file.
+    """
+
+    retryable = False
+    suggestion = (
+        "The server returned content that does not match the repository's file size. "
+        "Report the file path and request ids in this message to the repository owner or ModelScope."
+    )
 
 
 # -- Cache errors (E1022) ---------------------------------------------------
@@ -433,11 +495,11 @@ _STATUS_MAP: dict[int, type[APIError]] = {
 # ---------------------------------------------------------------------------
 _BUSINESS_CODE_MAP: dict[int, type[APIError]] = {
     # -> E3001, served with HTTP 400 by POST /api/v1/login on both sites
-    10010103009: AuthenticationError,  # AccessToken 无效或过期
+    10010103009: AuthenticationError,  # AccessToken is invalid or expired
     # -> E3026
-    10020101001: AlreadyExistsError,  # 国内站 - 数据集已存在
-    10010101001: AlreadyExistsError,  # 国内站 - 模型已存在
-    10010202004: AlreadyExistsError,  # 国际站 - 名称已被使用
+    10020101001: AlreadyExistsError,  # China site: dataset already exists
+    10010101001: AlreadyExistsError,  # China site: model already exists
+    10010202004: AlreadyExistsError,  # International site: name is already in use
 }
 
 # The legacy commit endpoint overloads 400/409 for optimistic branch conflicts
@@ -699,7 +761,9 @@ __all__ = [
     "CacheError",
     "CacheNotFound",
     "CorruptedCacheException",
+    "FileDownloadError",
     "FileIntegrityError",
+    "FileSizeMismatchError",
     "NetworkError",
     "RequestTimeoutError",
     "StorageError",

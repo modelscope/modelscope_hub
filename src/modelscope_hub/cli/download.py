@@ -146,7 +146,7 @@ class DownloadCommand(CLICommand):
 
         if endpoint:
             endpoint = _resolve_cli_endpoint(endpoint)
-            return HubApi(token=token, endpoint=endpoint)
+            return HubApi(token=token, endpoint=endpoint, user_agent={"invoked_by": "cli"})
 
         api = make_api(self.args)
         try:
@@ -154,7 +154,7 @@ class DownloadCommand(CLICommand):
                 self.args.repo_id,
                 repo_type=self.args.repo_type,
             )
-            return HubApi(token=token, endpoint=resolved)
+            return HubApi(token=token, endpoint=resolved, user_agent={"invoked_by": "cli"})
         except Exception:
             return api
 

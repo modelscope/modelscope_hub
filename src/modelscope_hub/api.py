@@ -65,6 +65,7 @@ from .types import (
     RepoInfo,
     UserInfo,
 )
+from .utils import build_user_agent
 from .utils.logger import get_logger
 
 __all__ = ["HubApi"]
@@ -171,6 +172,9 @@ class HubApi:
         Defaults to ``https://modelscope.cn``.
     token : str or None, optional
         Override the API token. Takes precedence over ``config.token``.
+    user_agent : dict, str or None, optional
+        Application or channel information appended to the SDK UA and propagated
+        to OpenAPI, legacy, probe and download requests. Must not contain credentials.
 
     Examples
     --------
@@ -193,7 +197,9 @@ class HubApi:
         *,
         endpoint: str | None = None,
         token: str | None = None,
+        user_agent: dict | str | None = None,
     ) -> None:
+        self._user_agent_extra = dict(user_agent) if isinstance(user_agent, dict) else user_agent
         base = config or get_default_config()
         if config is None and (endpoint is not None or token is not None):
             from dataclasses import replace
@@ -224,19 +230,17 @@ class HubApi:
     def openapi(self) -> OpenAPIClient:
         """Lazily-constructed OpenAPI client."""
         if self._openapi is None:
-            self._openapi = OpenAPIClient(self._config)
+            self._openapi = OpenAPIClient(self._config, user_agent=self._user_agent_extra)
         return self._openapi
 
     @property
     def legacy(self) -> LegacyClient:
         """Lazily-constructed legacy ``/api/v1`` client."""
         if self._legacy is None:
-            from .utils import build_user_agent
-
             self._legacy = LegacyClient(
                 token=self._config.token,
                 endpoint=self._config.endpoint or DEFAULT_ENDPOINT,
-                user_agent=build_user_agent(self._config.get_session_id()),
+                user_agent=build_user_agent(config=self._config, extra=self._user_agent_extra),
             )
         elif self._legacy.token != self._config.token:
             # Clears propagate as well as changes: a cached client left holding a
@@ -248,7 +252,7 @@ class HubApi:
     def downloader(self) -> DownloadManager:
         """Lazily-constructed :class:`DownloadManager`."""
         if self._downloader is None:
-            self._downloader = DownloadManager(self.legacy, self._config)
+            self._downloader = DownloadManager(self.legacy, self._config, user_agent=self._user_agent_extra)
         return self._downloader
 
     @property
@@ -644,7 +648,9 @@ class HubApi:
         """
         from .constants import API_CONNECT_TIMEOUT
 
-        probe = OpenAPIClient(self._config, timeout=API_CONNECT_TIMEOUT, max_retries=0)
+        probe = OpenAPIClient(
+            self._config, timeout=API_CONNECT_TIMEOUT, max_retries=0, user_agent=self._user_agent_extra
+        )
         try:
             payload = probe.get_current_user()
         except Exception:  # advisory only -- never mask the original failure
@@ -694,7 +700,9 @@ class HubApi:
         if not isinstance(exc, AuthenticationError):
             return exc
         peer = self._peer_site_endpoint()
-        if peer is None or not self._token_valid_on(token, peer):
+        if peer is None or not self._token_valid_on(
+            token, peer, user_agent=build_user_agent(config=self._config, extra=self._user_agent_extra)
+        ):
             return exc
         return AuthenticationError(
             f"{exc.message} This token is valid on {peer} instead; retry with "
@@ -728,7 +736,7 @@ class HubApi:
         return None
 
     @staticmethod
-    def _token_valid_on(token: str, endpoint: str) -> bool:
+    def _token_valid_on(token: str, endpoint: str, *, user_agent: str | None = None) -> bool:
         """Best-effort check of whether *token* authenticates against *endpoint*.
 
         Runs on the failure path only and is strictly advisory: any error means
@@ -743,6 +751,7 @@ class HubApi:
             endpoint=endpoint,
             timeout=API_CONNECT_TIMEOUT,
             max_retries=0,
+            user_agent=user_agent or build_user_agent(config=get_default_config()),
         )
         try:
             probe.login(token)
@@ -1248,12 +1257,29 @@ class HubApi:
         primary = DEFAULT_INTL_ENDPOINT if prefer_ai else DEFAULT_ENDPOINT
         fallback = DEFAULT_ENDPOINT if prefer_ai else DEFAULT_INTL_ENDPOINT
 
-        primary_probe = HubApi(endpoint=primary, token=effective_token)
-        if primary_probe.repo_exists(repo_id, repo_type):
+        from ._download_control import _DownloadControl
+        from .constants import REPO_TREE_PAGE_TIMEOUT_SECONDS
+
+        def exists(endpoint: str) -> bool:
+            from dataclasses import replace
+
+            probe = HubApi(
+                config=replace(self._config),
+                endpoint=endpoint,
+                token=effective_token,
+                user_agent=self._user_agent_extra,
+            )
+            try:
+                with _DownloadControl(total_timeout=REPO_TREE_PAGE_TIMEOUT_SECONDS) as control:
+                    with probe.openapi.read_context(control):
+                        return probe.repo_exists(repo_id, repo_type)
+            finally:
+                probe.openapi.close()
+
+        if exists(primary):
             return primary
 
-        fallback_probe = HubApi(endpoint=fallback, token=effective_token)
-        if fallback_probe.repo_exists(repo_id, repo_type):
+        if exists(fallback):
             logger.warning(
                 "Repo %s not found on %s, using %s instead.",
                 repo_id,
@@ -1472,6 +1498,7 @@ class HubApi:
         expected_sha256: str | None = None,
         local_files_only: bool = False,
         user_agent: dict | str | None = None,
+        file_size: int | None = None,
     ) -> Path:
         """Download a single file from a repository.
 
@@ -1503,6 +1530,10 @@ class HubApi:
             Raises :class:`CacheNotFound` if the file is not cached.
         user_agent : dict, str or None, optional
             Custom user-agent info appended to the default UA string.
+        file_size : int, optional
+            Expected size in bytes, e.g. from a file listing. The download is
+            rejected when the server delivers a different size, and files
+            larger than the parallel threshold use ranged parallel streams.
 
         Returns
         -------
@@ -1513,6 +1544,9 @@ class HubApi:
         ------
         NotExistError
             When the file or repository does not exist.
+        FileIntegrityError
+            When the content keeps failing ``expected_sha256`` or (as
+            :class:`FileSizeMismatchError`) ``file_size``.
 
         Examples
         --------
@@ -1542,6 +1576,7 @@ class HubApi:
             expected_sha256=expected_sha256,
             local_files_only=local_files_only,
             user_agent=user_agent,
+            file_size=file_size,
         )
 
     def download_repo(
@@ -1558,6 +1593,7 @@ class HubApi:
         local_files_only: bool = False,
         user_agent: dict | str | None = None,
         progress_callbacks: list[type[ProgressCallback]] | None = None,
+        file_list: list[dict] | None = None,
     ) -> Path:
         """Download an entire repository snapshot.
 
@@ -1589,11 +1625,22 @@ class HubApi:
         progress_callbacks : list of ProgressCallback subclasses, optional
             Callback *classes* (not instances); each is instantiated per file
             to report byte-level download progress.
+        file_list : list of dict, optional
+            Previously fetched legacy file entries (Path, Size, Sha256). When
+            provided, listing requests are skipped. The caller must ensure the
+            entries belong to the same repository and revision; filters still apply.
 
         Returns
         -------
         Path
             Absolute path to the snapshot/local directory.
+
+        Raises
+        ------
+        FileDownloadError
+            When any file failed after all files were attempted. Completed
+            files are kept, so calling again fetches only the failed ones;
+            ``failed_files`` maps each failed path to its error.
 
         Examples
         --------
@@ -1627,6 +1674,7 @@ class HubApi:
             local_files_only=local_files_only,
             user_agent=user_agent,
             progress_callbacks=progress_callbacks,
+            file_list=file_list,
         )
 
     def list_repo_files(

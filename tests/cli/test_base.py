@@ -97,21 +97,23 @@ class TestMakeApi:
         args = Namespace(token="my_token", endpoint=None)
         with patch("modelscope_hub.cli.base.HubApi") as mock_hub:
             make_api(args)
-            mock_hub.assert_called_once_with(token="my_token", endpoint=None)
+            mock_hub.assert_called_once_with(token="my_token", endpoint=None, user_agent={"invoked_by": "cli"})
 
     def test_make_api_without_token(self):
         """make_api passes None when no token."""
         args = Namespace(token=None, endpoint=None)
         with patch("modelscope_hub.cli.base.HubApi") as mock_hub:
             make_api(args)
-            mock_hub.assert_called_once_with(token=None, endpoint=None)
+            mock_hub.assert_called_once_with(token=None, endpoint=None, user_agent={"invoked_by": "cli"})
 
     def test_make_api_with_endpoint(self):
         """make_api passes endpoint to HubApi."""
         args = Namespace(token=None, endpoint="https://custom.endpoint.com")
         with patch("modelscope_hub.cli.base.HubApi") as mock_hub:
             make_api(args)
-            mock_hub.assert_called_once_with(token=None, endpoint="https://custom.endpoint.com")
+            mock_hub.assert_called_once_with(
+                token=None, endpoint="https://custom.endpoint.com", user_agent={"invoked_by": "cli"}
+            )
 
 
 class TestAddRepoTypeArg:

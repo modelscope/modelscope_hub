@@ -22,22 +22,28 @@ Design goals
 
 from __future__ import annotations
 
+import contextlib
 import random
+import threading
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, BinaryIO
 from urllib.parse import urljoin, urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
+from requests.structures import CaseInsensitiveDict
 
+from ._download_control import _DownloadControl, _network_context, _ReadHTTPAdapter
 from .config import HubConfig, get_default_config
 from .constants import (
     API_CONNECT_TIMEOUT,
     API_CONNECTION_POOL_MAXSIZE,
     API_MAX_RETRIES,
     API_TIMEOUT,
+    DOWNLOAD_CHUNK_SIZE,
+    DOWNLOAD_RETRY_MAX_DELAY_SECONDS,
     OPENAPI_PREFIX,
     TokenScope,
 )
@@ -64,6 +70,7 @@ from .types import (
     UpdateSkillSettingsPayload,
     UpdateStudioSettingsPayload,
 )
+from .utils import append_user_agent, build_user_agent
 from .utils.logger import get_logger
 
 __all__ = ["OPERATION_REGISTRY", "OpenAPIClient"]
@@ -196,6 +203,10 @@ class OpenAPIClient:
         ``(API_CONNECT_TIMEOUT, API_TIMEOUT)`` as ``(connect, read)`` tuple.
     max_retries:
         Maximum number of retry attempts for transient failures.
+    user_agent:
+        Additional information appended to the standard SDK UA. Custom UAs from
+        an injected session or request headers are appended too, preserving the
+        SDK identifier. Both sessions share the same base UA.
     """
 
     def __init__(
@@ -205,9 +216,14 @@ class OpenAPIClient:
         session: requests.Session | None = None,
         timeout: float | None = None,
         max_retries: int | None = None,
+        user_agent: dict | str | None = None,
     ) -> None:
         self._config = config or get_default_config()
+        self._user_agent = build_user_agent(config=self._config, extra=user_agent)
         self._session = session or requests.Session()
+        session_ua = self._session.headers.get("User-Agent")
+        if session_ua and session_ua != requests.utils.default_user_agent():
+            self._user_agent = append_user_agent(self._user_agent, session_ua)
         if session is None:
             # A bare Session caps the pool at urllib3's default of 10, which is
             # below the concurrency bulk transfers use; the excess connections
@@ -225,6 +241,27 @@ class OpenAPIClient:
         # Tri-state cache for whether this deployment serves ``GET /mcp/servers``.
         # ``None`` means "not probed yet"; see :meth:`list_mcp_servers`.
         self._mcp_list_supports_get: bool | None = None
+        self._read_state = threading.local()
+        self._read_session = requests.Session()
+        self._read_session.headers.update(self._session.headers)
+        adapter = _ReadHTTPAdapter(
+            max_retries=0,
+            pool_connections=API_CONNECTION_POOL_MAXSIZE,
+            pool_maxsize=API_CONNECTION_POOL_MAXSIZE,
+        )
+        self._read_session.mount("https://", adapter)
+        self._read_session.mount("http://", adapter)
+
+    @contextlib.contextmanager
+    def read_context(self, control: _DownloadControl) -> Iterator[None]:
+        """Use deadline-controlled transport for site probes, preserving regular OpenAPI policies."""
+        previous = getattr(self._read_state, "control", None)
+        self._read_state.control = control
+        try:
+            with _network_context(control):
+                yield
+        finally:
+            self._read_state.control = previous
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -232,6 +269,7 @@ class OpenAPIClient:
     def close(self) -> None:
         """Release the underlying HTTP session."""
         self._session.close()
+        self._read_session.close()
 
     def __enter__(self) -> OpenAPIClient:
         return self
@@ -493,27 +531,47 @@ class OpenAPIClient:
         else:
             merged_headers = {}
             request_cookies = {}
+        request_headers = CaseInsensitiveDict(merged_headers)
         if headers:
-            merged_headers.update(headers)
+            request_headers.update(headers)
+        # Inject UA at the sole send boundary for both sessions, anonymous requests and retries.
+        request_headers["User-Agent"] = append_user_agent(self._user_agent, request_headers.get("User-Agent"))
 
         method_upper = method.upper()
         attempts = max(1, self._max_retries)
         last_exc: BaseException | None = None
 
+        control = getattr(self._read_state, "control", None)
         for attempt in range(1, attempts + 1):
             _logger.debug("%s %s", method_upper, final_url)
+            request_timeout = timeout if timeout is not None else self._timeout
+            if control is not None:
+                connect, read = (
+                    (API_CONNECT_TIMEOUT, request_timeout)
+                    if isinstance(request_timeout, (int, float))
+                    else request_timeout
+                )
+                request_timeout = control.timeouts(connect, read)
             try:
-                response = self._session.request(
+                session = self._read_session if control is not None else self._session
+                stream_options: dict[str, Any] = {"stream": True} if control is not None else {}
+                response = session.request(
                     method=method_upper,
                     url=final_url,
                     params=params,
                     json=json_body,
                     data=data,
                     files=files,
-                    headers=merged_headers,
+                    headers=request_headers,
                     cookies=request_cookies,
-                    timeout=timeout if timeout is not None else self._timeout,
+                    timeout=request_timeout,
+                    **stream_options,
                 )
+                if control is not None:
+                    control.track(response)
+                    with control.response(response):
+                        response._content = b"".join(control.chunks(response, DOWNLOAD_CHUNK_SIZE))
+                        response._content_consumed = True
             except requests.Timeout as exc:
                 last_exc = RequestTimeoutError(f"Request timed out: {exc}")
             except requests.ConnectionError as exc:
@@ -568,7 +626,10 @@ class OpenAPIClient:
                 attempt,
                 attempts,
             )
-            time.sleep(backoff)
+            if control is None:
+                time.sleep(backoff)
+            else:
+                control.sleep(min(backoff, DOWNLOAD_RETRY_MAX_DELAY_SECONDS))
 
         assert last_exc is not None  # for type-checkers
         raise last_exc

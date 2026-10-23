@@ -138,3 +138,12 @@ After changing the upload path, check whether the following must be updated as w
 - The upload environment-variable table and semantic documentation in `README.md`.
 - `__all__` exports and compatibility aliases in `src/modelscope_hub/compat/` and `constants.py`.
 - This file, if new constants, error codes, or scenarios were introduced.
+
+---
+
+## 7. User-Agent (UA) Requirements
+
+- Every SDK HTTP request must include a `User-Agent` starting with `modelscope_hub/<version>`. Use `utils.build_user_agent` / `append_user_agent` and enforce coverage at client send boundaries across OpenAPI, Legacy, Agent, both sessions, anonymous requests, retries, and probes.
+- Custom UA information must be appended, never replacing the SDK identifier. Handle header names case-insensitively; empty values must not remove the SDK UA. Propagate CLI / compat markers (`invoked_by/cli` / `invoked_by/compat`) to derived clients and download requests.
+- Prefer a persisted `session_id`; fall back to a process-stable ID when storage is not writable. Telemetry persistence failures must not block business requests. UA must not contain tokens, cookies, or other credentials.
+- Changes to HTTP transport, client construction, or delegating entry points must verify these invariants against actual `PreparedRequest` objects; checking session default headers alone is insufficient.

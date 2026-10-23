@@ -325,12 +325,14 @@ def test_verify_manifest_refuses_keys_pointing_outside_the_package(tmp_path, key
 # ---------------------------------------------------------------------------
 # execution audit / no opt-in
 # ---------------------------------------------------------------------------
-def test_log_execution_records_the_build_before_import(tmp_path, caplog):
+def test_log_execution_records_the_build_before_import(tmp_path, caplog, monkeypatch):
     """There is no opt-in to wait for any more -- the allow-list is the
     authorisation -- but executing downloaded code still deserves an audit line
     naming the exact build, emitted before the import so a crash during it leaves
     a trace of what was being loaded."""
     spec = spec_for(make_plugin(tmp_path))
+    # Capture on the target logger because SDK logs do not propagate to root; monkeypatch restores its handlers.
+    monkeypatch.setattr(_plugin.logger, "handlers", [*_plugin.logger.handlers, caplog.handler])
     with caplog.at_level("INFO", logger="modelscope_hub.agent"):
         _plugin.log_execution(spec)
     for expected in (spec.repo_id, spec.revision, spec.entry_module, "9.9.9"):

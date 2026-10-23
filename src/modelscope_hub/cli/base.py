@@ -75,6 +75,7 @@ def make_api(args: Namespace) -> HubApi:
     return HubApi(
         token=getattr(args, "token", None),
         endpoint=getattr(args, "endpoint", None),
+        user_agent={"invoked_by": "cli"},
     )
 
 

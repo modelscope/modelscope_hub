@@ -14,25 +14,35 @@ needed for API calls.
 
 from __future__ import annotations
 
+import contextlib
+import threading
 import time
 import uuid
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import IO, Any, BinaryIO
 from urllib.parse import quote_plus, urlparse
 
 import requests
 from requests.adapters import HTTPAdapter, Retry
+from requests.structures import CaseInsensitiveDict
+from urllib3.exceptions import InvalidHeader
 
+from ._download_control import _DownloadControl, _DownloadDeadlineError, _network_context, _ReadHTTPAdapter
+from .config import get_default_config
 from .constants import (
     API_CONNECT_TIMEOUT,
     API_CONNECTION_POOL_MAXSIZE,
     API_MAX_RETRIES,
     API_TIMEOUT,
+    DOWNLOAD_CHUNK_SIZE,
+    DOWNLOAD_TIMEOUT,
     LEGACY_API_PREFIX,
     REPO_FILES_TRUNCATION_LIMIT,
     REPO_TREE_MAX_REQUESTS,
     REPO_TREE_PAGE_MAX_ATTEMPTS,
     REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS,
+    REPO_TREE_PAGE_TIMEOUT_SECONDS,
     REPO_TREE_WALK_WORKERS,
     UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS,
     UPLOAD_BLOB_READ_TIMEOUT_SECONDS,
@@ -44,10 +54,12 @@ from .errors import (
     InvalidParameter,
     NetworkError,
     PermissionDeniedError,
+    RateLimitError,
     RequestTimeoutError,
     ServerError,
     raise_for_status,
 )
+from .utils import append_user_agent, build_user_agent
 from .utils.logger import get_logger
 
 logger = get_logger("legacy_api")
@@ -118,8 +130,12 @@ class LegacyClient:
         self._tree_reads_ok = False
 
         self._session = requests.Session()
-        if user_agent:
-            self._session.headers["User-Agent"] = user_agent
+        self._user_agent = (
+            user_agent
+            if user_agent and user_agent.startswith("modelscope_hub/")
+            else build_user_agent(config=get_default_config(), extra=user_agent)
+        )
+        self._session.headers["User-Agent"] = self._user_agent
         retry = Retry(
             total=max_retries,
             backoff_factor=0.5,
@@ -133,6 +149,27 @@ class LegacyClient:
         )
         self._session.mount("https://", adapter)
         self._session.mount("http://", adapter)
+        # Callers manage download/listing retries; this pool leaves upload and regular API policies unchanged.
+        self._read_session = requests.Session()
+        self._read_session.headers.update(self._session.headers)
+        read_adapter = _ReadHTTPAdapter(
+            max_retries=0,
+            pool_connections=API_CONNECTION_POOL_MAXSIZE,
+            pool_maxsize=API_CONNECTION_POOL_MAXSIZE,
+        )
+        self._read_session.mount("https://", read_adapter)
+        self._read_session.mount("http://", read_adapter)
+        self._read_state = threading.local()
+
+    @contextlib.contextmanager
+    def read_context(self, control: _DownloadControl) -> Iterator[None]:
+        previous = getattr(self._read_state, "control", None)
+        self._read_state.control = control
+        try:
+            with _network_context(control):
+                yield
+        finally:
+            self._read_state.control = previous
 
     # ------------------------------------------------------------------
     # Properties
@@ -150,6 +187,7 @@ class LegacyClient:
         self._token = value
         self._session_authenticated = False
         self._session.cookies.clear()
+        self._read_session.cookies.clear()
 
     # ------------------------------------------------------------------
     # Transport
@@ -165,9 +203,11 @@ class LegacyClient:
         }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
+        merged = CaseInsensitiveDict(headers)
         if extra:
-            headers.update(extra)
-        return headers
+            merged.update(extra)
+        merged["User-Agent"] = append_user_agent(self._user_agent, merged.get("User-Agent"))
+        return dict(merged)
 
     def _ensure_session_auth(self) -> None:
         """Set the ``m_session_id`` cookie on the session for legacy API auth.
@@ -181,6 +221,7 @@ class LegacyClient:
             return
         domain = urlparse(self._endpoint).hostname or ""
         self._session.cookies.set("m_session_id", self._token, domain=domain, path="/")
+        self._read_session.cookies.set("m_session_id", self._token, domain=domain, path="/")
         self._session_authenticated = True
         logger.debug("Legacy session cookie set for domain=%s", domain)
 
@@ -194,8 +235,9 @@ class LegacyClient:
         data: Any | None = None,
         files: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
-        timeout: int | None = None,
+        timeout: int | tuple[float, float] | None = None,
         stream: bool = False,
+        single_attempt: bool = False,
     ) -> requests.Response:
         """Unified request dispatcher with auth, retry, and error handling."""
         self._ensure_session_auth()
@@ -207,8 +249,32 @@ class LegacyClient:
             merged_headers.pop("Content-Type", None)
 
         logger.debug("%s %s", method, url)
+        control = getattr(self._read_state, "control", None)
+        if single_attempt and control is None:
+            # Bound both headers and body reads for single-page calls without an external controller.
+            with _DownloadControl(total_timeout=REPO_TREE_PAGE_TIMEOUT_SECONDS) as page_control:
+                with self.read_context(page_control):
+                    return self._request(
+                        method,
+                        path,
+                        params=params,
+                        json_body=json_body,
+                        data=data,
+                        files=files,
+                        headers=headers,
+                        timeout=timeout,
+                        stream=stream,
+                        single_attempt=True,
+                    )
+        session = self._read_session if control is not None or single_attempt else self._session
+        request_timeout = timeout or self._timeout
+        if control is not None:
+            connect, read = (
+                (API_CONNECT_TIMEOUT, request_timeout) if isinstance(request_timeout, int) else request_timeout
+            )
+            request_timeout = control.timeouts(connect, read)
         try:
-            resp = self._session.request(
+            resp = session.request(
                 method=method,
                 url=url,
                 params=params,
@@ -216,8 +282,8 @@ class LegacyClient:
                 data=data,
                 files=files,
                 headers=merged_headers,
-                timeout=timeout or self._timeout,
-                stream=stream,
+                timeout=request_timeout,
+                stream=stream or control is not None,
             )
         except requests.exceptions.RetryError as exc:
             raise ServerError(f"Max retries exceeded: {exc}") from exc
@@ -227,7 +293,7 @@ class LegacyClient:
             raise RequestTimeoutError(f"Request timed out: {exc}") from exc
 
         logger.debug("%s %s -> %s", method, url, resp.status_code)
-        if resp.status_code >= 400:
+        if resp.status_code >= 400 and control is None:
             logger.debug(
                 "Request failed: %s %s params=%s status=%s body=%s",
                 method,
@@ -236,6 +302,38 @@ class LegacyClient:
                 resp.status_code,
                 resp.text[:500] if resp.text else "",
             )
+        if control is not None:
+            try:
+                control.track(resp)
+                if not stream or resp.status_code >= 400:
+                    # Bound error-body reads too, avoiding unbounded reads inside raise_for_status.
+                    body = bytearray()
+                    for chunk in control.chunks(resp, DOWNLOAD_CHUNK_SIZE):
+                        body.extend(chunk)
+                        if resp.status_code >= 400 and len(body) >= 65536:
+                            break
+                    if resp.status_code >= 400 and len(body) >= 65536:
+                        resp.raw.close()
+                    resp._content = bytes(body)
+                    resp._content_consumed = True
+                    control.release(resp)
+                    resp.close()
+                try:
+                    raise_for_status(resp)
+                except APIError as exc:
+                    exc.response = resp  # type: ignore[attr-defined]
+                    retry_after = resp.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            exc.retry_after = Retry().parse_retry_after(retry_after)  # type: ignore[attr-defined]
+                        except (ValueError, InvalidHeader):
+                            pass
+                    raise
+                return resp
+            except BaseException:
+                control.release(resp)
+                resp.close()
+                raise
         raise_for_status(resp)
         return resp
 
@@ -488,22 +586,37 @@ class LegacyClient:
                 budget_spent = True
             requests_made += len(roots)
 
+            control = getattr(self._read_state, "control", None)
+
             def one(subroot: str | None) -> list[dict]:
-                return self._list_files_page(
-                    repo_id,
-                    repo_type,
-                    revision,
-                    recursive=recursive,
-                    root=subroot,
-                )
+                scope = self.read_context(control) if control is not None else contextlib.nullcontext()
+                with scope:
+                    if control is not None:
+                        control.check()
+                    return self._list_files_page(
+                        repo_id,
+                        repo_type,
+                        revision,
+                        recursive=recursive,
+                        root=subroot,
+                    )
 
             if len(roots) == 1:
                 listings = {roots[0]: one(roots[0])}
             else:
                 workers = min(REPO_TREE_WALK_WORKERS, len(roots))
-                with ThreadPoolExecutor(max_workers=workers) as pool:
-                    futures = {pool.submit(one, subroot): subroot for subroot in roots}
+                pool = ThreadPoolExecutor(max_workers=workers)
+                futures = {pool.submit(one, subroot): subroot for subroot in roots}
+                try:
                     listings = {futures[future]: future.result() for future in as_completed(futures)}
+                except BaseException:
+                    if control is not None:
+                        control.cancel_event.set()
+                    for future in futures:
+                        future.cancel()
+                    raise
+                finally:
+                    pool.shutdown(wait=True, cancel_futures=True)
 
             if requests_made >= progress_mark:
                 logger.info(
@@ -593,7 +706,7 @@ class LegacyClient:
         ``GET /api/v1/datasets/{repo_id}/repo/tree`` with
         ``PageNumber``/``PageSize`` params.
 
-        A page occasionally answers ``403 无权访问该数据集`` on a repository the
+        A page occasionally answers ``403 access denied`` on a repository the
         caller demonstrably can read. Once any page has succeeded the credential
         is proven, so a later-page denial is a server-side hiccup rather than an
         authorization result, and it is retried instead of discarding every page
@@ -602,6 +715,7 @@ class LegacyClient:
         """
         all_files: list[dict] = []
         page_number = 1
+        logger.info("Listing %s@%s Root=%s ...", repo_id, revision, root_path)
         while True:
             params: dict[str, Any] = {
                 "Revision": revision,
@@ -626,10 +740,36 @@ class LegacyClient:
                 files = []
 
             all_files.extend(files)
+            if page_number % 10 == 0 or len(files) < page_size:
+                logger.info("Listing %s Root=%s: page %d, %d entries", repo_id, root_path, page_number, len(all_files))
             if len(files) < page_size:
                 break
             page_number += 1
         return all_files
+
+    def _fetch_tree_page(self, path: str, params: dict[str, Any]) -> requests.Response:
+        parent = getattr(self._read_state, "control", None)
+        budget = float(REPO_TREE_PAGE_TIMEOUT_SECONDS)
+        if parent is not None:
+            parent.check()
+            budget = min(budget, max(0.001, parent.deadline - time.monotonic()))
+        try:
+            with _DownloadControl(
+                total_timeout=budget,
+                cancel_event=parent.cancel_event if parent is not None else None,
+            ) as page_control:
+                with self.read_context(page_control):
+                    return self._request(
+                        "GET",
+                        path,
+                        params=params,
+                        timeout=(API_CONNECT_TIMEOUT, REPO_TREE_PAGE_TIMEOUT_SECONDS),
+                        single_attempt=True,
+                    )
+        except _DownloadDeadlineError as exc:
+            if parent is not None:
+                parent.check()
+            raise RequestTimeoutError(f"列表单页请求超过 {REPO_TREE_PAGE_TIMEOUT_SECONDS}s") from exc
 
     def _request_repo_tree(
         self,
@@ -641,8 +781,8 @@ class LegacyClient:
     ) -> Any:
         """Fetch one file-tree listing, retrying a spurious denial.
 
-        The server intermittently answers a tree request with ``403 无权访问该数据
-        集`` on a repository the caller has just read successfully -- observed on
+        The server intermittently answers a tree request with ``403 access
+        denied`` on a repository the caller has just read successfully -- observed on
         both ``PageNumber``-paginated and ``Root``-scoped listings. Enumerating a
         large repository takes hundreds of such requests, so at that scale a
         single-request failure rate is effectively a guaranteed whole-listing
@@ -653,31 +793,48 @@ class LegacyClient:
         Until then a 403 is taken at face value, keeping a real permission error
         fast and honest.
         """
-        last_error: PermissionDeniedError | None = None
+        last_error: NetworkError | ServerError | RateLimitError | PermissionDeniedError | None = None
         for attempt in range(REPO_TREE_PAGE_MAX_ATTEMPTS):
             try:
-                resp = self._request("GET", path, params=params)
-            except PermissionDeniedError as error:
-                if not authorized:
+                resp = self._fetch_tree_page(path, params)
+            except (NetworkError, ServerError, RateLimitError, PermissionDeniedError) as error:
+                if isinstance(error, PermissionDeniedError) and not authorized:
+                    raise
+                if not error.retryable and not isinstance(error, PermissionDeniedError):
                     raise
                 last_error = error
                 if attempt < REPO_TREE_PAGE_MAX_ATTEMPTS - 1:
-                    wait = min(2**attempt, REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS)
-                    logger.warning(
-                        "Repo %s: tree listing (%s) denied on an already-authorized repo, retrying in %ds ...",
-                        repo_id,
-                        params.get("Root") or params.get("PageNumber") or "/",
-                        wait,
+                    requested_wait = getattr(error, "retry_after", None)
+                    wait = min(
+                        max(0, requested_wait) if requested_wait is not None else 2**attempt,
+                        REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS,
                     )
-                    time.sleep(wait)
+                    logger.warning(
+                        "Repo %s: Root=%s page=%s listing failed (%s), retry in %ss (%s/%s)",
+                        repo_id,
+                        params.get("Root") or "/",
+                        params.get("PageNumber", 1),
+                        type(error).__name__,
+                        wait,
+                        attempt + 1,
+                        REPO_TREE_PAGE_MAX_ATTEMPTS,
+                    )
+                    control = getattr(self._read_state, "control", None)
+                    if control is None:
+                        time.sleep(wait)
+                    else:
+                        control.sleep(wait)
                 continue
             self._tree_reads_ok = True
             return resp
-        raise NetworkError(
-            f"Repo {repo_id}: tree listing ({params.get('Root') or params.get('PageNumber') or '/'}) kept "
-            f"returning a denial after {REPO_TREE_PAGE_MAX_ATTEMPTS} attempts on an already-authorized "
-            f"repo: {last_error}"
-        ) from last_error
+        if isinstance(last_error, PermissionDeniedError):
+            raise NetworkError(
+                f"Repo {repo_id}: tree listing ({params.get('Root') or params.get('PageNumber') or '/'}) kept "
+                f"returning a denial after {REPO_TREE_PAGE_MAX_ATTEMPTS} attempts on an already-authorized "
+                f"repo: {last_error}"
+            ) from last_error
+        assert last_error is not None
+        raise last_error
 
     # ------------------------------------------------------------------
     # Revisions
@@ -890,14 +1047,16 @@ class LegacyClient:
         if self._token:
             upload_headers["Authorization"] = f"Bearer {self._token}"
             upload_headers["Cookie"] = f"m_session_id={self._token}"
+        merged_headers = CaseInsensitiveDict(upload_headers)
         if headers:
-            upload_headers.update(headers)
+            merged_headers.update(headers)
+        merged_headers["User-Agent"] = append_user_agent(self._user_agent, merged_headers.get("User-Agent"))
 
         try:
             resp = self._session.put(
                 upload_url,
                 data=data,
-                headers=upload_headers,
+                headers=merged_headers,
                 timeout=timeout or (UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS, UPLOAD_BLOB_READ_TIMEOUT_SECONDS),
             )
         except requests.ConnectionError as exc:
@@ -992,6 +1151,7 @@ class LegacyClient:
             f"{segment}/{repo_id}/archive/zip/{revision}",
             headers=headers,
             stream=True,
+            timeout=(API_CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT),
         )
 
     # ------------------------------------------------------------------
@@ -1011,10 +1171,23 @@ class LegacyClient:
         """
         segment = _resolve_segment(repo_type)
         params = {"Revision": revision, "FilePath": file_path}
+        control = getattr(self._read_state, "control", None)
+        if control is None:
+            # Low-level calls do not add adapter retries; higher-level callers handle retries and integrity checks.
+            self._ensure_session_auth()
+            resp = self._read_session.get(
+                self.get_download_url(repo_id, repo_type, file_path, revision),
+                headers=self._headers(headers),
+                timeout=(API_CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT),
+                stream=True,
+            )
+            raise_for_status(resp)
+            return resp
         return self._request(
             "GET",
             f"{segment}/{repo_id}/repo",
             params=params,
             headers=headers,
             stream=True,
+            timeout=(API_CONNECT_TIMEOUT, DOWNLOAD_TIMEOUT),
         )

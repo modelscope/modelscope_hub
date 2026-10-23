@@ -92,7 +92,7 @@ def _cmd_list(owner, page_number, page_size, *, endpoint, token) -> int:
     """List remote agent repositories."""
     if not endpoint:
         return _fail("not logged in. Provide endpoint.")
-    client = AgentApi(endpoint=endpoint, token=token or "")
+    client = AgentApi(endpoint=endpoint, token=token or "", user_agent={"invoked_by": "cli"})
     try:
         result = client.list_agents(owner=owner, page_number=page_number, page_size=page_size)
     except APIError as e:
@@ -144,7 +144,7 @@ def _cmd_download(repo, local_dir, revision, *, endpoint, token, username) -> in
         )
 
     group, name = _resolve_repo(repo, username or "")
-    client = AgentApi(endpoint=endpoint, token=token or "")
+    client = AgentApi(endpoint=endpoint, token=token or "", user_agent={"invoked_by": "cli"})
     try:
         if client.repo_info(group, name) is None:
             return _fail(f"repository {group}/{name} not found.")
@@ -209,7 +209,7 @@ def _cmd_upload(repo, local_dir, revision, dry_run, *, endpoint, token, username
         )
 
     group, name = _resolve_repo(repo, username or "")
-    client = AgentApi(endpoint=endpoint, token=token)
+    client = AgentApi(endpoint=endpoint, token=token, user_agent={"invoked_by": "cli"})
     try:
         if not client.check_repo(group, name):
             client.create_repo(group, name, visibility=visibility)
@@ -507,7 +507,7 @@ class AgentCommand(CLICommand):
             from .._openapi import OpenAPIClient
 
             try:
-                openapi = OpenAPIClient(config=config)
+                openapi = OpenAPIClient(config=config, user_agent={"invoked_by": "cli"})
                 user_data = openapi.get_current_user() or {}
                 username = user_data.get("username") or user_data.get("Username") or ""
             except Exception:

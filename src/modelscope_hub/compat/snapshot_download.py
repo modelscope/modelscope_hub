@@ -16,6 +16,7 @@ import requests as _requests
 from ..api import HubApi
 from ..constants import RepoType
 from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
+from ..utils import append_user_agent
 from ..utils.patterns import normalize_patterns
 from .file_download import _resolve_legacy_paths
 
@@ -69,14 +70,14 @@ def snapshot_download(
     include = _normalize_pattern(allow_patterns) or _normalize_pattern(allow_file_pattern)
     exclude = _normalize_pattern(ignore_patterns) or _normalize_pattern(ignore_file_pattern)
 
-    api = HubApi(token=token, endpoint=endpoint)
+    api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
     if endpoint is None and not local_files_only:
         try:
             endpoint = api.resolve_endpoint_for_read(
                 effective_id,
                 repo_type=effective_type,
             )
-            api = HubApi(token=token, endpoint=endpoint)
+            api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
         except Exception:
             pass
     effective_cache, effective_local = _resolve_legacy_paths(
@@ -132,11 +133,11 @@ def dataset_snapshot_download(
     include = _normalize_pattern(allow_patterns) or _normalize_pattern(allow_file_pattern)
     exclude = _normalize_pattern(ignore_patterns) or _normalize_pattern(ignore_file_pattern)
 
-    api = HubApi(token=token, endpoint=endpoint)
+    api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
     if endpoint is None and not local_files_only:
         try:
             endpoint = api.resolve_endpoint_for_read(dataset_id, repo_type="dataset")
-            api = HubApi(token=token, endpoint=endpoint)
+            api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
         except Exception:
             pass
     effective_cache, effective_local = _resolve_legacy_paths(

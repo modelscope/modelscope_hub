@@ -181,6 +181,9 @@ class AgentApi:
         API token (fallback: HubConfig default / ``ms login``).
     timeout : int
         HTTP request timeout in seconds.
+    user_agent : dict, str or None
+        Application or channel information appended to the SDK UA across
+        OpenAPI, legacy and blob requests.
     """
 
     def __init__(
@@ -190,12 +193,13 @@ class AgentApi:
         timeout: int = 60,
         *,
         config: HubConfig | None = None,
+        user_agent: dict | str | None = None,
     ):
         self._config = config or HubConfig(endpoint=endpoint, token=token)
         self.server = (self._config.endpoint or "").rstrip("/")
         self.token = self._config.token
         self.timeout = timeout
-        self._openapi = OpenAPIClient(config=self._config, timeout=float(timeout))
+        self._openapi = OpenAPIClient(config=self._config, timeout=float(timeout), user_agent=user_agent)
 
     # ---- repository ----
 

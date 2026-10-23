@@ -211,6 +211,8 @@ snapshot = api.download_repo(
 path = api.download_file("Qwen/Qwen3-0.6B", "model", "config.json", local_files_only=True)
 ```
 
+Downloads validate available size and SHA-256 metadata before replacing files, with safe resume, bounded retries, timeouts, and cancellation. Incomplete snapshots raise `FileDownloadError` (CLI exit code `1`), preserving completed files for subsequent retries.
+
 ### Upload
 
 ```bash
@@ -905,7 +907,11 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 |----------|---------|-------------|
 | `MODELSCOPE_API_TIMEOUT` | `60` | HTTP request timeout (seconds) |
 | `MODELSCOPE_API_CONNECT_TIMEOUT` | `10` | HTTP connect timeout (seconds) |
-| `MODELSCOPE_API_MAX_RETRIES` | `5` | Max retry attempts for transient failures |
+| `MODELSCOPE_API_MAX_RETRIES` | `5` | Regular API retries; downloads and file listings use separate retry policies |
+| `MODELSCOPE_REPO_TREE_PAGE_TIMEOUT_SECONDS` | `15` | Per-page listing timeout (seconds) |
+| `MODELSCOPE_REPO_TREE_PAGE_MAX_ATTEMPTS` | `4` | Maximum attempts per listing page, including the initial request |
+| `MODELSCOPE_REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS` | `8` | Maximum listing retry delay (seconds) |
+| `MODELSCOPE_REPO_TREE_LIST_TIMEOUT_SECONDS` | `3600` | Total repository listing time budget (seconds) |
 
 **Download:**
 
@@ -915,8 +921,13 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | `MODELSCOPE_DOWNLOAD_PARALLEL_THRESHOLD_MB` | `500` | Parallel download threshold (MB) |
 | `MODELSCOPE_DOWNLOAD_CHUNK_SIZE_MB` | `1` | Streaming chunk size (MB) |
 | `MODELSCOPE_DOWNLOAD_PART_SIZE_MB` | `160` | Parallel range chunk size (MB) |
-| `MODELSCOPE_DOWNLOAD_MAX_RETRIES` | `5` | Per-file download retry count |
-| `MODELSCOPE_DOWNLOAD_TIMEOUT` | `60` | Per-file download timeout (seconds) |
+| `MODELSCOPE_DOWNLOAD_MAX_RETRIES` | `5` | Single-layer transport retries; `0` disables them; integrity retries are separately bounded |
+| `MODELSCOPE_DOWNLOAD_TIMEOUT` | `60` | Idle read timeout for streams and range parts, not the whole file (seconds) |
+| `MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT` | `3600` | Per-file time budget, including locks, probes, transfers, retries, and validation (seconds) |
+| `MODELSCOPE_DOWNLOAD_MIN_BYTES_PER_SECOND` | `1024` | Minimum rate per connection (B/s); `0` disables low-speed detection |
+| `MODELSCOPE_DOWNLOAD_LOW_SPEED_WINDOW_SECONDS` | `60` | Minimum-rate observation window (seconds) |
+| `MODELSCOPE_DOWNLOAD_RETRY_MAX_DELAY_SECONDS` | `60` | Maximum download Retry-After or backoff delay (seconds) |
+| `MODELSCOPE_DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS` | `600` | Maximum wait for another process's file lock (seconds) |
 | `MODELSCOPE_DOWNLOAD_FILE_LOCK` | `true` | File lock for multiprocess download safety |
 | `MODELSCOPE_DOWNLOAD_INTRA_CLOUD` | `true` | Alibaba cloud intra-cloud acceleration |
 | `MODELSCOPE_DOWNLOAD_INTRA_CLOUD_REGION` | (auto) | Override intra-cloud region ID |

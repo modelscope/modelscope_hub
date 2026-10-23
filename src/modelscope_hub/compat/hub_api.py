@@ -125,7 +125,7 @@ class LegacyHubApi:
         if endpoint and not endpoint.startswith("http"):
             endpoint = f"https://{endpoint}"
         self._endpoint = endpoint
-        self._api = HubApi(endpoint=endpoint, token=token)
+        self._api = HubApi(endpoint=endpoint, token=token, user_agent={"invoked_by": "compat"})
 
     # ------------------------------------------------------------------
     # Authentication
@@ -215,7 +215,7 @@ class LegacyHubApi:
         """
         api = self._api
         if token or endpoint:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         return api.delete_files(
             repo_id,
             repo_type,
@@ -242,7 +242,7 @@ class LegacyHubApi:
         """Create a repository (legacy signature)."""
         api = self._api
         if token or endpoint:
-            api = HubApi(token=token, endpoint=endpoint or self._endpoint)
+            api = HubApi(token=token, endpoint=endpoint or self._endpoint, user_agent={"invoked_by": "compat"})
         if create_default_config:
             kwargs["create_default_config"] = True
         try:
@@ -301,7 +301,7 @@ class LegacyHubApi:
 
         api = self._api
         if token or endpoint:
-            api = HubApi(token=token, endpoint=endpoint or self._endpoint)
+            api = HubApi(token=token, endpoint=endpoint or self._endpoint, user_agent={"invoked_by": "compat"})
         owner, name = api._parse_repo_id(model_id)
         normalised_visibility = api._normalize_visibility(visibility)
         if normalised_visibility is None:
@@ -376,7 +376,7 @@ class LegacyHubApi:
 
         api = self._api
         if token or endpoint:
-            api = HubApi(token=token, endpoint=endpoint or self._endpoint)
+            api = HubApi(token=token, endpoint=endpoint or self._endpoint, user_agent={"invoked_by": "compat"})
         if aigc_model is None:
             if readme_content is not None:
                 raise InvalidParameter("readme_content is only supported for AIGC model tags")
@@ -507,6 +507,7 @@ class LegacyHubApi:
         api = self._api
         if endpoint is not None or token is not None:
             api = HubApi(
+                user_agent={"invoked_by": "compat"},
                 endpoint=endpoint or self._api._config.endpoint,
                 token=token or self._api._config.token,
             )
@@ -595,7 +596,9 @@ class LegacyHubApi:
         endpoint = control.get("endpoint")
         config = self._api._config
         if (token and token != config.token) or (endpoint and endpoint != config.endpoint):
-            return HubApi(token=token or config.token, endpoint=endpoint or config.endpoint)
+            return HubApi(
+                token=token or config.token, endpoint=endpoint or config.endpoint, user_agent={"invoked_by": "compat"}
+            )
         return self._api
 
     def deploy_studio(self, studio_id: str, **kwargs: Any) -> dict:
@@ -826,7 +829,7 @@ class LegacyHubApi:
         """List models owned by a user/org."""
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         page = api.list_repos(
             RepoType.MODEL,
             owner=owner_or_group,
@@ -883,7 +886,7 @@ class LegacyHubApi:
         actual_owner = owner or owner_or_group
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         return api.list_repos(
             RepoType.DATASET,
             owner=actual_owner,
@@ -908,7 +911,7 @@ class LegacyHubApi:
         repo_id = f"{namespace}/{dataset_name}"
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         api.create_repo(
             repo_id,
             repo_type=RepoType.DATASET,
@@ -950,7 +953,7 @@ class LegacyHubApi:
         )
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         return api.get_repo(dataset_id, RepoType.DATASET, revision=revision)
 
     def delete_model(
@@ -962,7 +965,7 @@ class LegacyHubApi:
         """Delete a model repository."""
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         api.delete_repo(model_id, RepoType.MODEL)
 
     def delete_dataset(
@@ -980,7 +983,7 @@ class LegacyHubApi:
         )
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         api.delete_repo(dataset_id, RepoType.DATASET)
 
     def get_dataset_files(
@@ -999,7 +1002,7 @@ class LegacyHubApi:
         """Get dataset file tree via the datahub API."""
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
 
         if dataset_hub_id is None:
             if "/" in repo_id:
@@ -1038,7 +1041,7 @@ class LegacyHubApi:
         """Get the dataset hub-internal id and type."""
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
 
         cache_key = (namespace, dataset_name, endpoint or self._endpoint)
         cached = LegacyHubApi._dataset_id_type_cache.get(cache_key)
@@ -1063,7 +1066,7 @@ class LegacyHubApi:
         """Get the meta file-list of the dataset."""
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
 
         params = {"Revision": revision}
         resp = api.legacy._request("GET", f"datasets/{dataset_id}/repo/tree", params=params)
@@ -1107,7 +1110,7 @@ class LegacyHubApi:
 
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
 
         local_paths: dict[str, list] = defaultdict(list)
         dataset_formation = DatasetFormations(dataset_type)
@@ -1197,7 +1200,7 @@ class LegacyHubApi:
         """Get STS token config for dataset OSS access."""
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         resp = api.legacy._request(
             "GET",
             f"datasets/{namespace}/{dataset_name}/ststoken",
@@ -1217,7 +1220,7 @@ class LegacyHubApi:
         """Get STS token config with session-based auth."""
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         resp = api.legacy._request(
             "GET",
             f"datasets/{namespace}/{dataset_name}/ststoken",
@@ -1237,7 +1240,7 @@ class LegacyHubApi:
         """Get STS config for unzipped dataset files."""
         api = self._api
         if token:
-            api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
 
         # Get visibility
         data = api.legacy.get_repo_info(f"{namespace}/{dataset_name}", RepoType.DATASET)
@@ -1270,7 +1273,7 @@ class LegacyHubApi:
         try:
             api = self._api
             if token:
-                api = HubApi(endpoint=endpoint or self._endpoint, token=token)
+                api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
             api.legacy._request(
                 "POST",
                 f"datasets/{namespace}/{dataset_name}/download/increase",

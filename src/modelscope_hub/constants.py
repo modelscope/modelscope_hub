@@ -614,7 +614,7 @@ REPO_TREE_PAGE_MAX_ATTEMPTS: int = _env_int(
 """Retries for a spurious ``403`` on a single page of a paginated tree listing.
 
 A large dataset listing spans hundreds of pages and an occasional page answers
-``403 无权访问该数据集`` on a repository the caller has just read successfully.
+``403 access denied`` on a repository the caller has just read successfully.
 Treating that as an authorization result throws away every page already
 collected, so it is retried once the credential has been proven by an earlier
 page.
@@ -696,17 +696,62 @@ DOWNLOAD_PARALLELS: int = _env_int(
 DOWNLOAD_RETRY_TIMES: int = _env_int(
     "MODELSCOPE_DOWNLOAD_MAX_RETRIES",
     5,
-    "Per-file download retry count",
+    "Per-file download retry count (one retry layer; zero disables retries)",
     "Download",
     "DOWNLOAD_RETRY_TIMES",
+    allow_zero=True,
 )
 
 DOWNLOAD_TIMEOUT: int = _env_int(
     "MODELSCOPE_DOWNLOAD_TIMEOUT",
     60,
-    "Per-file download timeout (seconds)",
+    "Download idle read timeout (seconds; single stream and range parts)",
     "Download",
     "DOWNLOAD_TIMEOUT",
+)
+
+DOWNLOAD_TOTAL_TIMEOUT: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT",
+    3600,
+    "Total time budget per file including retries, probes and lock wait (seconds)",
+    "Download",
+)
+DOWNLOAD_MIN_BYTES_PER_SECOND: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_MIN_BYTES_PER_SECOND",
+    1024,
+    "Minimum transfer rate per connection (B/s; zero disables rate checking)",
+    "Download",
+    allow_zero=True,
+)
+DOWNLOAD_LOW_SPEED_WINDOW_SECONDS: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_LOW_SPEED_WINDOW_SECONDS",
+    60,
+    "Observation window for minimum download rate (seconds)",
+    "Download",
+)
+DOWNLOAD_RETRY_MAX_DELAY_SECONDS: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_RETRY_MAX_DELAY_SECONDS",
+    60,
+    "Maximum download Retry-After or backoff delay (seconds)",
+    "Download",
+)
+DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS: int = _env_int(
+    "MODELSCOPE_DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS",
+    600,
+    "Maximum wait for another downloader's file lock (seconds)",
+    "Download",
+)
+REPO_TREE_PAGE_TIMEOUT_SECONDS: int = _env_int(
+    "MODELSCOPE_REPO_TREE_PAGE_TIMEOUT_SECONDS",
+    15,
+    "Idle timeout per file-tree page (seconds; no nested HTTP retries)",
+    "Network",
+)
+REPO_TREE_LIST_TIMEOUT_SECONDS: int = _env_int(
+    "MODELSCOPE_REPO_TREE_LIST_TIMEOUT_SECONDS",
+    3600,
+    "Total budget for enumerating a repository (seconds)",
+    "Network",
 )
 
 DOWNLOAD_PART_SIZE: int = _env_int_mb(
@@ -1302,6 +1347,13 @@ __all__ = [
     "DOWNLOAD_PART_SIZE",
     "DOWNLOAD_RETRY_TIMES",
     "DOWNLOAD_TIMEOUT",
+    "DOWNLOAD_TOTAL_TIMEOUT",
+    "DOWNLOAD_MIN_BYTES_PER_SECOND",
+    "DOWNLOAD_LOW_SPEED_WINDOW_SECONDS",
+    "DOWNLOAD_RETRY_MAX_DELAY_SECONDS",
+    "DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS",
+    "REPO_TREE_PAGE_TIMEOUT_SECONDS",
+    "REPO_TREE_LIST_TIMEOUT_SECONDS",
     "ENV_AGENT_PLUGIN_REPO",
     "ENV_FILE_LOCK",
     "ENV_CACHE",
