@@ -6,15 +6,59 @@ import contextlib
 import socket
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.exceptions import HTTPError as Urllib3HTTPError
 
 from .errors import NetworkError, RequestTimeoutError
+
+if TYPE_CHECKING:
+    from .types import DownloadRetryPolicy
+
+
+class _RecoveryBudget:
+    """One durable recovery budget per file, shared by range and integrity retries."""
+
+    def __init__(
+        self,
+        policy: DownloadRetryPolicy,
+        retries: int,
+        seconds: float,
+        persist: Callable[[int, float], None],
+    ) -> None:
+        self.policy = policy
+        self.retries = retries
+        self.seconds = seconds
+        self.persist = persist
+        self.lock = threading.Lock()
+        self.activity = threading.local()
+
+    def progress(self) -> None:
+        self.activity.last = time.monotonic()
+
+    def retry(self, delay: float) -> None:
+        with self.lock:
+            elapsed = max(0, time.monotonic() - getattr(self.activity, "last", time.monotonic()))
+            self.seconds += elapsed
+            self.persist(self.retries, self.seconds)
+            if delay > self.policy.max_retry_delay:
+                raise _DownloadDeferredError("Server cooldown exceeds the short recovery budget")
+            if self.retries >= self.policy.max_retries or self.seconds + delay >= self.policy.recovery_timeout:
+                raise _DownloadDeferredError("File recovery budget exhausted; automatic retry is disabled")
+            self.retries += 1
+            self.seconds += delay
+            self.persist(self.retries, self.seconds)
+            self.progress()
+
+
+class _DownloadDeferredError(NetworkError):
+    """Recovery is exhausted or a server cooldown requires a later explicit run."""
+
+    retryable = False
 
 
 class _DownloadCancelledError(Exception):
@@ -38,6 +82,7 @@ class _WatchedResponse:
     received: int = 0
     error: Exception | None = None
     monitor_speed: bool = True
+    header_deadline: float | None = None
 
 
 def _response_socket(response: requests.Response) -> Any:
@@ -62,11 +107,13 @@ class _DownloadControl:
         cancel_event: threading.Event | None = None,
         min_rate: int = 0,
         speed_window: float = 60,
+        recovery: _RecoveryBudget | None = None,
     ) -> None:
         self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
         self.deadline = time.monotonic() + total_timeout
         self.min_rate = min_rate
         self.speed_window = speed_window
+        self.recovery = recovery
         self._responses: dict[requests.Response, _WatchedResponse] = {}
         self._transports: dict[Any, _WatchedResponse] = {}
         self._lock = threading.Lock()
@@ -95,6 +142,12 @@ class _DownloadControl:
     def timeouts(self, connect: float, read: float) -> tuple[float, float]:
         self.check()
         remaining = max(0.001, self.deadline - time.monotonic())
+        if self.recovery is not None:
+            self.recovery.progress()
+            with self.recovery.lock:
+                remaining = min(remaining, max(0.001, self.recovery.policy.recovery_timeout - self.recovery.seconds))
+            connect = min(connect, self.recovery.policy.idle_timeout)
+            read = min(read, self.recovery.policy.idle_timeout)
         return min(connect, remaining), min(read, remaining)
 
     def sleep(self, seconds: float) -> None:
@@ -118,6 +171,9 @@ class _DownloadControl:
         """Interrupt sockets while reading headers so trickling headers cannot bypass deadlines."""
         self.check()
         state = _WatchedResponse(sock, time.monotonic(), monitor_speed=False)
+        if self.recovery is not None:
+            started = getattr(self.recovery.activity, "last", time.monotonic())
+            state.header_deadline = min(self.deadline, started + self.recovery.policy.idle_timeout)
         with self._lock:
             self._transports[sock] = state
             self._start_monitor()
@@ -148,6 +204,8 @@ class _DownloadControl:
             state = self._responses.get(response)
             if state is not None:
                 state.received += received
+                if received and self.recovery is not None:
+                    self.recovery.progress()
                 if state.error is not None:
                     raise state.error
 
@@ -165,6 +223,8 @@ class _DownloadControl:
                         state.error = _DownloadCancelledError("下载已取消")
                     elif now >= self.deadline:
                         state.error = _DownloadDeadlineError("下载总时限已耗尽")
+                    elif state.header_deadline is not None and now >= state.header_deadline:
+                        state.error = RequestTimeoutError("Response headers exceeded the short recovery time limit")
                     elif state.monitor_speed and self.min_rate and now - state.started >= self.speed_window:
                         rate = state.received / (now - state.started)
                         if rate < self.min_rate:
@@ -269,6 +329,26 @@ class _ReadHTTPAdapter(HTTPAdapter):
                 {"ConnectionCls": watched, "_download_controlled": True},
             )
         manager.pool_classes_by_scheme = classes
+
+    def build_response(self, req: Any, resp: Any) -> requests.Response:
+        response = super().build_response(req, resp)
+        control = getattr(_network_state, "control", None)
+        if control is not None:
+            # Requests consumes intermediate redirect bodies outside chunks().
+            # Track them here, and release before their connection can be reused.
+            original_close = response.close
+
+            def close() -> None:
+                control.release(response)
+                original_close()
+
+            response.close = close  # type: ignore[method-assign]
+            try:
+                control.track(response)
+            except BaseException:
+                response.close()
+                raise
+        return response
 
     def init_poolmanager(self, connections: int, maxsize: int, block: bool = False, **kwargs: Any) -> None:
         super().init_poolmanager(connections, maxsize, block=block, **kwargs)

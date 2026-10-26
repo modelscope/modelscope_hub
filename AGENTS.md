@@ -14,6 +14,7 @@ This document defines repository-level engineering conventions that apply to eve
   4. Type checks: `mypy src/modelscope_hub/`
 - Never commit secrets. `~/.modelscope/credentials/` is private (it contains a pickled cookie jar and `m_session_id`); never expose its contents in logs or reports.
 - When changing the default value of a configuration constant, update the corresponding tests for its default value and registration table, as well as the environment-variable table in `README.md`.
+- Local SDK state must use lightweight files, without embedded database modules or packages. Keep recovery hints sparse and advisory: verify actual files against available size/hash metadata before trusting completion or stale failure records. Missing, corrupt, or unwritable hints must not imply success or prevent valid files from being reused. Each download task must reuse one hidden JSON for sparse recovery hints and its latest summary, without persistent per-call report or result files; healthy files must not trigger per-file state rewrites.
 
 ---
 

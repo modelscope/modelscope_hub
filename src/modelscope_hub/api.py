@@ -60,6 +60,8 @@ from .types import (
     AgentTokenRecord,
     CacheInfo,
     CacheVerification,
+    DownloadReport,
+    DownloadRetryPolicy,
     FileInfo,
     PagedResult,
     RepoInfo,
@@ -1577,6 +1579,62 @@ class HubApi:
             local_files_only=local_files_only,
             user_agent=user_agent,
             file_size=file_size,
+        )
+
+    def download_repo_report(
+        self,
+        repo_id: str,
+        repo_type: RepoTypeLike,
+        *,
+        revision: str | None = None,
+        cache_dir: str | Path | None = None,
+        local_dir: str | Path | None = None,
+        allow_patterns: list[str] | None = None,
+        ignore_patterns: list[str] | None = None,
+        max_workers: int = 4,
+        file_list: Iterable[dict] | None = None,
+        tracker_path: str | Path | None = None,
+        retry_failed: bool = False,
+        retry_policy: DownloadRetryPolicy | None = None,
+        user_agent: dict | str | None = None,
+        progress_callbacks: list[type[ProgressCallback]] | None = None,
+    ) -> DownloadReport:
+        """Download known files despite ordinary failures; never label partial data complete.
+
+        Unlike download_repo, file failures return a PARTIAL report instead of
+        raising an aggregate exception. The default hidden JSON tracker is in
+        cache_dir/.download_state, outside repository contents. The single JSON
+        combines exceptional files, failed pages, and the latest call's summary,
+        scoped to endpoint/repo/revision/
+        output so batches share recovery hints. Actual size/hash validation
+        overrides stale failure hints; otherwise retry_failed=True or changed
+        metadata resets them. Missing/corrupt hints trigger bounded fresh
+        recovery, not false success. Inspect report.state_warnings for issues.
+
+        file_list accepts an iterable of legacy Path/Size/Sha256 entries. Without
+        it, datasets are enumerated page by page with bounded backpressure.
+        Use a pinned revision or an authoritative manifest for migration jobs.
+        Inspect report.complete and report.iter_files('VERIFIED') before using
+        the downloaded data. report.report_path equals report.tracker_path;
+        its JSON has the latest summary under 'report', without per-run files.
+        iter_files streams temporary results owned by the live report; call
+        report.close() after consumption. Persisted hints cannot prove success.
+        """
+        return self.downloader.download_repo_report(
+            repo_id,
+            str(self._normalize_repo_type(repo_type)),
+            revision=revision,
+            cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+            max_workers=max_workers,
+            file_list=file_list,
+            tracker_path=Path(tracker_path) if tracker_path else None,
+            retry_failed=retry_failed,
+            retry_policy=retry_policy,
+            user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
         )
 
     def download_repo(

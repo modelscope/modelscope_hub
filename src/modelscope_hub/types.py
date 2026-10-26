@@ -7,11 +7,13 @@ client forward-compatible while still benefiting from static typing.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import json
+import threading
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, ClassVar, Generic, TypedDict, TypeVar
+from typing import Any, ClassVar, Generic, TextIO, TypedDict, TypeVar
 
 from .constants import RepoType, Visibility
 
@@ -50,6 +52,129 @@ class _FromDictMixin:
         aliases = cls._field_aliases
         kwargs = {aliases.get(key, key): value for key, value in data.items() if aliases.get(key, key) in known}
         return cls(**kwargs)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True, slots=True)
+class DownloadRetryPolicy:
+    """Short recovery limits for report-mode downloads, shared by all file parts.
+
+    Healthy transfers keep the regular total file timeout. Only failed-request
+    inactivity and retry waits consume recovery_timeout. Longer Retry-After
+    values defer the file instead of occupying a worker or retrying early.
+    """
+
+    max_retries: int = 2
+    recovery_timeout: float = 60
+    idle_timeout: float = 15
+    low_speed_window: float = 10
+    max_retry_delay: float = 5
+
+    def __post_init__(self) -> None:
+        if self.max_retries < 0 or any(
+            value <= 0
+            for value in (
+                self.recovery_timeout,
+                self.idle_timeout,
+                self.low_speed_window,
+                self.max_retry_delay,
+            )
+        ):
+            raise ValueError("Download recovery limits must be positive; max_retries may be zero")
+
+
+@dataclass(slots=True)
+class DownloadFileResult(_FromDictMixin):
+    """A file validation result or an auxiliary recovery hint."""
+
+    path: str = ""
+    status: str = "PENDING"
+    size: int | None = None
+    sha256: str | None = None
+    retries: int = 0
+    recovery_seconds: float = 0
+    error: str | None = None
+    error_type: str | None = None
+    retryable: bool = False
+
+
+class _DownloadReportResults:
+    """Own an anonymous result spool without adding it to dataclass serialization."""
+
+    _file_results: TextIO | None = None
+
+    def _attach_file_results(self, stream: TextIO) -> None:
+        self._file_results = stream
+        self._file_results_lock = threading.Lock()
+
+    def close(self) -> None:
+        """Release this report's temporary per-file results after consumption."""
+        if self._file_results is not None:
+            with self._file_results_lock:
+                if self._file_results is not None:
+                    self._file_results.close()
+                    self._file_results = None
+
+    def _iter_file_results(self) -> Iterator[dict]:
+        if self._file_results is None:
+            raise ValueError(
+                "Per-file results are available only on an open live DownloadReport; "
+                "the persisted JSON contains summary and recovery hints, not a verified-file manifest. "
+                "Rerun download_repo_report to validate actual files."
+            )
+        offset = 0
+        while True:
+            with self._file_results_lock:
+                if self._file_results is None:
+                    raise ValueError("DownloadReport results have been closed")
+                self._file_results.seek(offset)
+                line = self._file_results.readline()
+                offset = self._file_results.tell()
+            if not line:
+                break
+            yield json.loads(line)
+
+
+@dataclass(slots=True)
+class DownloadReport(_DownloadReportResults, _FromDictMixin):
+    """Report-mode completion is explicit: COMPLETE, PARTIAL, or CANCELLED.
+
+    Counts cover this invocation's selected files, not every previous batch.
+    Per-file results use an anonymous temporary spool owned by this live object,
+    preserving earlier calls without permanent manifests or unbounded memory.
+    One hidden JSON holds the latest summary and sparse recovery hints only.
+    VERIFIED describes validation during this call, not a permanent guarantee:
+    downstream users must check changed files. close() releases the spool;
+    state_warnings reports unavailable or ignored auxiliary recovery hints.
+    """
+
+    repo_id: str = ""
+    revision: str = ""
+    output_dir: str = ""
+    tracker_path: str = ""
+    report_path: str = ""
+    results_path: str = ""
+    status: str = "PARTIAL"
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    deferred: int = 0
+    pending: int = 0
+    skipped_failures: int = 0
+    listing_complete: bool = True
+    listing_errors: list[str] = field(default_factory=list)
+    global_error: str | None = None
+    state_warnings: list[str] = field(default_factory=list)
+
+    @property
+    def complete(self) -> bool:
+        return self.status == "COMPLETE"
+
+    def iter_files(self, status: str | None = None) -> Iterator[DownloadFileResult]:
+        """Stream this live call's results; persisted summaries cannot prove success."""
+        for raw in self._iter_file_results():
+            result = DownloadFileResult.from_dict(raw)
+            if status is None or result.status == status:
+                yield result
 
 
 # ---------------------------------------------------------------------------
@@ -606,6 +731,9 @@ class TokenSignPayload(TypedDict):
 
 
 __all__ = [
+    "DownloadRetryPolicy",
+    "DownloadFileResult",
+    "DownloadReport",
     "AgentIdentity",
     "AgentIdentitySummary",
     "AgentIdConfiguration",

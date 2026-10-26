@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ..api import HubApi
 from ..constants import RepoType
+from ..errors import InvalidParameter
 from .base import CLICommand, SubParsers, add_repo_type_arg, info, make_api, success, warn
 from .compat import (
     PatternAction,
@@ -85,6 +86,15 @@ class DownloadCommand(CLICommand):
             help="Glob to exclude (snapshot mode). Repeatable.",
         )
         p.add_argument("--force", action="store_true", help="Re-download even if cached.")
+        p.add_argument(
+            "--continue-on-error", action="store_true", help="Continue with a persistent report; exit 3 for PARTIAL."
+        )
+        p.add_argument(
+            "--tracker-path",
+            default=None,
+            help="Single hidden JSON for recovery hints and summary, outside downloaded contents.",
+        )
+        p.add_argument("--retry-failed", action="store_true", help="Explicitly reset isolated files' recovery budgets.")
 
         # Legacy compat (hidden from --help)
         add_legacy_download_args(p)
@@ -95,6 +105,12 @@ class DownloadCommand(CLICommand):
     def execute(self) -> None:
         normalize_download_args(self.args)
 
+        continuing = getattr(self.args, "continue_on_error", False)
+        if not continuing and (getattr(self.args, "tracker_path", None) or getattr(self.args, "retry_failed", False)):
+            raise InvalidParameter("--tracker-path and --retry-failed require --continue-on-error")
+        if continuing and (self.args.force or self.args.repo_type == "collection"):
+            raise InvalidParameter("--continue-on-error does not support --force or collection downloads")
+
         # Handle collection download separately
         if self.args.repo_type == "collection":
             self._download_collection()
@@ -103,6 +119,25 @@ class DownloadCommand(CLICommand):
         api = self._make_api_with_endpoint()
         cache_dir: Path | None = Path(self.args.cache_dir) if self.args.cache_dir else None
         local_dir: Path | None = Path(self.args.local_dir) if self.args.local_dir else None
+
+        if continuing:
+            report = api.download_repo_report(
+                self.args.repo_id,
+                self.args.repo_type,
+                revision=self.args.revision,
+                cache_dir=cache_dir,
+                local_dir=local_dir,
+                allow_patterns=self.args.files or normalize_patterns(self.args.allow_patterns),
+                ignore_patterns=normalize_patterns(self.args.ignore_patterns),
+                max_workers=self.args.max_workers,
+                tracker_path=self.args.tracker_path,
+                retry_failed=self.args.retry_failed,
+            )
+            info(f"{report.status}: {report.succeeded}/{report.total} verified; report: {report.report_path}")
+            if not report.complete:
+                warn("Partial data is not a complete snapshot. Only VERIFIED files may be consumed.")
+                raise SystemExit(3 if report.global_error is None else 1)
+            return
 
         if self.args.files:
             for file_path in self.args.files:
