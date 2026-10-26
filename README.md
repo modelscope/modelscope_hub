@@ -213,6 +213,40 @@ path = api.download_file("Qwen/Qwen3-0.6B", "model", "config.json", local_files_
 
 Downloads validate available size and SHA-256 metadata before replacing files, with safe resume, bounded retries, timeouts, and cancellation. Incomplete snapshots raise `FileDownloadError` (CLI exit code `1`), preserving completed files for subsequent retries.
 
+### Continuous dataset downloads
+
+For migration jobs, `download_repo_report` continues past isolated file failures and returns an explicit `COMPLETE` or `PARTIAL` report. The original `download_repo` and `snapshot_download` remain strict by default.
+
+```python
+from modelscope_hub import HubApi, DownloadRetryPolicy
+
+api = HubApi(endpoint="https://www.modelscope.ai")
+report = api.download_repo_report(
+    "owner/dataset", "dataset", revision="master", local_dir="./data",
+    tracker_path="./.ms_download_state.json", max_workers=8,
+    retry_policy=DownloadRetryPolicy(),
+)
+for entry in report.iter_files("VERIFIED"):
+    consume_verified_file(entry.path)
+print(report.status, report.succeeded, report.failed, report.deferred, report.report_path)
+report.close()  # Release temporary per-file results after consumption.
+```
+
+- Recovery defaults: at most **2 extra retries per file**, shared by range parts and integrity recovery; failed-request inactivity and waits have a **60-second cumulative budget**. Idle/header waits are limited to **15 seconds**, low-speed checks use a **10-second window**, and cooldowns longer than **5 seconds** defer the file instead of tying up a worker. Size/hash mismatches get at most one full re-download. Healthy transfer time still uses `MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT`; large files are not capped at 60 seconds.
+- Each task uses **one hidden JSON file** outside downloaded contents (`cache_dir/.download_state/.ms_download_<key>.json` by default), with no embedded database dependency. It combines sparse failures, recovery budgets, failed pages, and the latest call's summary under `report`; `report.report_path` equals `report.tracker_path`. Reruns and batches replace the same file, without extra report JSON or JSONL files. Successful files have no persistent per-file records; a healthy run writes only its scope header and final summary, not an update per file. Its scope is endpoint/repository/revision/output, independent of batch filters. Standard reusable lock files remain separate from JSON metadata.
+- State is advisory, never the sole evidence of success. Every rerun validates actual files against current size/hash metadata, even if hints say `FAILED` or `DEFERRED`; a repaired valid file clears its stale hint without network IO. Otherwise failures remain isolated until metadata changes or `retry_failed=True`. Missing or corrupt hints allow bounded fresh recovery; load/write problems are logged and exposed in `report.state_warnings`, not treated as data corruption or success. A crash during recovery preserves its budget if hints were saved; healthy in-flight files need no markers and resume from actual partial files. Old database-format trackers are not read or migrated: select a new JSON path; existing correct data is reused through validation.
+- Dataset pages are streamed with bounded queues. Failed pages are recorded and isolated across calls; later pages/roots can continue. Two consecutive failed pages stop that root, and `listing_complete=False` prevents false success. The next run can use `retry_failed=True` or an authoritative `file_list` iterable to recover incomplete enumeration. Model listings that hit an unrecoverable server cap also return a partial report.
+- Counts and `report.iter_files()` cover **this call's selection**. Per-file results stream from an anonymous temporary spool owned by the live report, so earlier report objects remain independent of later batches without permanent manifests or an in-memory list of every file. Call `report.close()` after consumption; garbage collection also releases its spool. `results_path` is empty. The single JSON retains only the latest summary, not historical reports or a verified-file manifest: reconstructing a report from it cannot provide per-file results; rerun actual-file validation instead. Aggregate batch counts for the whole migration. Only `VERIFIED` entries may be uploaded; changed files must be checked again before use, and partial reports must not authorize deleting source data. A pinned revision or authoritative manifest is recommended. Reuse the same tracker and output across ten-file batches; a tracker cannot be shared by simultaneous writers.
+- Credential loss or a full/read-only disk pauses further work and sets `global_error`; Ctrl+C writes a `CANCELLED` report and remains interruptible. DNS and blocked filesystem calls remain OS-constrained. Caller-provided iterables must also be responsive to cancellation.
+
+```bash
+ms-hub download owner/dataset --repo-type dataset --local-dir ./data --continue-on-error
+# Explicit repair run after the source is fixed
+ms-hub download owner/dataset --repo-type dataset --local-dir ./data --continue-on-error --retry-failed
+```
+
+CLI exit codes: `0` complete, `3` partial after remaining known files have been processed, `1` global failure, `130` interrupted. Schedulers must treat `3` as partial completion, not an instruction to retry the whole task indefinitely. The SDK's `modelscope_hub.compat.snapshot_download(..., continue_on_error=True, tracker_path=...)` preserves a string return path and logs the report location; use `HubApi.download_repo_report` to read results directly. Older `modelscope.hub.snapshot_download` wrappers may not accept the new options: import the compat function from `modelscope_hub` directly until the wrapper is updated.
+
 ### Upload
 
 ```bash

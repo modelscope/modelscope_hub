@@ -83,6 +83,8 @@ class TestCompatDownloadUsesSafeLockNames:
         been acquired, and write the expected target file directly.
         """
 
+        acquired_lock_files = []
+
         def fake_download_with_resume(
             self,
             repo_id: str,
@@ -92,6 +94,7 @@ class TestCompatDownloadUsesSafeLockNames:
             target: Path,
             **kwargs,
         ) -> Path:
+            acquired_lock_files.extend((cache_dir / ".lock").glob("*.lock"))
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(b"image-bytes")
             return target
@@ -108,6 +111,6 @@ class TestCompatDownloadUsesSafeLockNames:
         )
 
         assert Path(result).read_bytes() == b"image-bytes"
-        lock_files = list((cache_dir / ".lock").glob("*.lock"))
-        assert lock_files
-        assert all(len(path.name.encode("utf-8")) < 255 for path in lock_files)
+        # New filelock releases remove Unix lock files, so inspect them while held.
+        assert acquired_lock_files
+        assert all(len(path.name.encode("utf-8")) < 255 for path in acquired_lock_files)

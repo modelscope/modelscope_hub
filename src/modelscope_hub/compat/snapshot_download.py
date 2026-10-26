@@ -15,7 +15,8 @@ import requests as _requests
 
 from ..api import HubApi
 from ..constants import RepoType
-from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
+from ..errors import AuthenticationError, InvalidParameter, NotExistError, PermissionDeniedError
+from ..types import DownloadRetryPolicy
 from ..utils import append_user_agent
 from ..utils.patterns import normalize_patterns
 from .file_download import _resolve_legacy_paths
@@ -43,6 +44,10 @@ def snapshot_download(
     local_files_only: bool = False,
     user_agent: dict | str | None = None,
     progress_callbacks: list[type[ProgressCallback]] | None = None,
+    continue_on_error: bool = False,
+    tracker_path: str | None = None,
+    retry_failed: bool = False,
+    retry_policy: DownloadRetryPolicy | None = None,
 ) -> str:
     """Download a repo snapshot (legacy signature).
 
@@ -51,7 +56,9 @@ def snapshot_download(
     ``allow_file_pattern``/``ignore_file_pattern`` aliases when both are set.
     ``progress_callbacks`` takes a list of :class:`ProgressCallback`
     subclasses (not instances); each is instantiated per file to report
-    download progress.
+    download progress. continue_on_error opts into durable failed-file isolation
+    and returns the output path even when the persisted report is PARTIAL. Use
+    HubApi.download_repo_report for direct access to verified-file results.
     """
     effective_id = repo_id or model_id
     if not effective_id:
@@ -86,6 +93,27 @@ def snapshot_download(
         local_dir,
         api,
     )
+    if continue_on_error:
+        if local_files_only:
+            raise InvalidParameter("Report-mode downloads cannot use local_files_only")
+        report = api.download_repo_report(
+            effective_id,
+            effective_type,
+            revision=revision,
+            cache_dir=effective_cache,
+            local_dir=effective_local,
+            allow_patterns=include,
+            ignore_patterns=exclude,
+            max_workers=max_workers,
+            tracker_path=tracker_path,
+            retry_failed=retry_failed,
+            retry_policy=retry_policy,
+            user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
+        )
+        return report.output_dir
+    if tracker_path is not None or retry_failed or retry_policy is not None:
+        raise InvalidParameter("Tracker/recovery options require continue_on_error=True")
     try:
         result = api.download_repo(
             effective_id,
@@ -121,8 +149,12 @@ def dataset_snapshot_download(
     endpoint: str | None = None,
     local_files_only: bool = False,
     user_agent: dict | str | None = None,
+    continue_on_error: bool = False,
+    tracker_path: str | None = None,
+    retry_failed: bool = False,
+    retry_policy: DownloadRetryPolicy | None = None,
 ) -> str:
-    """Download a dataset snapshot (legacy signature)."""
+    """Download a dataset snapshot; report-mode options match snapshot_download."""
     if cookies is not None:
         warnings.warn(
             "The 'cookies' parameter is deprecated and ignored. Use 'token' instead.",
@@ -146,6 +178,26 @@ def dataset_snapshot_download(
         local_dir,
         api,
     )
+    if continue_on_error:
+        if local_files_only:
+            raise InvalidParameter("Report-mode downloads cannot use local_files_only")
+        report = api.download_repo_report(
+            dataset_id,
+            "dataset",
+            revision=revision,
+            cache_dir=effective_cache,
+            local_dir=effective_local,
+            allow_patterns=include,
+            ignore_patterns=exclude,
+            max_workers=max_workers,
+            tracker_path=tracker_path,
+            retry_failed=retry_failed,
+            retry_policy=retry_policy,
+            user_agent=user_agent,
+        )
+        return report.output_dir
+    if tracker_path is not None or retry_failed or retry_policy is not None:
+        raise InvalidParameter("Tracker/recovery options require continue_on_error=True")
     try:
         result = api.download_repo(
             dataset_id,

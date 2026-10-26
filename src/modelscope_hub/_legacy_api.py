@@ -479,10 +479,12 @@ class LegacyClient:
                 )
             return self._list_files_page(repo_id, repo_type, revision, recursive=False, root=root)
 
+        self._read_state.listing_incomplete = False
         entries = self._list_files_page(repo_id, repo_type, revision, recursive=recursive, root=root)
         if len(entries) < REPO_FILES_TRUNCATION_LIMIT:
             return entries
         if not recursive:
+            self._read_state.listing_incomplete = True
             logger.warning(
                 "Directory %r of %s holds at least %d entries and the server returns no more "
                 "than that for a single listing; the result is incomplete.",
@@ -666,6 +668,7 @@ class LegacyClient:
                 break
             frontier = list(dict.fromkeys(next_frontier))
 
+        self._read_state.listing_incomplete = budget_spent or bool(oversized)
         if budget_spent:
             logger.warning(
                 "Repo %s: stopped walking the file tree after %d listings "
@@ -747,6 +750,63 @@ class LegacyClient:
             page_number += 1
         return all_files
 
+    def iter_dataset_file_pages(
+        self,
+        repo_id: str,
+        revision: str = "master",
+        root_path: str = "/",
+        page_size: int = 200,
+        isolated_pages: dict[int, str] | None = None,
+    ) -> Iterator[tuple[int, list[dict], Exception | None]]:
+        """Yield pages and bounded listing failures without buffering the dataset.
+
+        One failed page does not suppress later pages; two consecutive failures
+        stop this root to avoid probing an unknown infinite tail. Consumers must
+        report every failed page and mark enumeration incomplete.
+        """
+        failures = 0
+        logger.info("Streaming listing %s@%s Root=%s", repo_id, revision, root_path)
+        for page in range(1, REPO_TREE_MAX_REQUESTS + 1):
+            params = {"Revision": revision, "Recursive": "True", "PageNumber": page, "PageSize": page_size}
+            if root_path != "/":
+                params["Root"] = root_path
+            try:
+                if isolated_pages and page in isolated_pages:
+                    raise NetworkError(f"Previously isolated page: {isolated_pages[page]}")
+                response = self._request_repo_tree(
+                    f"datasets/{repo_id}/repo/tree",
+                    params,
+                    repo_id=repo_id,
+                    authorized=self._tree_reads_ok,
+                    max_attempts=2,
+                )
+                payload = response.json()
+                if isinstance(payload, dict) and (
+                    payload.get("Success") is False
+                    or payload.get("success") is False
+                    or payload.get("Code", 200) not in (200, "200", None)
+                ):
+                    raise NetworkError("File listing returned a business failure with HTTP 200")
+                data = payload.get("Data", payload) if isinstance(payload, dict) else payload
+                if not isinstance(data, (list, dict)):
+                    raise NetworkError("Malformed file listing response")
+                files = data if isinstance(data, list) else (data.get("Files") or data.get("files") or [])
+                if not isinstance(files, list):
+                    raise NetworkError("Malformed file listing entries")
+            except (NetworkError, ServerError, RateLimitError) as exc:
+                yield page, [], exc
+                failures += 1
+                if failures >= 2:
+                    return
+                continue
+            failures = 0
+            yield page, files, None
+            if page % 10 == 0 or len(files) < page_size:
+                logger.info("Streaming listing %s Root=%s: page %d", repo_id, root_path, page)
+            if len(files) < page_size:
+                return
+        yield REPO_TREE_MAX_REQUESTS + 1, [], NetworkError("File listing request budget exhausted")
+
     def _fetch_tree_page(self, path: str, params: dict[str, Any]) -> requests.Response:
         parent = getattr(self._read_state, "control", None)
         budget = float(REPO_TREE_PAGE_TIMEOUT_SECONDS)
@@ -778,6 +838,7 @@ class LegacyClient:
         *,
         repo_id: str,
         authorized: bool,
+        max_attempts: int | None = None,
     ) -> Any:
         """Fetch one file-tree listing, retrying a spurious denial.
 
@@ -794,7 +855,8 @@ class LegacyClient:
         fast and honest.
         """
         last_error: NetworkError | ServerError | RateLimitError | PermissionDeniedError | None = None
-        for attempt in range(REPO_TREE_PAGE_MAX_ATTEMPTS):
+        attempts = REPO_TREE_PAGE_MAX_ATTEMPTS if max_attempts is None else max_attempts
+        for attempt in range(attempts):
             try:
                 resp = self._fetch_tree_page(path, params)
             except (NetworkError, ServerError, RateLimitError, PermissionDeniedError) as error:
@@ -803,7 +865,7 @@ class LegacyClient:
                 if not error.retryable and not isinstance(error, PermissionDeniedError):
                     raise
                 last_error = error
-                if attempt < REPO_TREE_PAGE_MAX_ATTEMPTS - 1:
+                if attempt < attempts - 1:
                     requested_wait = getattr(error, "retry_after", None)
                     wait = min(
                         max(0, requested_wait) if requested_wait is not None else 2**attempt,
@@ -817,7 +879,7 @@ class LegacyClient:
                         type(error).__name__,
                         wait,
                         attempt + 1,
-                        REPO_TREE_PAGE_MAX_ATTEMPTS,
+                        attempts,
                     )
                     control = getattr(self._read_state, "control", None)
                     if control is None:
@@ -830,7 +892,7 @@ class LegacyClient:
         if isinstance(last_error, PermissionDeniedError):
             raise NetworkError(
                 f"Repo {repo_id}: tree listing ({params.get('Root') or params.get('PageNumber') or '/'}) kept "
-                f"returning a denial after {REPO_TREE_PAGE_MAX_ATTEMPTS} attempts on an already-authorized "
+                f"returning a denial after {attempts} attempts on an already-authorized "
                 f"repo: {last_error}"
             ) from last_error
         assert last_error is not None

@@ -27,7 +27,7 @@ import re
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -44,6 +44,7 @@ from ._download_control import (
     _DownloadDeadlineError,
     _network_context,
     _ReadHTTPAdapter,
+    _RecoveryBudget,
 )
 from .constants import (
     DOWNLOAD_CHUNK_SIZE,
@@ -82,6 +83,7 @@ from .utils.patterns import extract_common_prefix
 if TYPE_CHECKING:
     from ._legacy_api import LegacyClient
     from .config import HubConfig
+    from .types import DownloadReport, DownloadRetryPolicy
 
 logger = get_logger("download")
 
@@ -175,8 +177,11 @@ def _optional_file_lock(
     while True:
         if control is not None:
             control.check()
-            if time.monotonic() - started >= DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS:
-                raise _DownloadDeadlineError(f"等待下载文件锁超过 {DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS}s：{lock_path}")
+            lock_limit = float(DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS)
+            if control.recovery is not None:
+                lock_limit = min(lock_limit, control.recovery.policy.idle_timeout)
+            if time.monotonic() - started >= lock_limit:
+                raise _DownloadDeadlineError(f"Download file lock timed out after {lock_limit}s: {lock_path}")
         try:
             lock.acquire(timeout=default_interval)
         except Timeout:
@@ -342,6 +347,8 @@ def _incomplete_path(target: Path) -> Path:
 
 def _wait_download_retry(retry: Retry, exc: Exception, path: str, control: _DownloadControl) -> Retry:
     control.check()
+    if isinstance(exc, OSError) and exc.errno in (errno.ENOSPC, errno.EROFS, errno.EACCES):
+        raise exc
     if isinstance(exc, HubError) and not exc.retryable:
         raise exc
     try:
@@ -351,6 +358,15 @@ def _wait_download_retry(retry: Retry, exc: Exception, path: str, control: _Down
             raise exc
         raise NetworkError(f"下载 {path} 在 {DOWNLOAD_RETRY_TIMES} 次重试后失败：{type(exc).__name__}") from exc
     requested = getattr(exc, "retry_after", None)
+    if control.recovery is not None:
+        delay = max(0, requested) if requested is not None else min(retry.get_backoff_time(), 2)
+        try:
+            control.recovery.retry(delay)
+        except Exception as budget_error:
+            raise budget_error from exc
+        logger.warning("Download recovery for %s (%s), retrying in %ss", path, type(exc).__name__, delay)
+        control.sleep(delay)
+        return retry
     delay = min(
         max(0, requested) if requested is not None else retry.get_backoff_time(), DOWNLOAD_RETRY_MAX_DELAY_SECONDS
     )
@@ -855,13 +871,17 @@ class DownloadManager:
         user_agent: dict | str | None = None,
         progress_callbacks: list[type[ProgressCallback]] | None = None,
         _cancel_event: threading.Event | None = None,
+        _recovery: _RecoveryBudget | None = None,
     ) -> Path:
         """Download one file with cache-first lookup and a shared budget for locks, probes, and retries."""
         with _DownloadControl(
             total_timeout=DOWNLOAD_TOTAL_TIMEOUT,
             cancel_event=_cancel_event,
             min_rate=DOWNLOAD_MIN_BYTES_PER_SECOND,
-            speed_window=DOWNLOAD_LOW_SPEED_WINDOW_SECONDS,
+            speed_window=_recovery.policy.low_speed_window
+            if _recovery is not None
+            else DOWNLOAD_LOW_SPEED_WINDOW_SECONDS,
+            recovery=_recovery,
         ) as control:
             with self._client.read_context(control):
                 return self._download_file(
@@ -992,7 +1012,12 @@ class DownloadManager:
             # the server consistently served the wrong object, so it only gets
             # one more attempt, over the default route.
             failures = {"hash": 0, "size": 0}
-            limits = {"hash": DOWNLOAD_HASH_RETRY_TIMES, "size": DOWNLOAD_SIZE_RETRY_TIMES}
+            limits = {
+                "hash": min(DOWNLOAD_HASH_RETRY_TIMES, 2)
+                if _control.recovery is not None
+                else DOWNLOAD_HASH_RETRY_TIMES,
+                "size": DOWNLOAD_SIZE_RETRY_TIMES,
+            }
             prefer_default_route = False
             while True:
                 _control.check()
@@ -1032,9 +1057,53 @@ class DownloadManager:
                         limits[kind],
                         exc.message,
                     )
+                    if _control.recovery is not None:
+                        try:
+                            _control.recovery.retry(delay)
+                        except Exception as budget_error:
+                            raise budget_error from exc
                     _control.sleep(delay)
 
         return target
+
+    def download_repo_report(
+        self,
+        repo_id: str,
+        repo_type: str,
+        *,
+        revision: str | None = None,
+        cache_dir: Path | None = None,
+        local_dir: Path | None = None,
+        allow_patterns: list[str] | None = None,
+        ignore_patterns: list[str] | None = None,
+        max_workers: int = 4,
+        file_list: Iterable[dict] | None = None,
+        tracker_path: Path | None = None,
+        retry_failed: bool = False,
+        retry_policy: DownloadRetryPolicy | None = None,
+        user_agent: dict | str | None = None,
+        progress_callbacks: list[type[ProgressCallback]] | None = None,
+    ) -> DownloadReport:
+        """Continue after isolated file failures and return a durable completion report."""
+        from ._resilient_download import download_repo_report
+
+        return download_repo_report(
+            self,
+            repo_id,
+            repo_type,
+            revision=revision,
+            cache_dir=cache_dir,
+            local_dir=local_dir,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+            max_workers=max_workers,
+            file_list=file_list,
+            tracker_path=tracker_path,
+            retry_failed=retry_failed,
+            retry_policy=retry_policy,
+            user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
+        )
 
     def download_repo(
         self,
