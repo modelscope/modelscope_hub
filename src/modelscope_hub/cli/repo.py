@@ -24,6 +24,7 @@ from .base import (
     success,
 )
 from .compat import add_subcmd_token_endpoint
+from .studio import _add_oauth_arguments
 
 
 def _format_visibility(value: object) -> str:
@@ -115,12 +116,25 @@ class CreateCommand(CLICommand):
             help="Local zip for skill (max 5 MB, root must contain exactly one "
             "SKILL.md with YAML front-matter: name, version, description).",
         )
+        _add_oauth_arguments(p)
         add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
         api = make_api(self.args)
         extra: dict[str, object] = {}
-        for key in ("sdk_type", "sdk_version", "base_image", "cover_image", "hardware", "category"):
+        for key in (
+            "sdk_type",
+            "sdk_version",
+            "base_image",
+            "cover_image",
+            "hardware",
+            "category",
+            "oauth_enabled",
+            "oauth_scope",
+            "oauth_token_expire_time",
+            "oauth_callback_urls",
+            "oauth_homepage_url",
+        ):
             value = getattr(self.args, key, None)
             if value is not None:
                 extra[key] = value

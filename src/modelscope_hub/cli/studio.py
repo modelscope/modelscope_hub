@@ -31,6 +31,77 @@ _SETTINGS_FIELDS = (
     "hardware",
     "visibility",
     "private",
+    "oauth_enabled",
+    "oauth_scope",
+    "oauth_token_expire_time",
+    "oauth_callback_urls",
+    "oauth_homepage_url",
+)
+
+_OAUTH_TOKEN_EXPIRE_CHOICES = (1, 2, 3, 4, 5, 6)
+_OAUTH_TOKEN_EXPIRE_HELP = "OAuth app token lifetime enum: 1=15min, 2=1hour, 3=8hours, 4=1day, 5=1week, 6=30days"
+
+
+def _add_oauth_arguments(p) -> None:
+    """Studio OAuth app configuration flags (shared by create and settings).
+
+    The server applies the whole oauth_* group only when ``oauth_enabled`` is
+    explicitly present in the payload (tri-state pointer on update), so the
+    flags default to ``None`` rather than ``False``.
+    """
+    enabled = p.add_mutually_exclusive_group()
+    enabled.add_argument(
+        "--oauth-enabled",
+        dest="oauth_enabled",
+        action="store_true",
+        default=None,
+        help="Enable the Studio's OAuth app configuration.",
+    )
+    enabled.add_argument(
+        "--no-oauth-enabled",
+        dest="oauth_enabled",
+        action="store_false",
+        help="Disable the Studio's OAuth app configuration.",
+    )
+    p.add_argument(
+        "--oauth-scope",
+        dest="oauth_scope",
+        default=None,
+        help="Space-separated OAuth scopes (required when enabled). Valid scopes: "
+        "openid, profile, manage-mcp-deployment, list-operational-mcp, read-repos, "
+        "api-inference.",
+    )
+    p.add_argument(
+        "--oauth-token-expire-time",
+        dest="oauth_token_expire_time",
+        type=int,
+        choices=_OAUTH_TOKEN_EXPIRE_CHOICES,
+        default=None,
+        help=_OAUTH_TOKEN_EXPIRE_HELP + ".",
+    )
+    p.add_argument(
+        "--oauth-callback-url",
+        dest="oauth_callback_urls",
+        action="append",
+        default=None,
+        metavar="URL",
+        help="OAuth callback URL; repeat the flag for multiple entries (required when enabled).",
+    )
+    p.add_argument(
+        "--oauth-homepage-url",
+        dest="oauth_homepage_url",
+        default=None,
+        help="OAuth app homepage URL.",
+    )
+
+
+_OAUTH_EXTRA_FIELDS = frozenset(
+    {
+        "oauth_scope",
+        "oauth_token_expire_time",
+        "oauth_callback_urls",
+        "oauth_homepage_url",
+    }
 )
 
 
@@ -243,6 +314,7 @@ class _StudioSettings(CLICommand):
         )
         visibility.add_argument("--private", dest="private", action="store_const", const=True, default=None)
         visibility.add_argument("--public", dest="private", action="store_const", const=False)
+        _add_oauth_arguments(p)
         p.set_defaults(_command=StudioCommand, _studio_leaf=_StudioSettings)
 
     def execute(self) -> None:
@@ -251,7 +323,13 @@ class _StudioSettings(CLICommand):
             raise ValueError(
                 "No setting specified. Provide key=value or one of: --display-name, --description, --license, "
                 "--cover-image, --sdk-type, --sdk-version, --base-image, --hardware, --visibility, "
-                "--private/--public."
+                "--private/--public, --oauth-enabled/--no-oauth-enabled (with --oauth-scope, "
+                "--oauth-token-expire-time, --oauth-callback-url, --oauth-homepage-url)."
+            )
+        if "oauth_enabled" not in settings and _OAUTH_EXTRA_FIELDS.intersection(settings):
+            raise ValueError(
+                "The oauth_* settings only take effect together with an explicit "
+                "--oauth-enabled or --no-oauth-enabled flag."
             )
         api = make_api(self.args)
         data = api.update_repo_settings(self.args.studio_id, RepoType.STUDIO, **settings)
@@ -275,12 +353,18 @@ class _StudioSecret(CLICommand):
         _add_studio_id(add_p)
         add_p.add_argument("key")
         add_p.add_argument("value")
+        add_p.add_argument("--description", default=None, help="Optional description (max 512 characters).")
         add_p.set_defaults(_command=StudioCommand, _studio_leaf=_StudioSecret)
 
         update_p = actions.add_parser("update", help="Update an existing secret.")
         _add_studio_id(update_p)
         update_p.add_argument("key")
         update_p.add_argument("value")
+        update_p.add_argument(
+            "--description",
+            default=None,
+            help="New description; omit to keep the stored one, pass '' to clear it.",
+        )
         update_p.set_defaults(_command=StudioCommand, _studio_leaf=_StudioSecret)
 
         delete_p = actions.add_parser("delete", help="Delete a secret.")
@@ -296,15 +380,32 @@ class _StudioSecret(CLICommand):
             if not secrets:
                 info("(no secrets)")
                 return
-            for item in secrets:
-                info(str(item.get("key") if isinstance(item, dict) else item))
+            rows = [
+                ((item.get("key") or "-"), (item.get("description") or "-"))
+                if isinstance(item, dict)
+                else (str(item), "-")
+                for item in secrets
+            ]
+            info(render_table(rows, headers=["key", "description"]))
             return
         if action == "add":
-            api.add_secret(self.args.studio_id, self.args.key, self.args.value, RepoType.STUDIO)
+            api.add_secret(
+                self.args.studio_id,
+                self.args.key,
+                self.args.value,
+                RepoType.STUDIO,
+                description=self.args.description,
+            )
             success(f"Secret {self.args.key!r} added.")
             return
         if action == "update":
-            api.update_secret(self.args.studio_id, self.args.key, self.args.value, RepoType.STUDIO)
+            api.update_secret(
+                self.args.studio_id,
+                self.args.key,
+                self.args.value,
+                RepoType.STUDIO,
+                description=self.args.description,
+            )
             success(f"Secret {self.args.key!r} updated.")
             return
         if action == "delete":
@@ -338,12 +439,18 @@ class _StudioVariable(CLICommand):
         _add_studio_id(add_p)
         add_p.add_argument("key")
         add_p.add_argument("value")
+        add_p.add_argument("--description", default=None, help="Optional description (max 512 characters).")
         add_p.set_defaults(_command=StudioCommand, _studio_leaf=_StudioVariable)
 
         update_p = actions.add_parser("update", help="Update an existing plaintext variable.")
         _add_studio_id(update_p)
         update_p.add_argument("key")
         update_p.add_argument("value")
+        update_p.add_argument(
+            "--description",
+            default=None,
+            help="New description; omit to keep the stored one, pass '' to clear it.",
+        )
         update_p.set_defaults(_command=StudioCommand, _studio_leaf=_StudioVariable)
 
         delete_p = actions.add_parser("delete", help="Delete a plaintext variable.")
@@ -366,17 +473,31 @@ class _StudioVariable(CLICommand):
                 info("(no variables)")
                 return
             rows = [
-                (item.get("key") or "-", item.get("value") or "") if isinstance(item, dict) else (str(item), "")
+                (item.get("key") or "-", item.get("value") or "", item.get("description") or "-")
+                if isinstance(item, dict)
+                else (str(item), "", "-")
                 for item in variables
             ]
-            info(render_table(rows, headers=["key", "value"]))
+            info(render_table(rows, headers=["key", "value", "description"]))
             return
         if action == "add":
-            api.add_variable(self.args.studio_id, self.args.key, self.args.value, RepoType.STUDIO)
+            api.add_variable(
+                self.args.studio_id,
+                self.args.key,
+                self.args.value,
+                RepoType.STUDIO,
+                description=self.args.description,
+            )
             success(f"Variable {self.args.key!r} added.")
             return
         if action == "update":
-            api.update_variable(self.args.studio_id, self.args.key, self.args.value, RepoType.STUDIO)
+            api.update_variable(
+                self.args.studio_id,
+                self.args.key,
+                self.args.value,
+                RepoType.STUDIO,
+                description=self.args.description,
+            )
             success(f"Variable {self.args.key!r} updated.")
             return
         if action == "delete":

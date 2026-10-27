@@ -72,13 +72,20 @@ class _SecretAdd(CLICommand):
         p.add_argument("repo_id")
         p.add_argument("key")
         p.add_argument("value")
+        p.add_argument("--description", default=None, help="Optional description (max 512 characters).")
         _add_studio_repo_type(p)
         add_subcmd_token_endpoint(p)
         p.set_defaults(_command=SecretCommand, _secret_leaf=_SecretAdd)
 
     def execute(self) -> None:
         api = make_api(self.args)
-        api.add_secret(self.args.repo_id, self.args.key, self.args.value, self.args.repo_type)
+        api.add_secret(
+            self.args.repo_id,
+            self.args.key,
+            self.args.value,
+            self.args.repo_type,
+            description=self.args.description,
+        )
         success(f"Added secret {self.args.key!r} to {self.args.repo_id}.")
 
 
@@ -89,13 +96,24 @@ class _SecretUpdate(CLICommand):
         p.add_argument("repo_id")
         p.add_argument("key")
         p.add_argument("value")
+        p.add_argument(
+            "--description",
+            default=None,
+            help="New description; omit to keep the stored one, pass '' to clear it.",
+        )
         _add_studio_repo_type(p)
         add_subcmd_token_endpoint(p)
         p.set_defaults(_command=SecretCommand, _secret_leaf=_SecretUpdate)
 
     def execute(self) -> None:
         api = make_api(self.args)
-        api.update_secret(self.args.repo_id, self.args.key, self.args.value, self.args.repo_type)
+        api.update_secret(
+            self.args.repo_id,
+            self.args.key,
+            self.args.value,
+            self.args.repo_type,
+            description=self.args.description,
+        )
         success(f"Updated secret {self.args.key!r} on {self.args.repo_id}.")
 
 

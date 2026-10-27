@@ -1052,21 +1052,39 @@ class OpenAPIClient:
             required_scope=TokenScope.READ,
         )
 
-    def add_studio_secret(self, owner: str, repo_name: str, key: str, value: str) -> JSON:
-        """``POST /studios/{owner}/{repo_name}/secrets`` — add a new secret."""
+    def add_studio_secret(
+        self, owner: str, repo_name: str, key: str, value: str, description: str | None = None
+    ) -> JSON:
+        """``POST /studios/{owner}/{repo_name}/secrets`` — add a new secret.
+
+        *description* (at most 512 characters) is optional and omitted from the
+        request body unless provided.
+        """
+        body: dict[str, Any] = {"key": key, "value": value}
+        if description is not None:
+            body["description"] = description
         return self._request(
             "POST",
             f"/studios/{owner}/{repo_name}/secrets",
-            json_body={"key": key, "value": value},
+            json_body=body,
             required_scope=TokenScope.WRITE,
         )
 
-    def update_studio_secret(self, owner: str, repo_name: str, key: str, value: str) -> JSON:
-        """``PUT /studios/{owner}/{repo_name}/secrets`` — overwrite an existing secret."""
+    def update_studio_secret(
+        self, owner: str, repo_name: str, key: str, value: str, description: str | None = None
+    ) -> JSON:
+        """``PUT /studios/{owner}/{repo_name}/secrets`` — overwrite an existing secret.
+
+        *description* is tri-state: left as ``None`` the field is omitted and the
+        server keeps the stored description, while an empty string clears it.
+        """
+        body: dict[str, Any] = {"key": key, "value": value}
+        if description is not None:
+            body["description"] = description
         return self._request(
             "PUT",
             f"/studios/{owner}/{repo_name}/secrets",
-            json_body={"key": key, "value": value},
+            json_body=body,
             required_scope=TokenScope.WRITE,
         )
 
@@ -1094,25 +1112,41 @@ class OpenAPIClient:
             required_scope=TokenScope.READ,
         )
 
-    def add_studio_variable(self, owner: str, repo_name: str, key: str, value: str) -> JSON:
+    def add_studio_variable(
+        self, owner: str, repo_name: str, key: str, value: str, description: str | None = None
+    ) -> JSON:
         """``POST /studios/{owner}/{repo_name}/variables`` — add a plaintext variable.
 
         Both key and value are publicly visible; use
-        :meth:`add_studio_secret` for anything sensitive.
+        :meth:`add_studio_secret` for anything sensitive. *description* (at
+        most 512 characters) is optional and omitted unless provided.
         """
+        body: dict[str, Any] = {"key": key, "value": value}
+        if description is not None:
+            body["description"] = description
         return self._request(
             "POST",
             f"/studios/{owner}/{repo_name}/variables",
-            json_body={"key": key, "value": value},
+            json_body=body,
             required_scope=TokenScope.WRITE,
         )
 
-    def update_studio_variable(self, owner: str, repo_name: str, key: str, value: str) -> JSON:
-        """``PUT /studios/{owner}/{repo_name}/variables`` — overwrite a plaintext variable."""
+    def update_studio_variable(
+        self, owner: str, repo_name: str, key: str, value: str, description: str | None = None
+    ) -> JSON:
+        """``PUT /studios/{owner}/{repo_name}/variables`` — overwrite a plaintext variable.
+
+        *description* is tri-state: left as ``None`` the field is omitted and
+        the server keeps the stored description, while an empty string clears
+        it.
+        """
+        body: dict[str, Any] = {"key": key, "value": value}
+        if description is not None:
+            body["description"] = description
         return self._request(
             "PUT",
             f"/studios/{owner}/{repo_name}/variables",
-            json_body={"key": key, "value": value},
+            json_body=body,
             required_scope=TokenScope.WRITE,
         )
 

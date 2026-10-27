@@ -271,6 +271,57 @@ class TestStudioExecute:
         assert "No setting specified" in err
         mock_api.update_repo_settings.assert_not_called()
 
+    def test_settings_oauth_flags(self, mock_api):
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(
+                [
+                    "studio",
+                    "settings",
+                    "org/demo",
+                    "--oauth-enabled",
+                    "--oauth-scope",
+                    "openid profile",
+                    "--oauth-token-expire-time",
+                    "4",
+                    "--oauth-callback-url",
+                    "https://a.example/cb",
+                    "--oauth-callback-url",
+                    "https://b.example/cb",
+                    "--oauth-homepage-url",
+                    "https://example.org",
+                ]
+            )
+        assert code == 0, err
+        assert "Updated settings" in out
+        mock_api.update_repo_settings.assert_called_once_with(
+            "org/demo",
+            RepoType.STUDIO,
+            oauth_enabled=True,
+            oauth_scope="openid profile",
+            oauth_token_expire_time=4,
+            oauth_callback_urls=["https://a.example/cb", "https://b.example/cb"],
+            oauth_homepage_url="https://example.org",
+        )
+
+    def test_settings_disable_oauth(self, mock_api):
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "settings", "org/demo", "--no-oauth-enabled"])
+        assert code == 0, err
+        mock_api.update_repo_settings.assert_called_once_with("org/demo", RepoType.STUDIO, oauth_enabled=False)
+
+    def test_settings_oauth_extras_require_enabled_flag(self, mock_api):
+        # The server applies the oauth_* group only when oauth_enabled is
+        # explicitly present; a lone --oauth-scope would be silently dropped.
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "settings", "org/demo", "--oauth-scope", "openid"])
+        assert code == 2
+        assert "--oauth-enabled" in err
+        mock_api.update_repo_settings.assert_not_called()
+
+    def test_settings_oauth_enabled_flags_are_mutually_exclusive(self, parser):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["studio", "settings", "org/demo", "--oauth-enabled", "--no-oauth-enabled"])
+
     def test_secret_list(self, mock_api):
         mock_api.list_secrets.return_value = [{"key": "API_KEY"}]
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
@@ -284,14 +335,38 @@ class TestStudioExecute:
             code, out, err = run_cli(["studio", "secret", "add", "org/demo", "API_KEY", "value"])
         assert code == 0
         assert "added" in out.lower()
-        mock_api.add_secret.assert_called_once_with("org/demo", "API_KEY", "value", RepoType.STUDIO)
+        mock_api.add_secret.assert_called_once_with("org/demo", "API_KEY", "value", RepoType.STUDIO, description=None)
+
+    def test_secret_add_with_description(self, mock_api):
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(
+                ["studio", "secret", "add", "org/demo", "API_KEY", "value", "--description", "used by app"]
+            )
+        assert code == 0
+        mock_api.add_secret.assert_called_once_with(
+            "org/demo", "API_KEY", "value", RepoType.STUDIO, description="used by app"
+        )
 
     def test_secret_update(self, mock_api):
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
             code, out, err = run_cli(["studio", "secret", "update", "org/demo", "API_KEY", "new"])
         assert code == 0
         assert "updated" in out.lower()
-        mock_api.update_secret.assert_called_once_with("org/demo", "API_KEY", "new", RepoType.STUDIO)
+        mock_api.update_secret.assert_called_once_with("org/demo", "API_KEY", "new", RepoType.STUDIO, description=None)
+
+    def test_secret_update_with_empty_description_clears(self, mock_api):
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "secret", "update", "org/demo", "API_KEY", "new", "--description", ""])
+        assert code == 0
+        mock_api.update_secret.assert_called_once_with("org/demo", "API_KEY", "new", RepoType.STUDIO, description="")
+
+    def test_secret_list_shows_descriptions(self, mock_api):
+        mock_api.list_secrets.return_value = [{"key": "API_KEY", "description": "used by app"}]
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "secret", "list", "org/demo"])
+        assert code == 0
+        assert "API_KEY" in out
+        assert "used by app" in out
 
     def test_secret_delete(self, mock_api):
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
@@ -390,14 +465,41 @@ class TestStudioExecute:
             code, out, err = run_cli(["studio", "variable", "add", "org/demo", "MODEL", "Qwen"])
         assert code == 0
         assert "added" in out.lower()
-        mock_api.add_variable.assert_called_once_with("org/demo", "MODEL", "Qwen", RepoType.STUDIO)
+        mock_api.add_variable.assert_called_once_with("org/demo", "MODEL", "Qwen", RepoType.STUDIO, description=None)
+
+    def test_variable_add_with_description(self, mock_api):
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(
+                ["studio", "variable", "add", "org/demo", "MODEL", "Qwen", "--description", "model id"]
+            )
+        assert code == 0
+        mock_api.add_variable.assert_called_once_with(
+            "org/demo", "MODEL", "Qwen", RepoType.STUDIO, description="model id"
+        )
 
     def test_variable_update(self, mock_api):
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
             code, out, err = run_cli(["studio", "variable", "update", "org/demo", "MODEL", "Qwen3"])
         assert code == 0
         assert "updated" in out.lower()
-        mock_api.update_variable.assert_called_once_with("org/demo", "MODEL", "Qwen3", RepoType.STUDIO)
+        mock_api.update_variable.assert_called_once_with(
+            "org/demo", "MODEL", "Qwen3", RepoType.STUDIO, description=None
+        )
+
+    def test_variable_update_with_empty_description_clears(self, mock_api):
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(
+                ["studio", "variable", "update", "org/demo", "MODEL", "Qwen3", "--description", ""]
+            )
+        assert code == 0
+        mock_api.update_variable.assert_called_once_with("org/demo", "MODEL", "Qwen3", RepoType.STUDIO, description="")
+
+    def test_variable_list_shows_descriptions(self, mock_api):
+        mock_api.list_variables.return_value = [{"key": "MODEL", "value": "Qwen2.5-7B", "description": "model id"}]
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "variable", "list", "org/demo"])
+        assert code == 0
+        assert "model id" in out
 
     def test_variable_delete_with_yes(self, mock_api):
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):

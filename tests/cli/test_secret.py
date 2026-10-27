@@ -128,10 +128,18 @@ class TestSecretAddExecute:
         args = parser.parse_args(["secret", "add", "org/demo", "API_KEY", "sk-xxx"])
         with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
             _SecretAdd(args).execute()
-        mock_api.add_secret.assert_called_once_with("org/demo", "API_KEY", "sk-xxx", "studio")
+        mock_api.add_secret.assert_called_once_with("org/demo", "API_KEY", "sk-xxx", "studio", description=None)
         out = capsys.readouterr().out
         assert "Added" in out
         assert "API_KEY" in out
+
+    def test_add_secret_with_description(self, parser, mock_api, capsys):
+        args = parser.parse_args(["secret", "add", "org/demo", "API_KEY", "sk-xxx", "--description", "used by app"])
+        with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
+            _SecretAdd(args).execute()
+        mock_api.add_secret.assert_called_once_with(
+            "org/demo", "API_KEY", "sk-xxx", "studio", description="used by app"
+        )
 
 
 @pytest.mark.mock_only
@@ -159,9 +167,15 @@ class TestSecretUpdateExecute:
         args = parser.parse_args(["secret", "update", "org/demo", "KEY", "new_val"])
         with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
             _SecretUpdate(args).execute()
-        mock_api.update_secret.assert_called_once_with("org/demo", "KEY", "new_val", "studio")
+        mock_api.update_secret.assert_called_once_with("org/demo", "KEY", "new_val", "studio", description=None)
         out = capsys.readouterr().out
         assert "Updated" in out
+
+    def test_update_secret_with_empty_description_clears(self, parser, mock_api, capsys):
+        args = parser.parse_args(["secret", "update", "org/demo", "KEY", "new_val", "--description", ""])
+        with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
+            _SecretUpdate(args).execute()
+        mock_api.update_secret.assert_called_once_with("org/demo", "KEY", "new_val", "studio", description="")
 
 
 @pytest.mark.mock_only

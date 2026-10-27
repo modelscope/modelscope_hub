@@ -417,6 +417,13 @@ class RepoInfo(_FromDictMixin):
     hardware: str | None = None
     mcp_support: bool | None = None
     runtime: dict[str, Any] | None = None
+    # Studio OAuth app configuration (only meaningful when oauth_enabled is
+    # True; the remaining fields are omitted from responses when unset).
+    oauth_enabled: bool | None = None
+    oauth_scope: str | None = None
+    oauth_token_expire_time: int | None = None
+    oauth_callback_urls: list[str] | None = None
+    oauth_homepage_url: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.repo_type, str):
@@ -651,6 +658,13 @@ class CreateStudioPayload(TypedDict, total=False):
     sdk_version: str
     base_image: str
     hardware: str
+    # OAuth app configuration (applied together; the server validates the
+    # scope / token expiry / callback URLs whenever oauth_enabled is True).
+    oauth_enabled: bool
+    oauth_scope: str
+    oauth_token_expire_time: int
+    oauth_callback_urls: list[str]
+    oauth_homepage_url: str
 
 
 class UpdateStudioSettingsPayload(TypedDict, total=False):
@@ -666,6 +680,14 @@ class UpdateStudioSettingsPayload(TypedDict, total=False):
     sdk_version: str
     base_image: str
     hardware: str
+    # The whole oauth_* group is applied only when ``oauth_enabled`` is
+    # present in the payload (tri-state pointer); without it the other
+    # oauth_* fields are validated but ignored by the server.
+    oauth_enabled: bool
+    oauth_scope: str
+    oauth_token_expire_time: int
+    oauth_callback_urls: list[str]
+    oauth_homepage_url: str
 
 
 class DeployMcpServerPayload(TypedDict, total=False):

@@ -361,6 +361,41 @@ class TestCreateExecute:
         assert call_kwargs.kwargs["sdk_version"] == "4.0"
         assert call_kwargs.kwargs["hardware"] == "gpu.a10"
 
+    def test_create_studio_with_oauth(self, parser, mock_api, capsys):
+        args = parser.parse_args(
+            [
+                "create",
+                "owner/oauth-demo",
+                "--repo-type",
+                "studio",
+                "--oauth-enabled",
+                "--oauth-scope",
+                "openid profile",
+                "--oauth-token-expire-time",
+                "4",
+                "--oauth-callback-url",
+                "https://a.example/cb",
+                "--oauth-homepage-url",
+                "https://example.org",
+            ]
+        )
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        call_kwargs = mock_api.create_repo.call_args
+        assert call_kwargs.kwargs["oauth_enabled"] is True
+        assert call_kwargs.kwargs["oauth_scope"] == "openid profile"
+        assert call_kwargs.kwargs["oauth_token_expire_time"] == 4
+        assert call_kwargs.kwargs["oauth_callback_urls"] == ["https://a.example/cb"]
+        assert call_kwargs.kwargs["oauth_homepage_url"] == "https://example.org"
+
+    def test_create_studio_omits_unset_oauth_fields(self, parser, mock_api, capsys):
+        args = parser.parse_args(["create", "owner/demo", "--repo-type", "studio"])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        call_kwargs = mock_api.create_repo.call_args
+        assert "oauth_enabled" not in call_kwargs.kwargs
+        assert "oauth_scope" not in call_kwargs.kwargs
+
     def test_exist_ok_swallows_exist_error(self, parser, mock_api, capsys):
         mock_api.create_repo.side_effect = Exception("Repository already exists")
         args = parser.parse_args(

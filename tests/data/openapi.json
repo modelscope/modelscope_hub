@@ -4467,7 +4467,45 @@
               }
             ],
             "default": "platform/2v-cpu-16g-mem",
-            "description": "硬件配置。未传时使用默认免费硬件配置"
+            "description": "硬件配置。免费资源使用 platform/xgpu/amd 等前缀，付费资源使用 paid/<InstanceType>。缺省或解析出老免费档时，服务端会归一到当前默认免费档"
+          },
+          "oauth_enabled": {
+            "type": "boolean",
+            "description": "是否为创空间启用 OAuth",
+            "default": false
+          },
+          "oauth_scope": {
+            "type": "string",
+            "description": "OAuth 授权范围，空格分隔多个 scope；oauth_enabled=true 时必填。可选值：openid（魔搭用户身份）、profile（用户公开信息）、manage-mcp-deployment（管理MCP部署）、list-operational-mcp（获取部署MCP列表）、read-repos（读取个人仓库）、api-inference（调用 API Inference）",
+            "examples": [
+              "openid profile"
+            ]
+          },
+          "oauth_token_expire_time": {
+            "type": "integer",
+            "description": "Token 过期时间枚举，oauth_enabled=true 时必填：1=15分钟, 2=1小时, 3=8小时, 4=1天, 5=1周, 6=30天",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "oauth_callback_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "OAuth 回调 URL 列表，oauth_enabled=true 时必填；每项需含 scheme 和 host",
+            "examples": [
+              "https://example.org/oauth/callback"
+            ]
+          },
+          "oauth_homepage_url": {
+            "type": "string",
+            "description": "OAuth 应用主页 URL"
           }
         },
         "required": [
@@ -4688,6 +4726,29 @@
               },
               "runtime": {
                 "$ref": "#/components/schemas/StudioRuntime"
+              },
+              "oauth_enabled": {
+                "type": "boolean",
+                "description": "是否启用了创空间 OAuth"
+              },
+              "oauth_scope": {
+                "type": "string",
+                "description": "OAuth 授权范围，空格分隔多个 scope（未启用时不返回）"
+              },
+              "oauth_token_expire_time": {
+                "type": "integer",
+                "description": "Token 过期时间枚举：1=15分钟, 2=1小时, 3=8小时, 4=1天, 5=1周, 6=30天（未启用时不返回）"
+              },
+              "oauth_callback_urls": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "OAuth 回调 URL 列表（未启用时不返回）"
+              },
+              "oauth_homepage_url": {
+                "type": "string",
+                "description": "OAuth 应用主页 URL（未设置时不返回）"
               }
             }
           },
@@ -4746,6 +4807,37 @@
               }
             ],
             "description": "硬件配置，修改后需重新部署才能生效"
+          },
+          "oauth_enabled": {
+            "type": "boolean",
+            "description": "是否为创空间启用 OAuth。整组 oauth_* 字段仅在本字段显式传入时生效；不传时其他 oauth_* 字段被忽略"
+          },
+          "oauth_scope": {
+            "type": "string",
+            "description": "OAuth 授权范围，空格分隔多个 scope。可选值：openid（魔搭用户身份）、profile（用户公开信息）、manage-mcp-deployment（管理MCP部署）、list-operational-mcp（获取部署MCP列表）、read-repos（读取个人仓库）、api-inference（调用 API Inference）"
+          },
+          "oauth_token_expire_time": {
+            "type": "integer",
+            "description": "Token 过期时间枚举：1=15分钟, 2=1小时, 3=8小时, 4=1天, 5=1周, 6=30天",
+            "enum": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          },
+          "oauth_callback_urls": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "OAuth 回调 URL 列表；每项需含 scheme 和 host"
+          },
+          "oauth_homepage_url": {
+            "type": "string",
+            "description": "OAuth 应用主页 URL"
           }
         }
       },
@@ -4768,6 +4860,11 @@
             "examples": [
               "sk-xxxxxxxxxxxx"
             ]
+          },
+          "description": {
+            "type": "string",
+            "description": "描述，非必填",
+            "maxLength": 512
           }
         },
         "required": [
@@ -4794,6 +4891,11 @@
             "examples": [
               "sk-xxxxxxxxxxxx"
             ]
+          },
+          "description": {
+            "type": "string",
+            "description": "描述，非必填；不传保持原值，传空字符串表示清空",
+            "maxLength": 512
           }
         },
         "required": [
@@ -4808,6 +4910,10 @@
           "key": {
             "type": "string",
             "description": "密文变量名称"
+          },
+          "description": {
+            "type": "string",
+            "description": "描述"
           }
         },
         "required": [
@@ -5173,6 +5279,11 @@
             "examples": [
               "/tmp/gradio"
             ]
+          },
+          "description": {
+            "type": "string",
+            "description": "描述，非必填",
+            "maxLength": 512
           }
         },
         "required": [
@@ -5199,6 +5310,11 @@
             "examples": [
               "/new/path"
             ]
+          },
+          "description": {
+            "type": "string",
+            "description": "描述，非必填；不传保持原值，传空字符串表示清空",
+            "maxLength": 512
           }
         },
         "required": [
@@ -5230,6 +5346,10 @@
           "value": {
             "type": "string",
             "description": "明文变量值"
+          },
+          "description": {
+            "type": "string",
+            "description": "描述"
           }
         },
         "required": [

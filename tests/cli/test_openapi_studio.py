@@ -210,6 +210,53 @@ class TestStudioVariables:
 
 
 # ---------------------------------------------------------------------------
+# Secret / variable descriptions
+# ---------------------------------------------------------------------------
+class TestSecretVariableDescription:
+    """The server treats ``description`` on update as a pointer: absent keeps
+    the stored value, an empty string clears it. Dropping the field, or
+    collapsing ``None`` and ``""`` into one case, silently rewrites user data.
+    """
+
+    @pytest.mark.parametrize(
+        ("method_name", "verb"),
+        [
+            ("add_studio_secret", "POST"),
+            ("update_studio_secret", "PUT"),
+            ("add_studio_variable", "POST"),
+            ("update_studio_variable", "PUT"),
+        ],
+    )
+    def test_description_is_sent_when_given(self, client, method_name, verb):
+        with patch.object(client._session, "request", return_value=_response()) as mock_req:
+            getattr(client, method_name)("alice", "demo", "K", "V", description="used by the app")
+        assert mock_req.call_args.kwargs["json"] == {
+            "key": "K",
+            "value": "V",
+            "description": "used by the app",
+        }
+        assert mock_req.call_args.kwargs["method"] == verb
+
+    @pytest.mark.parametrize(
+        "method_name",
+        ["add_studio_secret", "update_studio_secret", "add_studio_variable", "update_studio_variable"],
+    )
+    def test_description_is_omitted_when_none(self, client, method_name):
+        with patch.object(client._session, "request", return_value=_response()) as mock_req:
+            getattr(client, method_name)("alice", "demo", "K", "V")
+        assert mock_req.call_args.kwargs["json"] == {"key": "K", "value": "V"}
+
+    @pytest.mark.parametrize(
+        "method_name",
+        ["update_studio_secret", "update_studio_variable"],
+    )
+    def test_empty_string_description_is_sent_and_clears(self, client, method_name):
+        with patch.object(client._session, "request", return_value=_response()) as mock_req:
+            getattr(client, method_name)("alice", "demo", "K", "V", description="")
+        assert mock_req.call_args.kwargs["json"] == {"key": "K", "value": "V", "description": ""}
+
+
+# ---------------------------------------------------------------------------
 # Studio logs
 # ---------------------------------------------------------------------------
 class TestStudioLogs:
