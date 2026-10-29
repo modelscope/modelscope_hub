@@ -44,7 +44,9 @@ from .constants import (
     API_TIMEOUT,
     DOWNLOAD_CHUNK_SIZE,
     DOWNLOAD_RETRY_MAX_DELAY_SECONDS,
+    OPENAPI_DELETE_FILES_MAX_PATHS,
     OPENAPI_PREFIX,
+    OPTIONS_CACHE_TTL_SECONDS,
     TokenScope,
 )
 from .errors import (
@@ -60,13 +62,22 @@ from .errors import (
 )
 from .types import (
     CreateAgentIdentityPayload,
+    CreateDatasetPayload,
+    CreateModelPayload,
     CreateSkillPayload,
     CreateStudioPayload,
+    DeleteFilesPayload,
     DeployMcpServerPayload,
     PauseAgentPayload,
     ResetAgentKeyPairPayload,
+    SetDatasetCategoryPayload,
+    SetModelCategoryPayload,
     TokenSignPayload,
     UpdateAgentIdentityPayload,
+    UpdateDatasetCategoryPayload,
+    UpdateDatasetSettingsPayload,
+    UpdateModelCategoryPayload,
+    UpdateModelSettingsPayload,
     UpdateSkillSettingsPayload,
     UpdateStudioSettingsPayload,
 )
@@ -122,6 +133,27 @@ def _validate_choice(name: str, value: str | None, allowed: tuple[str, ...]) -> 
     """
     if value is not None and value not in allowed:
         raise InvalidParameter(f"{name} must be one of {', '.join(allowed)} (got {value!r}).")
+
+
+def _validated_delete_files(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Check a delete-files payload against the limits the endpoint declares.
+
+    The path count is bounded at both ends, so an empty list and an oversized
+    one are both rejected before the request goes out -- the server answers an
+    opaque 400 for either.
+    """
+    body = dict(payload)
+    paths = body.get("file_paths")
+    if not isinstance(paths, list) or not paths:
+        raise InvalidParameter("file_paths must be a non-empty list of repository-relative file paths.")
+    if len(paths) > OPENAPI_DELETE_FILES_MAX_PATHS:
+        raise InvalidParameter(
+            f"file_paths accepts at most {OPENAPI_DELETE_FILES_MAX_PATHS} paths per request "
+            f"(got {len(paths)}). Use HubApi.delete_files() for larger batches."
+        )
+    if len(set(paths)) != len(paths):
+        raise InvalidParameter("file_paths must not contain duplicate paths.")
+    return body
 
 
 def _as_wire_bool(value: bool | None) -> str | None:
@@ -184,6 +216,26 @@ OPERATION_REGISTRY: dict[str, tuple[str, TokenScope]] = {
     "addStudioVariable": ("add_studio_variable", TokenScope.WRITE),
     "updateStudioVariable": ("update_studio_variable", TokenScope.WRITE),
     "deleteStudioVariable": ("delete_studio_variable", TokenScope.WRITE),
+    # -- Models -------------------------------------------------------------
+    "listModels": ("list_models", TokenScope.READ),
+    "createModel": ("create_model", TokenScope.WRITE),
+    "getModel": ("get_model", TokenScope.READ),
+    "setModelCategory": ("set_model_category", TokenScope.WRITE),
+    "updateModelCategory": ("update_model_category", TokenScope.WRITE),
+    "updateModelSettings": ("update_model_settings", TokenScope.WRITE),
+    "deleteModelFiles": ("delete_model_files", TokenScope.WRITE),
+    "getModelOptions": ("get_model_options", TokenScope.READ),
+    "listAigcModelOptions": ("list_aigc_model_options", TokenScope.READ),
+    "listScienceModelOptions": ("list_science_model_options", TokenScope.READ),
+    # -- Datasets -----------------------------------------------------------
+    "listDatasets": ("list_datasets", TokenScope.READ),
+    "createDataset": ("create_dataset", TokenScope.WRITE),
+    "getDataset": ("get_dataset", TokenScope.READ),
+    "setDatasetCategory": ("set_dataset_category", TokenScope.WRITE),
+    "updateDatasetCategory": ("update_dataset_category", TokenScope.WRITE),
+    "updateDatasetSettings": ("update_dataset_settings", TokenScope.WRITE),
+    "deleteDatasetFiles": ("delete_dataset_files", TokenScope.WRITE),
+    "listScienceDatasetOptions": ("list_science_dataset_options", TokenScope.READ),
 }
 
 
@@ -241,6 +293,11 @@ class OpenAPIClient:
         # Tri-state cache for whether this deployment serves ``GET /mcp/servers``.
         # ``None`` means "not probed yet"; see :meth:`list_mcp_servers`.
         self._mcp_list_supports_get: bool | None = None
+        # ``path -> (monotonic timestamp, payload)`` for the ``*/options``
+        # endpoints. Guarded by a lock because one client is shared across the
+        # worker threads that upload and download.
+        self._options_cache: dict[str, tuple[float, Any]] = {}
+        self._options_cache_lock = threading.Lock()
         self._read_state = threading.local()
         self._read_session = requests.Session()
         self._read_session.headers.update(self._session.headers)
@@ -714,8 +771,152 @@ class OpenAPIClient:
         return self._request("GET", "/models", params=params, require_token=False)
 
     def get_model(self, owner: str, repo_name: str) -> JSON:
-        """``GET /models/{owner}/{repo_name}`` — fetch a model's metadata."""
+        """``GET /models/{owner}/{repo_name}`` — fetch a model's metadata.
+
+        The payload is a ``ModelDetail``: the common repository fields plus
+        ``model_category`` and, for a model in a zone, that zone's fields only
+        (AIGC architecture and ``versions``, or the science subject areas).
+        Fields belonging to the other zones are absent rather than null.
+        """
         return self._request("GET", f"/models/{owner}/{repo_name}", require_token=False)
+
+    # ------------------------------------------------------------------
+    # Model / dataset enum options
+    #
+    # These endpoints publish product configuration and take no credentials.
+    # Their values change on a release cadence, so repeated reads within one
+    # process are served from a short-lived cache (see
+    # :data:`OPTIONS_CACHE_TTL_SECONDS`); a caller that sets a category no
+    # longer re-fetches the whole enum tree on every call.
+    # ------------------------------------------------------------------
+    def _cached_options(self, path: str) -> JSON:
+        """Fetch an options endpoint, reusing a recent response when allowed."""
+        ttl = OPTIONS_CACHE_TTL_SECONDS
+        if ttl <= 0:
+            return self._request("GET", path, require_token=False)
+        now = time.monotonic()
+        with self._options_cache_lock:
+            entry = self._options_cache.get(path)
+            if entry is not None and now - entry[0] < ttl:
+                return entry[1]
+        payload = self._request("GET", path, require_token=False)
+        with self._options_cache_lock:
+            self._options_cache[path] = (time.monotonic(), payload)
+        return payload
+
+    def clear_options_cache(self) -> None:
+        """Drop every cached ``*/options`` response."""
+        with self._options_cache_lock:
+            self._options_cache.clear()
+
+    def list_aigc_model_options(self) -> JSON:
+        """``GET /model/aigc/options`` — AIGC zone enums.
+
+        Returns ``aigc_types``, the ``base_architectures`` cascade (first-level
+        architecture plus ``subtypes``), and the ``content_styles`` /
+        ``content_functions`` / ``content_elements`` triples. Every option is a
+        ``{type, id, label}`` triple; submit ``id``, display ``label``.
+        """
+        return self._cached_options("/model/aigc/options")
+
+    def list_science_model_options(self) -> JSON:
+        """``GET /model/science/options`` — science model subject-area tree."""
+        return self._cached_options("/model/science/options")
+
+    def get_model_options(self) -> JSON:
+        """``GET /models/options`` — the task and license option lists.
+
+        ``tasks[].id`` is what ``task`` accepts on create and settings, and what
+        ``filter.task`` accepts when listing; ``license[].id`` is what
+        ``license`` accepts. Needs no credentials.
+        """
+        return self._cached_options("/models/options")
+
+    # ------------------------------------------------------------------
+    # Model writes
+    # ------------------------------------------------------------------
+    def create_model(self, payload: CreateModelPayload | Mapping[str, Any]) -> JSON:
+        """``POST /models`` — create a general model repository.
+
+        Accepts general metadata only; the new repository is ``base``. Zone
+        fields go through :meth:`set_model_category` after the weights are
+        uploaded. Unknown fields are rejected by the server with a 400.
+        """
+        return self._request("POST", "/models", json_body=dict(payload), required_scope=TokenScope.WRITE)
+
+    def set_model_category(
+        self,
+        owner: str,
+        repo_name: str,
+        payload: SetModelCategoryPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``PUT /models/{owner}/{repo_name}/category`` — set or change the zone.
+
+        ``PUT`` because this replaces the zone wholesale: the required fields
+        follow from the target ``model_category`` alone, and moving to ``base``
+        clears every zone field. Partial edits within a zone use
+        :meth:`update_model_category`.
+        """
+        return self._request(
+            "PUT",
+            f"/models/{owner}/{repo_name}/category",
+            json_body=dict(payload),
+            required_scope=TokenScope.WRITE,
+        )
+
+    def update_model_category(
+        self,
+        owner: str,
+        repo_name: str,
+        payload: UpdateModelCategoryPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``PATCH /models/{owner}/{repo_name}/category`` — edit zone metadata.
+
+        The server reads the current zone from its own database, so the payload
+        must not carry ``model_category``. AIGC version fields are addressed by
+        the numeric ``version_id``.
+        """
+        return self._request(
+            "PATCH",
+            f"/models/{owner}/{repo_name}/category",
+            json_body=dict(payload),
+            required_scope=TokenScope.WRITE,
+        )
+
+    def update_model_settings(
+        self,
+        owner: str,
+        repo_name: str,
+        settings: UpdateModelSettingsPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``PATCH /models/{owner}/{repo_name}/settings`` — general settings.
+
+        Omitted fields are unchanged; explicit nulls clear. Zone fields are not
+        accepted here.
+        """
+        return self._request(
+            "PATCH",
+            f"/models/{owner}/{repo_name}/settings",
+            json_body=dict(settings),
+            required_scope=TokenScope.WRITE,
+        )
+
+    def delete_model_files(
+        self,
+        owner: str,
+        repo_name: str,
+        payload: DeleteFilesPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``DELETE /models/{owner}/{repo_name}/files`` — one atomic commit.
+
+        See :meth:`delete_dataset_files` for the shared constraints.
+        """
+        return self._request(
+            "DELETE",
+            f"/models/{owner}/{repo_name}/files",
+            json_body=_validated_delete_files(payload),
+            required_scope=TokenScope.WRITE,
+        )
 
     # ==================================================================
     # Datasets
@@ -746,8 +947,102 @@ class OpenAPIClient:
         return self._request("GET", "/datasets", params=params, require_token=False)
 
     def get_dataset(self, owner: str, repo_name: str) -> JSON:
-        """``GET /datasets/{owner}/{repo_name}`` — fetch a dataset's metadata."""
+        """``GET /datasets/{owner}/{repo_name}`` — fetch a dataset's metadata.
+
+        The payload is a ``DatasetDetail``: the common repository fields plus
+        ``dataset_category``, ``login_required``, and -- only for a science
+        dataset -- the subject areas and cover image.
+        """
         return self._request("GET", f"/datasets/{owner}/{repo_name}", require_token=False)
+
+    def list_science_dataset_options(self) -> JSON:
+        """``GET /dataset/science/options`` — science dataset subject-area tree."""
+        return self._cached_options("/dataset/science/options")
+
+    # ------------------------------------------------------------------
+    # Dataset writes
+    # ------------------------------------------------------------------
+    def create_dataset(self, payload: CreateDatasetPayload | Mapping[str, Any]) -> JSON:
+        """``POST /datasets`` — create a general dataset repository.
+
+        The new repository is ``base``; science fields go through
+        :meth:`set_dataset_category`.
+        """
+        return self._request("POST", "/datasets", json_body=dict(payload), required_scope=TokenScope.WRITE)
+
+    def set_dataset_category(
+        self,
+        owner: str,
+        repo_name: str,
+        payload: SetDatasetCategoryPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``PUT /datasets/{owner}/{repo_name}/category`` — set or change the zone."""
+        return self._request(
+            "PUT",
+            f"/datasets/{owner}/{repo_name}/category",
+            json_body=dict(payload),
+            required_scope=TokenScope.WRITE,
+        )
+
+    def update_dataset_category(
+        self,
+        owner: str,
+        repo_name: str,
+        payload: UpdateDatasetCategoryPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``PATCH /datasets/{owner}/{repo_name}/category`` — edit science fields.
+
+        The payload must not carry ``dataset_category``; the server reads the
+        current zone itself and rejects the field.
+        """
+        return self._request(
+            "PATCH",
+            f"/datasets/{owner}/{repo_name}/category",
+            json_body=dict(payload),
+            required_scope=TokenScope.WRITE,
+        )
+
+    def update_dataset_settings(
+        self,
+        owner: str,
+        repo_name: str,
+        settings: UpdateDatasetSettingsPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``PATCH /datasets/{owner}/{repo_name}/settings`` — general settings.
+
+        Omitted fields are unchanged; explicit nulls clear. Zone fields and
+        ``login_required`` are not accepted here.
+        """
+        return self._request(
+            "PATCH",
+            f"/datasets/{owner}/{repo_name}/settings",
+            json_body=dict(settings),
+            required_scope=TokenScope.WRITE,
+        )
+
+    def delete_dataset_files(
+        self,
+        owner: str,
+        repo_name: str,
+        payload: DeleteFilesPayload | Mapping[str, Any],
+    ) -> JSON:
+        """``DELETE /datasets/{owner}/{repo_name}/files`` — one atomic commit.
+
+        Takes 1 to 100 distinct repo-relative file paths -- no directories, no
+        traversal -- and ``revision`` must be a branch. The request is
+        all-or-nothing: one unresolvable path fails every deletion.
+
+        :meth:`HubApi.delete_files` does *not* route here. It commits deletions
+        directly, which lifts the 100-path ceiling and supports glob patterns;
+        this method exists for callers that want the endpoint's ``commit_sha``
+        and its strict all-or-nothing guarantee.
+        """
+        return self._request(
+            "DELETE",
+            f"/datasets/{owner}/{repo_name}/files",
+            json_body=_validated_delete_files(payload),
+            required_scope=TokenScope.WRITE,
+        )
 
     # ==================================================================
     # Files

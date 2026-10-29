@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 from ..constants import RepoType
 from ..errors import AlreadyExistsError, is_repo_exists_error
@@ -119,7 +120,10 @@ class CreateCommand(CLICommand):
 
     def execute(self) -> None:
         api = make_api(self.args)
-        extra: dict[str, object] = {}
+        # ``Any`` rather than ``object``: these come from argparse and are
+        # forwarded verbatim into ``create_repo``'s keyword parameters, whose
+        # types vary per repo kind.
+        extra: dict[str, Any] = {}
         for key in ("sdk_type", "sdk_version", "base_image", "cover_image", "hardware", "category"):
             value = getattr(self.args, key, None)
             if value is not None:

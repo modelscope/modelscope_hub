@@ -269,6 +269,97 @@ ms-hub create my-org/my-model --repo-type model --visibility private
 api.create_repo("my-org/my-model", "model", visibility="private", license="apache-2.0")
 ```
 
+### Visibility and gated access
+
+The SDK keeps its historical `Visibility` integer enum: `PRIVATE=1`,
+`INTERNAL=3`, `PUBLIC=5`. Application gating is a separate boolean switch,
+`gated_mode=True` / `False`, and is not deprecated. It is effective for private
+repositories; with explicit public/internal visibility it is warned about and
+ignored. Either explicit boolean with no visibility still implies private.
+
+Use the same high-level spelling as v0.5.1. A gated repository requires an
+approved application to download; the boolean switch does not select an
+approval policy:
+
+```python
+api.create_repo(
+    "my-org/my-data", "dataset", visibility="private",
+    gated_mode=True,
+)
+
+# Turn the application switch off; the repository becomes ordinary private.
+api.update_repo_settings("my-org/my-data", "dataset", gated_mode=False)
+```
+
+Ordinary creation prefers OpenAPI. Explicit `gated_mode=True/False` creation
+retains the legacy `Visibility` plus `ProtectedMode=1/2` request format to keep
+v0.5.1 behaviour. Settings adapt the boolean to the OpenAPI access mode internally;
+`True` enables gating with the server's `auto` approval default, `False` leaves an
+ordinary private repository, and `None` leaves the control unchanged.
+
+High-level `visibility` accepts the historical enum/labels, not `"gated"`.
+`approval_mode` and `gated` request parameters have been removed, including the
+`--approval-mode` CLI flag; passing them through `**kwargs` raises `TypeError`
+before any request. This does not remove the existing `RepoInfo.gated` boolean
+response field or the native `gated_mode` string in new detail responses.
+`get_repo()` preserves `Visibility` for models/datasets, while raw `get_model()` /
+`get_dataset()` retain native OpenAPI fields. Native approval-policy strings
+belong only to the low-level `api.openapi` payloads, not to the high-level
+`gated_mode` boolean.
+
+```bash
+ms-hub create my-org/my-data --repo-type dataset --visibility private --gated
+```
+
+`visibility="internal"` (visible within an organisation) has no equivalent in
+the OpenAPI surface, so those requests continue to use the legacy endpoint.
+
+### Model and dataset zones
+
+Models belong to the `base`, `aigc`, or `science` zone; datasets to `base` or
+`science`. A new repository is always `base`. Upload the files first, then set
+the zone — the AIGC endpoint checks that each weight path already exists:
+
+```python
+api.create_repo("my-org/my-lora", "model", visibility="private")
+api.upload_folder("my-org/my-lora", "model", "./my-lora-files")
+
+options = api.list_aigc_model_options()  # enum ids, no credentials needed
+api.set_model_category(
+    "my-org/my-lora",
+    model_category="aigc",
+    aigc_type="LoRA",
+    base_model_architecture_type=options["base_architectures"][0]["id"],
+    base_model_architecture_subtype=options["base_architectures"][0]["subtypes"][0]["id"],
+    version_name="v1.0",
+    weight_files=[{"path_in_repo": "model.safetensors"}],
+    sample_images=[{"url": "https://example.com/sample.png", "prompt": "a cat"}],
+)
+
+# Detail reads can lag behind writes; wait briefly before resolving a new version name.
+import time
+
+for _ in range(10):
+    detail = api.get_model("my-org/my-lora")
+    if any(v.get("version_name") == "v1.0" for v in detail.get("versions", [])):
+        break
+    time.sleep(1)
+else:
+    raise TimeoutError("The new version is not visible yet; retry the detail read later.")
+
+# Edit a version's metadata in place, addressed by version name or numeric id.
+api.update_model_category("my-org/my-lora", version_name="v1.0", trigger_words=["anime"])
+
+# Read the zone fields back; which keys are present depends on the category.
+detail = api.get_model("my-org/my-lora")
+print(detail["model_category"], [v["version_id"] for v in detail.get("versions", [])])
+```
+
+Enum values (`aigc_type`, architectures, subject areas, `task`, `license`) come
+from the options endpoints; pass each option's `id`, not its `label`. An
+existing version's weights are immutable — changing them means creating a new
+version with `set_model_category`.
+
 ### Deploy a Studio
 
 ```bash
@@ -484,9 +575,9 @@ ms-hub list --repo-type studio --owner my-org
 ms-hub delete my-org/my-model --repo-type model --yes
 ```
 
-> **Deprecation notice:** `delete_repo` / `ms-hub delete` emits a `DeprecationWarning` — programmatic repo deletion is restricted for security reasons and will be restored once token-scoped auth is available. Use the [web console](https://modelscope.cn) to delete repos.
+> **Deletion permission:** `delete_repo` / `ms-hub delete` needs repository deletion permission; ordinary write permission alone is not sufficient. An admin-level token has been verified to work. Tokens without the required permission are refused (`10010101003` for models, `10020301011` for datasets) and directed to the [web console](https://modelscope.cn). Retrying a permission rejection with the same token will not help.
 >
-> `delete_files` requires cookie-based session auth; API tokens may receive a 401 error.
+> `delete_files` uses the legacy commit/session path. File-deletion permission is distinct from repository-deletion permission; a write token may delete files even when it cannot delete the repository.
 
 <details>
 <summary><code>ms-hub create</code> options</summary>
@@ -500,6 +591,7 @@ ms-hub delete my-org/my-model --repo-type model --yes
 | `--chinese-name` | no | Display name in Chinese |
 | `--description` | no | Repository description |
 | `--exist-ok` | no | No error if repository already exists |
+| `--gated` / `--no-gated` | no | Historical application switch; explicit public/internal visibility takes precedence |
 | `--sdk-type` | no | Studio SDK: `gradio`, `streamlit`, `docker`, `static` |
 | `--sdk-version` | no | Studio SDK version |
 | `--base-image` | no | Studio base Docker image |
@@ -831,9 +923,19 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `whoami()` | Get current user info |
 | **Repo** | `create_repo(repo_id, repo_type, ...)` | Create a repository |
 | | `get_repo(repo_id, repo_type)` | Get repository metadata |
+| | `get_model(repo_id)` / `model_info(repo_id)` | Model detail, including zone fields |
+| | `get_dataset(repo_id)` / `dataset_info(repo_id)` | Dataset detail, including science fields |
 | | `list_repos(repo_type, ...)` | Paginated listing (`model`, `dataset`, `studio`, `skill`, `mcp`) |
-| | `delete_repo(repo_id, repo_type)` | Delete a repository *(deprecated — see note below)* |
+| | `delete_repo(repo_id, repo_type)` | Delete a repository *(needs deletion permission — see note below)* |
 | | `repo_exists(repo_id, repo_type)` | Check existence |
+| **Zones** | `set_model_category(repo_id, model_category=...)` | Move a model into `base` / `aigc` / `science` |
+| | `update_model_category(repo_id, ...)` | Edit a model's zone fields in place |
+| | `set_dataset_category(repo_id, dataset_category=...)` | Move a dataset into `base` / `science` |
+| | `update_dataset_category(repo_id, ...)` | Edit a dataset's science fields in place |
+| | `list_aigc_model_options()` | AIGC enums (types, architectures, content categories) |
+| | `list_science_model_options()` | Science model subject areas |
+| | `list_science_dataset_options()` | Science dataset subject areas |
+| | `list_model_options()` | Valid model `task` and `license` values |
 | **Files** | `upload_file(repo_id, repo_type, local, remote)` | Upload a single file |
 | | `upload_folder(repo_id, repo_type, folder, ...)` | Upload a directory |
 | | `download_file(repo_id, repo_type, file, ...)` | Download a single file (with retry, resume, offline mode) |
@@ -845,7 +947,7 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | **Deploy** | `deploy_repo(repo_id, repo_type)` | Deploy Studio or MCP |
 | | `stop_repo(repo_id, repo_type)` | Stop deployment |
 | | `get_repo_logs(repo_id, ...)` | Fetch logs |
-| | `update_repo_settings(repo_id, repo_type, ...)` | Update settings |
+| | `update_repo_settings(repo_id, repo_type, ...)` | Update settings (`model`, `dataset`, `studio`, `skill`) |
 | **Secrets** | `add_secret(repo_id, key, value)` | Add a secret |
 | | `list_secrets(repo_id)` | List secret keys (values are never returned) |
 | | `update_secret(repo_id, key, value)` | Update a secret |
@@ -872,8 +974,8 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `clear_cache(cache_dir, ...)` | Free disk space |
 
 > **Deletion restrictions:**
-> - `delete_repo` is deprecated for security reasons (emits `DeprecationWarning`). Will be restored with token-scoped auth. Use the [web console](https://modelscope.cn) instead.
-> - `delete_files` requires cookie-based session auth; API tokens (`ms-...`) may receive a 401 error.
+> - `delete_repo` needs repository deletion permission. Insufficient permission is rejected (`10010101003` / `10020301011`); use an authorised token or the [web console](https://modelscope.cn). An admin-level token has been verified to work. The SDK uses the legacy endpoint; the current OpenAPI contract has no repository-deletion route.
+> - `delete_files` uses the legacy commit/session path and checks file-deletion permission separately. It does not inherit the OpenAPI file-deletion endpoint's 100-path limit. Editing a tag revision may be rejected by repository policy.
 
 > **Token permission levels:** every write method needs a token issued with
 > `write` permission or higher. A rejected write raises `PermissionDeniedError`
@@ -942,6 +1044,7 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | `MODELSCOPE_API_TIMEOUT` | `60` | HTTP request timeout (seconds) |
 | `MODELSCOPE_API_CONNECT_TIMEOUT` | `10` | HTTP connect timeout (seconds) |
 | `MODELSCOPE_API_MAX_RETRIES` | `5` | Regular API retries; downloads and file listings use separate retry policies |
+| `MODELSCOPE_OPTIONS_CACHE_TTL` | `300` | Seconds to cache the model/dataset enum option endpoints; `0` disables caching |
 | `MODELSCOPE_REPO_TREE_PAGE_TIMEOUT_SECONDS` | `15` | Per-page listing timeout (seconds) |
 | `MODELSCOPE_REPO_TREE_PAGE_MAX_ATTEMPTS` | `4` | Maximum attempts per listing page, including the initial request |
 | `MODELSCOPE_REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS` | `8` | Maximum listing retry delay (seconds) |
@@ -1013,6 +1116,35 @@ from modelscope_hub.compat import LegacyHubApi as HubApi
 ```
 
 All legacy parameter names (`allow_file_pattern`, `ignore_file_pattern`, `cookies`, etc.) are accepted and mapped to the new implementation.
+
+### Behaviour changes when model/dataset writes moved to OpenAPI
+
+Model and dataset creation and settings now use the `/openapi/v1` endpoints.
+Inputs those endpoints cannot express keep using the legacy ones, so existing
+calls continue to work; three observable differences remain:
+
+| Change | Detail |
+|--------|--------|
+| Gated repositories in metadata | The historical `Visibility` enum is preserved. New OpenAPI `"gated"` responses map to `Visibility.PRIVATE` with `gated=True`, rather than leaking a raw string as in 0.5.1 against that response. Older payloads without `visibility` could instead be misclassified as PUBLIC from `private: false`; both parsing cases are handled. |
+| Default license | When `license` is omitted the Hub applies its own default (`apache-2.0`) instead of the SDK sending `Apache-2.0`. Only affects calls that take the OpenAPI route. |
+| `LegacyHubApi.create_dataset(description=...)` | The argument was previously accepted and then dropped; it is now sent. |
+
+Unchanged on purpose:
+
+- **`gated_mode=True` / `gated_mode=False`** keep the exact legacy request
+  (`Visibility=PRIVATE` plus `ProtectedMode=1`/`2`), including warn-and-ignore for
+  explicit public/internal visibility and implicit private for either boolean
+  when visibility is omitted. `ms-hub create --gated/--no-gated` stays unchanged.
+- High-level `approval_mode`, `gated`, `visibility="gated"` and string-valued
+  `gated_mode` are not supported. The removed request aliases must not leak into
+  legacy extra fields. Native OpenAPI payload/response fields remain unchanged.
+- `delete_files()` still commits deletions directly, so it keeps glob support
+  and has no 100-path ceiling.
+- `visibility="internal"`, licenses outside the OpenAPI enum, a `task` on a
+  dataset, and extra request fields all still reach the legacy endpoint.
+- The AIGC creation path in `modelscope_hub.compat`
+  (`create_model(aigc_model=...)`, `create_model_tag(aigc_model=...)`) is
+  untouched.
 
 ---
 

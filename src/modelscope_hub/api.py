@@ -27,7 +27,7 @@ import fnmatch
 import time
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from typing import Any, BinaryIO, TypeAlias
+from typing import Any, BinaryIO, TypeAlias, TypeVar
 from urllib.parse import urlparse
 
 from requests.cookies import RequestsCookieJar
@@ -42,14 +42,32 @@ from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .agent_idp import sign_agent_token_request
 from .config import HubConfig, get_default_config
-from .constants import DEFAULT_ENDPOINT, RepoType, StudioVisibility, Visibility
+from .constants import (
+    DEFAULT_ENDPOINT,
+    OPENAPI_CREATE_DATASET_FIELDS,
+    OPENAPI_CREATE_MODEL_FIELDS,
+    OPENAPI_MODEL_LICENSES,
+    OPENAPI_VERSION_NAME_MAX_LENGTH,
+    WEIGHT_FILE_SUFFIXES,
+    AigcModelType,
+    DatasetCategory,
+    ModelCategory,
+    RepoType,
+    RepoVisibility,
+    StrEnum,
+    StudioVisibility,
+    Visibility,
+)
 from .errors import (
+    AlreadyExistsError,
     AuthenticationError,
     HubError,
     InvalidParameter,
     NotExistError,
     NotSupportedError,
     PermissionDeniedError,
+    ServerError,
+    is_repo_exists_error,
 )
 from .types import (
     AgentIdConfiguration,
@@ -76,11 +94,19 @@ logger = get_logger("api")
 
 RepoTypeLike: TypeAlias = "str | RepoType"
 
+# Any of the string enums the category payloads validate against.
+_StrEnumT = TypeVar("_StrEnumT", bound=StrEnum)
+
 
 # Routing tables — declarative dispatch keeps :class:`HubApi` free of long
 # if/elif chains and makes adding new repo types a one-line change.
 _CREATABLE_TYPES: frozenset[RepoType] = frozenset({RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL})
-_OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset({RepoType.STUDIO, RepoType.SKILL})
+_OPENAPI_CREATE_TYPES: frozenset[RepoType] = frozenset(
+    {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
+)
+# Repo kinds whose OpenAPI create endpoint can be bypassed for inputs it cannot
+# express. Studio and Skill have no legacy create endpoint, so they are absent.
+_LEGACY_CREATE_FALLBACK_TYPES: frozenset[RepoType] = frozenset({RepoType.MODEL, RepoType.DATASET})
 _OPENAPI_DETAIL_TYPES: frozenset[RepoType] = frozenset(
     {RepoType.MODEL, RepoType.DATASET, RepoType.STUDIO, RepoType.SKILL}
 )
@@ -117,6 +143,11 @@ _STUDIO_FIELD_ALIASES: dict[str, str] = {
 # Reserved fields that are controlled by create_repo method parameters.
 # These MUST NOT be overridden via extra kwargs to avoid silent conflicts.
 _RESERVED_EXTRA_FIELDS: frozenset[str] = frozenset({"Path", "Owner", "Name"})
+
+# Settings the model/dataset settings endpoints report but cannot change.
+# ``login_required`` appears in a dataset's detail payload, yet no request
+# schema accepts it, so it can only be changed through the web UI.
+_UNSETTABLE_FIELDS: frozenset[str] = frozenset({"login_required"})
 
 
 def _unwrap_list(payload: Any, keys: tuple[str, ...]) -> list[dict]:
@@ -423,31 +454,46 @@ class HubApi:
         for key, value in data.items():
             normalised[aliases.get(key, key)] = value
 
-        # The OpenAPI surface uses ``private`` bool for visibility.
-        # gated is orthogonal and does not affect visibility mapping.
+        # Normalize native access modes to the historical SDK enum. The server
+        # reports private=false for gated repos, so the private flag alone is insufficient.
         raw_visibility = normalised.get("visibility")
         if isinstance(raw_visibility, str):
-            # Studio payloads report visibility as a string enum. ``public`` and
-            # ``private`` have integer equivalents; ``protected`` (app public,
-            # code hidden) does not, so it is preserved verbatim rather than
-            # forced into a value that would misrepresent it.
+            # Two string encodings arrive here. Studio payloads use
+            # ``public``/``protected``/``private``; model and dataset detail
+            # payloads use ``public``/``private``/``gated``. ``gated`` must not
+            # fall through as a raw string: ``visibility`` is typed as the
+            # integer :class:`Visibility`, and leaking a ``str`` would break
+            # ``.label``, ``int()`` and equality against the enum -- including
+            # in the compat dict, which the legacy SDK reads as an integer.
+            #
+            # A gated repository maps to PRIVATE because that is what it is on
+            # the legacy wire (``Visibility=PRIVATE`` plus ``ProtectedMode=1``);
+            # the approval mode itself is carried separately by ``gated`` and
+            # ``gated_mode``. The server reports ``private: false`` for gated
+            # repos, so without this branch they would be reported as PUBLIC.
+            repo_visibility = RepoVisibility.parse(raw_visibility)
             studio_visibility = StudioVisibility.parse(raw_visibility)
-            if studio_visibility is StudioVisibility.PUBLIC:
+            if repo_visibility is RepoVisibility.GATED:
+                normalised["visibility"] = Visibility.PRIVATE
+                normalised.setdefault("gated", True)
+            elif studio_visibility is StudioVisibility.PUBLIC:
                 normalised["visibility"] = Visibility.PUBLIC
             elif studio_visibility is StudioVisibility.PRIVATE:
                 normalised["visibility"] = Visibility.PRIVATE
             elif studio_visibility is not None:
+                # ``protected`` (app public, code hidden) has no integer
+                # equivalent, so it is preserved verbatim rather than forced
+                # into a value that would misrepresent it.
                 normalised["visibility"] = studio_visibility.value
         elif raw_visibility is None:
             private_flag = normalised.get("private")
-            if isinstance(private_flag, bool):
-                if private_flag:
-                    normalised["visibility"] = Visibility.PRIVATE
-                else:
-                    normalised["visibility"] = Visibility.PUBLIC
-            elif normalised.get("gated"):
-                # Rule 4: visibility unknown + gated=True → imply PRIVATE
+            if normalised.get("gated"):
+                # Checked before ``private``: the server reports ``private:
+                # false`` for a gated repo, so trusting that flag first would
+                # report an application-gated repo as public.
                 normalised["visibility"] = Visibility.PRIVATE
+            elif isinstance(private_flag, bool):
+                normalised["visibility"] = Visibility.PRIVATE if private_flag else Visibility.PUBLIC
 
         # The OpenAPI list endpoints return ``id`` as "owner/name".
         # Split it so the computed ``repo_id`` property works.
@@ -813,6 +859,9 @@ class HubApi:
         chinese_name: str | None = None,
         description: str | None = None,
         gated_mode: bool | None = None,
+        license_name: str | None = None,
+        license_link: str | None = None,
+        task: str | None = None,
         **extra: Any,
     ) -> RepoInfo:
         """Create a new repository.
@@ -820,7 +869,9 @@ class HubApi:
         Routing is decided by ``repo_type``:
 
         * ``studio`` / ``skill`` → OpenAPI ``POST /studios`` / ``POST /skills``
-        * ``model`` / ``dataset`` → legacy ``POST /api/v1/{type}s``
+        * ``model`` / ``dataset`` → OpenAPI ``POST /models`` / ``POST /datasets``,
+          falling back to the legacy endpoint for inputs the OpenAPI schema
+          cannot express (see :meth:`_legacy_create_reason`)
 
         Parameters
         ----------
@@ -830,18 +881,31 @@ class HubApi:
             One of ``"model"``, ``"dataset"``, ``"studio"``, ``"skill"``.
         visibility : int, str or Visibility, optional
             Visibility level. Accepts the integer wire encoding, a label
-            (``"public"`` / ``"private"``) or a :class:`Visibility` value.
-            Defaults to public.
+            (``"public"`` / ``"private"`` / ``"internal"``) or a
+            :class:`Visibility` value. Defaults to public.
         license : str, optional
-            SPDX-style license identifier (e.g. ``"apache-2.0"``).
+            SPDX-style license identifier (e.g. ``"apache-2.0"``). Values the
+            OpenAPI model schema does not list are still accepted, via the
+            legacy endpoint.
         chinese_name : str, optional
-            Chinese display name shown on the Hub UI.
+            Display name shown on the Hub UI.
         description : str, optional
             Short description of the repository.
         gated_mode : bool, optional
-            Enable gated (application-based download) mode for private repos.
-            True = gated, False = normal private. Only effective when
-            visibility is PRIVATE; ignored otherwise.
+            Historical application-access switch, not deprecated. Effective
+            only for private repositories; explicit public/internal visibility
+            takes precedence and the switch is warned about and ignored.
+            Either explicit boolean with omitted visibility implies private.
+            These calls retain the legacy ProtectedMode=1/2 request format.
+            This boolean does not select an approval policy.
+        license_name : str, optional
+            Custom license name. Required when ``license="other"``.
+        license_link : str, optional
+            Custom license URL, honoured when ``license="other"``. When omitted
+            the Hub creates a blank ``LICENSE.md``.
+        task : str, optional
+            Model task identifier, as published by
+            :meth:`list_model_options`. Models only.
         **extra : Any
             Additional fields forwarded verbatim to the underlying client.
 
@@ -853,7 +917,8 @@ class HubApi:
         Raises
         ------
         InvalidParameter
-            When ``repo_id`` does not have the ``owner/name`` shape.
+            When ``repo_id`` does not have the ``owner/name`` shape, or when
+            ``visibility`` is a value the repo type does not support.
         AuthenticationError
             When the token is missing or invalid.
 
@@ -871,7 +936,7 @@ class HubApi:
         >>> info.repo_id
         'alice/llama-7b-finetuned'
 
-        Create a private gated dataset:
+        Create a private dataset with application-gated access:
 
         >>> api.create_repo("alice/my-data", "dataset", visibility="private", gated_mode=True)
 
@@ -879,6 +944,7 @@ class HubApi:
 
         >>> api.create_repo("alice/chat-demo", repo_type="studio", visibility="public")
         """
+        self._reject_removed_gating_parameters(extra)
         rt = self._normalize_repo_type(repo_type)
         if rt not in _CREATABLE_TYPES:
             supported = ", ".join(sorted(t.value for t in _CREATABLE_TYPES))
@@ -891,44 +957,280 @@ class HubApi:
         if license is not None:
             license = _LICENSE_DISPLAY_TO_SPDX.get(license, license)
 
-        if rt in _OPENAPI_CREATE_TYPES:
-            is_private = vis is not None and vis == int(Visibility.PRIVATE)
-            if rt is RepoType.STUDIO:
-                payload: dict[str, Any] = {
-                    "owner": owner,
-                    "repo_name": name,
-                }
-                if studio_visibility is not None:
-                    # ``visibility`` is the expressive form (it is the only way to
-                    # ask for ``protected``); ``private`` is sent alongside it for
-                    # servers that predate the tri-state field. The two are
-                    # consistent by construction, so they cannot disagree.
-                    payload["visibility"] = studio_visibility.value
-                    payload["private"] = studio_visibility is StudioVisibility.PRIVATE
-                elif vis is not None:
-                    payload["private"] = is_private
-                if chinese_name is not None:
-                    payload["display_name"] = chinese_name
-            else:
-                payload = {
-                    "owner": owner,
-                    "skill_name": name,
-                }
-                if vis is not None:
-                    payload["private"] = is_private
-                if chinese_name is not None:
-                    payload["display_name"] = chinese_name
-            if license is not None:
-                payload["license"] = license
-            if description is not None:
-                payload["description"] = description
-            # Only Studios get the Studio field normalisation: a Skill has no
-            # cover image and no visibility field, so rewriting those keys on a
-            # Skill payload would invent fields its endpoint does not accept.
-            payload.update(_normalise_studio_fields(extra) if rt is RepoType.STUDIO else extra)
-            data = self.openapi.create_studio(payload) if rt is RepoType.STUDIO else self.openapi.create_skill(payload)
-            return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
+        if rt in _LEGACY_CREATE_FALLBACK_TYPES:
+            return self._create_model_or_dataset(
+                rt,
+                owner,
+                name,
+                visibility=vis,
+                license=license,
+                chinese_name=chinese_name,
+                description=description,
+                gated_mode=gated_mode,
+                license_name=license_name,
+                license_link=license_link,
+                task=task,
+                extra=extra,
+            )
 
+        is_private = vis is not None and vis == int(Visibility.PRIVATE)
+        if rt is RepoType.STUDIO:
+            payload: dict[str, Any] = {
+                "owner": owner,
+                "repo_name": name,
+            }
+            if studio_visibility is not None:
+                # ``visibility`` is the expressive form (it is the only way to
+                # ask for ``protected``); ``private`` is sent alongside it for
+                # servers that predate the tri-state field. The two are
+                # consistent by construction, so they cannot disagree.
+                payload["visibility"] = studio_visibility.value
+                payload["private"] = studio_visibility is StudioVisibility.PRIVATE
+            elif vis is not None:
+                payload["private"] = is_private
+            if chinese_name is not None:
+                payload["display_name"] = chinese_name
+        else:
+            payload = {
+                "owner": owner,
+                "skill_name": name,
+            }
+            if vis is not None:
+                payload["private"] = is_private
+            if chinese_name is not None:
+                payload["display_name"] = chinese_name
+        if license is not None:
+            payload["license"] = license
+        if description is not None:
+            payload["description"] = description
+        # Only Studios get the Studio field normalisation: a Skill has no
+        # cover image and no visibility field, so rewriting those keys on a
+        # Skill payload would invent fields its endpoint does not accept.
+        payload.update(_normalise_studio_fields(extra) if rt is RepoType.STUDIO else extra)
+        data = self.openapi.create_studio(payload) if rt is RepoType.STUDIO else self.openapi.create_skill(payload)
+        return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
+
+    @staticmethod
+    def _reject_removed_gating_parameters(parameters: Mapping[str, Any]) -> None:
+        """Reject removed request parameters before kwargs can reach a backend."""
+        removed = sorted({"approval_mode", "gated"} & set(parameters))
+        if removed:
+            raise TypeError(f"Unexpected keyword argument(s): {', '.join(removed)}; use gated_mode=True/False.")
+
+    @staticmethod
+    def _legacy_create_reason(
+        rt: RepoType,
+        *,
+        visibility: int | None,
+        license: str | None,
+        extra: Mapping[str, Any],
+        gated_mode: bool | None = None,
+        task: str | None = None,
+    ) -> str | None:
+        """Explain why these inputs cannot go through the OpenAPI create endpoint.
+
+        The OpenAPI schemas are closed: ``visibility`` has no ``internal``,
+        ``POST /models`` restricts ``license`` to a published set, and both
+        endpoints answer 400 for any field they do not declare. The legacy
+        endpoint accepts all three, so rather than failing a call that works
+        today, these inputs keep using it. Returns ``None`` when the OpenAPI
+        endpoint can serve the request.
+        """
+        if gated_mode is not None:
+            # Retain the historical boolean wire contract, not a new policy selector.
+            return "historical gated_mode boolean keeps the legacy ProtectedMode wire"
+        if visibility is not None and visibility == int(Visibility.INTERNAL):
+            return "visibility=internal is not part of the OpenAPI visibility enum"
+        if rt is RepoType.MODEL and license is not None and license not in OPENAPI_MODEL_LICENSES:
+            return f"license={license!r} is not in the OpenAPI model license enum"
+        if rt is not RepoType.MODEL and task is not None:
+            # Only the model schema declares ``task``. The legacy endpoint used
+            # to receive it verbatim through ``**extra``, so route there rather
+            # than reject a call that used to work.
+            return f"task is not declared by the OpenAPI {rt.value} create schema"
+        allowed = OPENAPI_CREATE_MODEL_FIELDS if rt is RepoType.MODEL else OPENAPI_CREATE_DATASET_FIELDS
+        unknown = sorted(set(extra) - allowed)
+        if unknown:
+            return f"field(s) {unknown} are not declared by the OpenAPI create schema"
+        return None
+
+    def _create_model_or_dataset(
+        self,
+        rt: RepoType,
+        owner: str,
+        name: str,
+        *,
+        visibility: int | None,
+        license: str | None,
+        chinese_name: str | None,
+        description: str | None,
+        gated_mode: bool | None,
+        license_name: str | None,
+        license_link: str | None,
+        task: str | None,
+        extra: Mapping[str, Any],
+    ) -> RepoInfo:
+        """Create a model or dataset, preferring OpenAPI over the legacy endpoint."""
+        if gated_mode is not None and not isinstance(gated_mode, bool):
+            raise InvalidParameter("gated_mode must be True, False or None, not an approval-policy string.")
+        reason = self._legacy_create_reason(
+            rt,
+            visibility=visibility,
+            license=license,
+            extra=extra,
+            gated_mode=gated_mode,
+            task=task,
+        )
+        if reason is None:
+            try:
+                return self._create_via_openapi(
+                    rt,
+                    owner,
+                    name,
+                    visibility=visibility,
+                    license=license,
+                    chinese_name=chinese_name,
+                    description=description,
+                    license_name=license_name,
+                    license_link=license_link,
+                    task=task,
+                    extra=extra,
+                )
+            except (NotExistError, ServerError) as exc:
+                # 404 means this deployment has not published the endpoint yet;
+                # 501 means it knows the route but will not serve it. Both are
+                # "not available here", so fall through rather than fail.
+                if exc.status_code not in (404, 501):
+                    raise
+                reason = f"the OpenAPI create endpoint answered {exc.status_code}"
+        logger.debug("Creating %s %s/%s through the legacy endpoint: %s", rt.value, owner, name, reason)
+        return self._create_via_legacy(
+            rt,
+            owner,
+            name,
+            visibility=visibility,
+            license=license,
+            chinese_name=chinese_name,
+            description=description,
+            gated_mode=gated_mode,
+            # ``task`` / ``license_name`` / ``license_link`` are named parameters
+            # only because the OpenAPI schema declares them. The legacy endpoint
+            # has always received them through ``**extra`` under exactly these
+            # keys, so they are restored rather than renamed -- a legacy request
+            # must not change shape just because the signature grew.
+            extra={
+                **extra,
+                **({"task": task} if task is not None else {}),
+                **({"license_name": license_name} if license_name is not None else {}),
+                **({"license_link": license_link} if license_link is not None else {}),
+            },
+        )
+
+    def _create_via_openapi(
+        self,
+        rt: RepoType,
+        owner: str,
+        name: str,
+        *,
+        visibility: int | None,
+        license: str | None,
+        chinese_name: str | None,
+        description: str | None,
+        license_name: str | None,
+        license_link: str | None,
+        task: str | None,
+        extra: Mapping[str, Any],
+    ) -> RepoInfo:
+        """Create a model or dataset via ``POST /models`` / ``POST /datasets``."""
+        payload: dict[str, Any] = {"owner": owner, "repo_name": name}
+        wire_visibility = self._openapi_visibility(rt, visibility)
+        if wire_visibility is not None:
+            payload["visibility"] = wire_visibility.value
+        if chinese_name is not None:
+            payload["display_name"] = chinese_name
+        # ``license`` is omitted rather than defaulted: the server's own default
+        # (``apache-2.0``) is inside the enum, whereas the legacy fallback value
+        # (``"Apache-2.0"``) is not and would be rejected.
+        if license is not None:
+            payload["license"] = license
+        if license_name is not None:
+            payload["license_name"] = license_name
+        if license_link is not None:
+            payload["license_link"] = license_link
+        if description is not None:
+            payload["description"] = description
+        if task is not None:
+            if rt is not RepoType.MODEL:
+                raise InvalidParameter("task is only supported for repo_type='model'.")
+            payload["task"] = task
+        payload.update(extra)
+
+        try:
+            data = self.openapi.create_model(payload) if rt is RepoType.MODEL else self.openapi.create_dataset(payload)
+        except InvalidParameter as exc:
+            # ``POST /datasets`` declares no 409, so a duplicate may arrive as a
+            # 400. Callers catch AlreadyExistsError, so reclassify rather than
+            # let a rename of an existing repo look like bad input.
+            if not isinstance(exc, AlreadyExistsError) and is_repo_exists_error(exc):
+                raise AlreadyExistsError(
+                    str(exc.message or exc),
+                    status_code=exc.status_code,
+                    request_id=exc.request_id,
+                    response_body=exc.response_body,
+                ) from exc
+            raise
+        info = self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
+        # The create response carries only identity fields, while the legacy one
+        # echoed the settings back. Backfill from the request so a caller reading
+        # ``info.visibility`` after create does not see None where it saw a value.
+        # Backfill enum instances, not bare ints, after dataclass construction.
+        if info.visibility is None and wire_visibility is not None:
+            info.visibility = Visibility.PUBLIC if wire_visibility is RepoVisibility.PUBLIC else Visibility.PRIVATE
+        if info.license is None:
+            info.license = license
+        if info.description is None:
+            info.description = description
+        if info.gated is None:
+            info.gated = False
+        return info
+
+    @staticmethod
+    def _openapi_visibility(rt: RepoType, visibility: int | None) -> RepoVisibility | None:
+        """Map historical ordinary visibility values to OpenAPI strings.
+
+        None omits the field, retaining the public server default. Internal
+        visibility and explicit application switches are routed to legacy
+        before this helper is called.
+        """
+        if visibility is None:
+            return None
+        if visibility == int(Visibility.PRIVATE):
+            return RepoVisibility.PRIVATE
+        if visibility == int(Visibility.PUBLIC):
+            return RepoVisibility.PUBLIC
+        raise InvalidParameter(f"visibility={visibility!r} is not supported by the OpenAPI {rt.value} create endpoint.")
+
+    def _create_via_legacy(
+        self,
+        rt: RepoType,
+        owner: str,
+        name: str,
+        *,
+        visibility: int | None,
+        license: str | None,
+        chinese_name: str | None,
+        description: str | None,
+        gated_mode: bool | None,
+        extra: Mapping[str, Any],
+    ) -> RepoInfo:
+        """Create a model or dataset via the legacy ``POST /api/v1/{type}s``.
+
+        The body is built in the order this endpoint has always received it, and
+        ``extra`` is appended last and verbatim. Callers reach this path because
+        the OpenAPI schema could not express their input, so the request they
+        get must be the one they got before the OpenAPI route existed.
+        """
+        vis = visibility
         if rt is RepoType.DATASET:
             body: dict[str, Any] = {
                 "Owner": owner,
@@ -948,9 +1250,8 @@ class HubApi:
         if description is not None:
             body["Description"] = description
 
-        # gated_mode → ProtectedMode wire field (1=gated, 2=off).
-        # gated only effective with PRIVATE; when vis=None + gated=True,
-        # implicitly set visibility to PRIVATE (user intent: gated repo).
+        # Preserve v0.5.1: either explicit boolean with no visibility implies
+        # PRIVATE; public/internal visibility wins and ignores the switch.
         if gated_mode is not None:
             if vis is None:
                 vis = int(Visibility.PRIVATE)
@@ -1043,6 +1344,470 @@ class HubApi:
             raise NotSupportedError(f"get_repo not supported for {rt}")
 
         return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
+
+    def get_model(self, repo_id: str) -> dict:
+        """Fetch a model's full detail payload, zone fields included.
+
+        Returns the server's ``ModelDetail`` verbatim (snake_case keys) rather
+        than a :class:`RepoInfo`. The zone-specific fields -- AIGC architecture
+        and ``versions``, or the science subject areas -- have no place on the
+        dataclass, and :meth:`get_repo` would silently drop them.
+
+        Which keys are present depends on ``model_category``: ``base`` carries
+        no zone fields, and the fields of the zones a model is *not* in are
+        absent rather than null. Read them with ``.get()``.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+
+        Returns
+        -------
+        dict
+            The ``ModelDetail`` payload.
+
+        Examples
+        --------
+        >>> detail = api.get_model("alice/my-anime-lora")
+        >>> detail["model_category"]
+        'aigc'
+        >>> [v["version_id"] for v in detail.get("versions", [])]
+        [1070760]
+        """
+        owner, name = self._parse_repo_id(repo_id)
+        data = self.openapi.get_model(owner, name)
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def model_info(self, repo_id: str) -> dict:
+        """Alias of :meth:`get_model`."""
+        return self.get_model(repo_id)
+
+    def get_dataset(self, repo_id: str) -> dict:
+        """Fetch a dataset's full detail payload, zone fields included.
+
+        The dataset counterpart of :meth:`get_model`; see there for why the raw
+        payload is returned instead of a :class:`RepoInfo`. Science datasets
+        additionally carry the subject areas and cover image.
+
+        Examples
+        --------
+        >>> detail = api.get_dataset("alice/rna-seq")
+        >>> detail["dataset_category"], detail.get("primary_subject_area")
+        ('science', 'life-sciences')
+        """
+        owner, name = self._parse_repo_id(repo_id)
+        data = self.openapi.get_dataset(owner, name)
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def dataset_info(self, repo_id: str) -> dict:
+        """Alias of :meth:`get_dataset`."""
+        return self.get_dataset(repo_id)
+
+    # ==================================================================
+    # Zone configuration enums
+    # ==================================================================
+    def list_aigc_model_options(self) -> dict:
+        """Return the enum values accepted when setting the AIGC category.
+
+        Needs no credentials. Every option is a ``{type, id, label}`` triple:
+        pass ``id`` to :meth:`set_model_category`, show ``label`` to users.
+
+        Returns
+        -------
+        dict
+            ``aigc_types``, ``base_architectures`` (each with ``subtypes``),
+            ``content_styles``, ``content_functions``, ``content_elements``.
+
+        Examples
+        --------
+        >>> options = api.list_aigc_model_options()
+        >>> for arch in options["base_architectures"]:
+        ...     print(arch["id"], [s["id"] for s in arch["subtypes"]])
+        """
+        data = self.openapi.list_aigc_model_options()
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def list_science_model_options(self) -> dict:
+        """Return the science-model subject-area tree. Needs no credentials.
+
+        Examples
+        --------
+        >>> tree = api.list_science_model_options()
+        >>> tree["subject_areas"][0]["id"]
+        'life-sciences'
+        """
+        data = self.openapi.list_science_model_options()
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def list_science_dataset_options(self) -> dict:
+        """Return the science-dataset subject-area tree. Needs no credentials."""
+        data = self.openapi.list_science_dataset_options()
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def list_model_options(self) -> dict:
+        """Return the valid model ``task`` and ``license`` values.
+
+        Needs no credentials. Each entry is a ``{type, id, label}`` triple; pass
+        ``id`` to :meth:`create_repo` or :meth:`update_repo_settings`.
+
+        Returns
+        -------
+        dict
+            ``tasks`` and ``license`` lists.
+
+        Examples
+        --------
+        >>> options = api.list_model_options()
+        >>> [t["id"] for t in options["tasks"]][:2]
+        ['text-generation', 'image-captioning']
+        """
+        data = self.openapi.get_model_options()
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    # ==================================================================
+    # Zone membership (category)
+    # ==================================================================
+    def set_model_category(
+        self,
+        repo_id: str,
+        repo_type: RepoTypeLike = RepoType.MODEL,
+        *,
+        model_category: str | ModelCategory,
+        **fields: Any,
+    ) -> dict:
+        """Set or change which zone a model belongs to.
+
+        Which fields are required follows from the *target* category, not from
+        the model's current one. Upload the weight files first: the endpoint
+        validates that each ``path_in_repo`` already exists.
+
+        * ``base`` -- no other field; every zone field is cleared.
+        * ``aigc`` -- ``aigc_type``, ``base_model_architecture_type``,
+          ``base_model_architecture_subtype``, ``version_name``, and non-empty
+          ``weight_files`` and ``sample_images``. Creates a new version.
+        * ``science`` -- ``primary_subject_area`` and
+          ``secondary_specialization``; ``cover_image`` optional.
+
+        Enum values come from :meth:`list_aigc_model_options` /
+        :meth:`list_science_model_options`; pass each option's ``id``.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType, optional
+            Must be ``"model"``. Accepted for symmetry with the other methods.
+        model_category : str or ModelCategory
+            Target zone: ``"base"``, ``"aigc"`` or ``"science"``.
+        **fields : Any
+            Zone fields for the target category.
+
+        Returns
+        -------
+        dict
+            Repository identity (``id``, ``repo_name``, ``owner``, ``url``).
+
+        Raises
+        ------
+        NotSupportedError
+            When ``repo_type`` is not ``"model"``.
+        InvalidParameter
+            When ``model_category`` is unknown, or when a required AIGC field is
+            missing or malformed.
+
+        Examples
+        --------
+        >>> api.set_model_category(
+        ...     "alice/my-anime-lora",
+        ...     model_category="aigc",
+        ...     aigc_type="LoRA",
+        ...     base_model_architecture_type="Z_IMAGE_TURBO",
+        ...     base_model_architecture_subtype="Z_IMAGE_TURBO",
+        ...     version_name="v1.0",
+        ...     weight_files=[{"path_in_repo": "model.safetensors"}],
+        ...     sample_images=[{"url": "https://example.com/a.png", "prompt": "anime girl"}],
+        ... )
+
+        Move it back out of the zone:
+
+        >>> api.set_model_category("alice/my-anime-lora", model_category="base")
+        """
+        rt = self._normalize_repo_type(repo_type)
+        if rt is not RepoType.MODEL:
+            raise NotSupportedError(f"set_model_category only supports repo_type='model' (got {rt.value!r}).")
+        owner, name = self._parse_repo_id(repo_id)
+        category = self._coerce_enum(model_category, ModelCategory, "model_category")
+        payload: dict[str, Any] = {"model_category": category.value}
+        payload.update(fields)
+        self._validate_set_model_category(category, payload)
+        data = self.openapi.set_model_category(owner, name, payload)
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def update_model_category(
+        self,
+        repo_id: str,
+        repo_type: RepoTypeLike = RepoType.MODEL,
+        *,
+        version_id: int | None = None,
+        version_name: str | None = None,
+        **fields: Any,
+    ) -> dict:
+        """Update a model's zone metadata in place, without changing the zone.
+
+        The server reads the current zone from its own records, so the category
+        is neither needed nor accepted. Use :meth:`set_model_category` to move
+        between zones or to replace an existing version's weights.
+
+        AIGC version fields (``trigger_words``, ``version_description``,
+        ``sample_images``) address a specific version. Give either its numeric
+        ``version_id`` or its ``version_name``, which is resolved to the id with
+        one extra detail read. Science updates need neither.
+
+        Omitted fields are left unchanged; passing ``None`` clears a field.
+
+        Parameters
+        ----------
+        repo_id : str
+            Canonical ``owner/name`` identifier.
+        repo_type : str or RepoType, optional
+            Must be ``"model"``.
+        version_id : int, optional
+            Numeric version id, as reported by :meth:`get_model`.
+        version_name : str, optional
+            Version name to resolve into ``version_id``. Ignored when
+            ``version_id`` is given.
+        **fields : Any
+            Zone fields to update.
+
+        Returns
+        -------
+        dict
+            Repository identity.
+
+        Raises
+        ------
+        NotSupportedError
+            When ``repo_type`` is not ``"model"``.
+        InvalidParameter
+            When a field belongs to :meth:`set_model_category` instead, or when
+            ``version_name`` matches no version.
+
+        Examples
+        --------
+        >>> api.update_model_category(
+        ...     "alice/my-anime-lora",
+        ...     version_name="v1.0",
+        ...     trigger_words=["anime style"],
+        ... )
+        >>> api.update_model_category("alice/rna-predictor", secondary_specialization="dna")
+        """
+        rt = self._normalize_repo_type(repo_type)
+        if rt is not RepoType.MODEL:
+            raise NotSupportedError(f"update_model_category only supports repo_type='model' (got {rt.value!r}).")
+        owner, name = self._parse_repo_id(repo_id)
+        payload = self._strip_category_discriminator(dict(fields), "model_category", "set_model_category")
+        self._reject_set_only_fields(payload)
+        if version_id is None and version_name is not None:
+            version_id = self._resolve_version_id(repo_id, version_name)
+        if version_id is not None:
+            payload["version_id"] = version_id
+        data = self.openapi.update_model_category(owner, name, payload)
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def set_dataset_category(
+        self,
+        repo_id: str,
+        repo_type: RepoTypeLike = RepoType.DATASET,
+        *,
+        dataset_category: str | DatasetCategory,
+        **fields: Any,
+    ) -> dict:
+        """Set or change which zone a dataset belongs to.
+
+        ``science`` requires a matching ``primary_subject_area`` and
+        ``secondary_specialization`` (ids from
+        :meth:`list_science_dataset_options`); ``base`` clears them. Note the
+        general value is ``base``, not ``basic``.
+
+        Examples
+        --------
+        >>> api.set_dataset_category(
+        ...     "alice/rna-seq",
+        ...     dataset_category="science",
+        ...     primary_subject_area="life-sciences",
+        ...     secondary_specialization="dna",
+        ... )
+        """
+        rt = self._normalize_repo_type(repo_type)
+        if rt is not RepoType.DATASET:
+            raise NotSupportedError(f"set_dataset_category only supports repo_type='dataset' (got {rt.value!r}).")
+        owner, name = self._parse_repo_id(repo_id)
+        category = self._coerce_enum(dataset_category, DatasetCategory, "dataset_category")
+        payload: dict[str, Any] = {"dataset_category": category.value}
+        payload.update(fields)
+        data = self.openapi.set_dataset_category(owner, name, payload)
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    def update_dataset_category(
+        self,
+        repo_id: str,
+        repo_type: RepoTypeLike = RepoType.DATASET,
+        **fields: Any,
+    ) -> dict:
+        """Update a dataset's science fields in place, without changing the zone.
+
+        As with :meth:`update_model_category`, the category is read by the
+        server and is not accepted in the payload. Omitted fields are left
+        unchanged; ``None`` clears a field.
+
+        Examples
+        --------
+        >>> api.update_dataset_category("alice/rna-seq", secondary_specialization="medicine")
+        >>> api.update_dataset_category("alice/rna-seq", cover_image=None)
+        """
+        rt = self._normalize_repo_type(repo_type)
+        if rt is not RepoType.DATASET:
+            raise NotSupportedError(f"update_dataset_category only supports repo_type='dataset' (got {rt.value!r}).")
+        owner, name = self._parse_repo_id(repo_id)
+        payload = self._strip_category_discriminator(dict(fields), "dataset_category", "set_dataset_category")
+        data = self.openapi.update_dataset_category(owner, name, payload)
+        return dict(data) if isinstance(data, Mapping) else {}
+
+    # ------------------------------------------------------------------
+    # Category payload checks
+    #
+    # Each rule below mirrors one the server enforces. They run locally so a
+    # request that is certain to fail reports the fix straight away instead of
+    # costing a round trip for a generic 400. Anything whose valid values the
+    # server owns (architectures, subject areas, tasks) is deliberately not
+    # checked here -- those enums change without an SDK release, and its 400
+    # message already names the offending field and the options endpoint.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _coerce_enum(value: Any, enum_cls: type[_StrEnumT], field: str) -> _StrEnumT:
+        """Coerce *value* into *enum_cls*, naming the valid values when it fails."""
+        if isinstance(value, enum_cls):
+            return value
+        try:
+            return enum_cls(str(value))
+        except ValueError as exc:
+            allowed = ", ".join(repr(member.value) for member in enum_cls)
+            raise InvalidParameter(f"{field} must be one of {allowed} (got {value!r}).") from exc
+
+    @staticmethod
+    def _strip_category_discriminator(payload: dict[str, Any], field: str, setter: str) -> dict[str, Any]:
+        """Drop the category discriminator from a PATCH payload.
+
+        The endpoint answers 400 if the field is present at all -- it reads the
+        current category itself. Earlier drafts of this API required the field,
+        so it is removed with a warning rather than forwarded into a failure.
+        """
+        if field in payload:
+            payload.pop(field)
+            logger.warning(
+                "%s is not accepted when updating zone fields and was dropped; use %s() to change the category.",
+                field,
+                setter,
+            )
+        return payload
+
+    @staticmethod
+    def _reject_set_only_fields(payload: Mapping[str, Any]) -> None:
+        """Reject fields that only ``set_model_category`` can change.
+
+        An existing version's weights are immutable; changing them means
+        creating a new version. Saying so here is more useful than relaying the
+        server's rejection.
+
+        ``version_name`` is absent from this list on purpose: the method takes
+        it as a named argument and resolves it to a ``version_id``, so it never
+        reaches the payload.
+        """
+        offenders = sorted({"weight_files", "base_model_id"} & set(payload))
+        if offenders:
+            raise InvalidParameter(
+                f"{', '.join(offenders)} cannot be changed on an existing version. "
+                f"Use set_model_category(model_category='aigc', ...) to create a new version instead."
+            )
+
+    @classmethod
+    def _validate_set_model_category(cls, category: ModelCategory, payload: Mapping[str, Any]) -> None:
+        """Check the required-field rules for a zone transition."""
+        if category is not ModelCategory.AIGC:
+            return
+        missing = sorted(
+            field
+            for field in (
+                "aigc_type",
+                "base_model_architecture_type",
+                "base_model_architecture_subtype",
+                "version_name",
+                "weight_files",
+                "sample_images",
+            )
+            if not payload.get(field)
+        )
+        if missing:
+            raise InvalidParameter(
+                f"model_category='aigc' requires non-empty {', '.join(missing)}. "
+                f"Valid enum values are published by list_aigc_model_options()."
+            )
+        cls._coerce_enum(payload["aigc_type"], AigcModelType, "aigc_type")
+        version_name = str(payload["version_name"])
+        if len(version_name) > OPENAPI_VERSION_NAME_MAX_LENGTH:
+            raise InvalidParameter(
+                f"version_name must be at most {OPENAPI_VERSION_NAME_MAX_LENGTH} characters (got {len(version_name)})."
+            )
+        cls._validate_weight_files(payload["weight_files"])
+        cls._validate_sample_images(payload["sample_images"])
+
+    @staticmethod
+    def _validate_weight_files(weight_files: Any) -> None:
+        """Check every weight file reference carries a recognised suffix."""
+        for entry in weight_files:
+            path = entry.get("path_in_repo") if isinstance(entry, Mapping) else None
+            if not path:
+                raise InvalidParameter("each weight_files entry needs a non-empty 'path_in_repo'.")
+            if not str(path).lower().endswith(WEIGHT_FILE_SUFFIXES):
+                raise InvalidParameter(
+                    f"weight file {path!r} does not have a recognised weight suffix. "
+                    f"Supported suffixes: {', '.join(WEIGHT_FILE_SUFFIXES)}."
+                )
+
+    @staticmethod
+    def _validate_sample_images(sample_images: Any) -> None:
+        """Check sample images carry a URL and no retired ``text`` key."""
+        for entry in sample_images:
+            if not isinstance(entry, Mapping) or not entry.get("url"):
+                raise InvalidParameter("each sample_images entry needs a non-empty 'url'.")
+            if "text" in entry:
+                raise InvalidParameter(
+                    "sample_images does not accept 'text'; use 'prompt' and 'negative_prompt' instead."
+                )
+
+    def _resolve_version_id(self, repo_id: str, version_name: str) -> int:
+        """Look up a version's numeric id by its name.
+
+        The update endpoint addresses versions by numeric id, but callers think
+        in version names, so the name is resolved here with one detail read.
+        """
+        detail = self.get_model(repo_id)
+        versions = detail.get("versions")
+        if not isinstance(versions, list):
+            versions = []
+        names = []
+        for version in versions:
+            if not isinstance(version, Mapping):
+                continue
+            name = version.get("version_name")
+            names.append(str(name))
+            if name == version_name and version.get("version_id") is not None:
+                return int(version["version_id"])
+        available = ", ".join(repr(n) for n in names) or "none"
+        raise InvalidParameter(
+            f"version_name={version_name!r} not found on {repo_id!r}. Available versions: {available}."
+        )
 
     def list_repos(
         self,
@@ -1167,12 +1932,11 @@ class HubApi:
     def delete_repo(self, repo_id: str, repo_type: RepoTypeLike) -> None:
         """Delete a repository.
 
-        .. deprecated::
-            Programmatic repository deletion is not currently supported by
-            the Hub API for security reasons. This method will be restored
-            in a future release once proper token-scoped authentication is
-            available. To delete a repository now, use the web console at
-            https://modelscope.cn.
+        Needs a token carrying repository deletion permission; an admin-level
+        token has been verified to work, while ordinary write permission does
+        not guarantee it. Do not infer the permission from the token's name or
+        kind. Deletion uses the legacy endpoint -- the current OpenAPI contract
+        exposes no repository-deletion route.
 
         Parameters
         ----------
@@ -1180,16 +1944,20 @@ class HubApi:
             Canonical ``owner/name`` identifier.
         repo_type : str or RepoType
             Repository type (``"model"``, ``"dataset"``, etc.).
-        """
-        import warnings
 
-        warnings.warn(
-            "This function is deprecated due to security reasons, "
-            "and will be recovered in future versions with proper token authentication. "
-            "Please go to https://modelscope.cn to delete repositories via the web console.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        Raises
+        ------
+        AuthenticationError or InvalidParameter
+            When the token lacks deletion permission. The Hub answers business
+            code ``10010101003`` for models and ``10020301011`` for datasets,
+            both saying the operation must be performed at
+            https://modelscope.cn. Retrying with the same token will not help;
+            use a token with deletion permission or the web console.
+
+        Examples
+        --------
+        >>> api.delete_repo("alice/my-model", "model")
+        """
         rt = self._normalize_repo_type(repo_type)
         self._parse_repo_id(repo_id)
         self.legacy.delete_repo(repo_id=repo_id, repo_type=str(rt))
@@ -2060,16 +2828,29 @@ class HubApi:
         repo_type: RepoTypeLike,
         **settings: Any,
     ) -> dict:
-        """Update repo settings (Studio or Skill).
+        """Update a repository's general settings.
+
+        Supported for ``model``, ``dataset``, ``studio`` and ``skill``. Only the
+        keys you pass are changed; for models and datasets an explicit ``None``
+        clears metadata fields, while None for visibility/gated_mode leaves
+        those controls unchanged. Zone membership is not a setting -- use
+        :meth:`set_model_category` / :meth:`set_dataset_category` for that.
 
         Parameters
         ----------
         repo_id : str
             Canonical ``owner/name`` identifier.
         repo_type : str or RepoType
-            Either ``"studio"`` or ``"skill"``.
+            ``"model"``, ``"dataset"``, ``"studio"`` or ``"skill"``.
         **settings : Any
-            Setting key/value pairs forwarded to the backend.
+            Setting key/value pairs forwarded to the backend. For models and
+            datasets: ``display_name``, ``license``, ``visibility``, ``description``
+            and ``task`` (models only). ``gated_mode`` remains a boolean switch:
+            True enables application access, False disables it, None leaves it
+            unchanged. Omitted visibility with either explicit boolean implies
+            private; explicit public takes precedence and ignores the switch.
+            High-level visibility accepts the historical integer enum/labels,
+            not the native OpenAPI 'gated' access-mode string.
 
         Returns
         -------
@@ -2079,7 +2860,8 @@ class HubApi:
         Raises
         ------
         NotSupportedError
-            When ``repo_type`` is neither studio nor skill.
+            When ``repo_type`` has no settings endpoint, or when a setting the
+            endpoint cannot change is requested (notably ``login_required``).
 
         Examples
         --------
@@ -2089,14 +2871,74 @@ class HubApi:
         ...     visibility="public",
         ...     hardware="GPU-A10",
         ... )
+        >>> api.update_repo_settings(
+        ...     "alice/rna-seq", "dataset", visibility="private",
+        ...     gated_mode=True,
+        ... )
+        >>> api.update_repo_settings("alice/rna-seq", "dataset", gated_mode=False)
         """
+        self._reject_removed_gating_parameters(settings)
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
         if rt is RepoType.STUDIO:
             return self.openapi.update_studio_settings(owner, name, _normalise_studio_fields(settings))
         if rt is RepoType.SKILL:
             return self.openapi.update_skill_settings(owner, name, settings)
+        if rt is RepoType.DATASET:
+            payload = self._repo_settings_payload(rt, settings)
+            data = self.openapi.update_dataset_settings(owner, name, payload)
+            return dict(data) if isinstance(data, Mapping) else {}
+        if rt is RepoType.MODEL:
+            payload = self._repo_settings_payload(rt, settings)
+            data = self.openapi.update_model_settings(owner, name, payload)
+            return dict(data) if isinstance(data, Mapping) else {}
         raise NotSupportedError(f"update_repo_settings is not supported for repo_type={rt.value!r}.")
+
+    @classmethod
+    def _repo_settings_payload(cls, rt: RepoType, settings: Mapping[str, Any]) -> dict[str, Any]:
+        """Adapt the historical boolean switch and visibility to OpenAPI.
+
+        None leaves the switch/visibility unchanged. True/False with omitted
+        visibility implies private. Native strings belong to the low-level
+        OpenAPI payload, not to this high-level boolean parameter.
+        """
+        cls._reject_removed_gating_parameters(settings)
+        payload = dict(settings)
+        unsupported = sorted(_UNSETTABLE_FIELDS & set(payload))
+        if unsupported:
+            raise NotSupportedError(
+                f"{', '.join(unsupported)} cannot be changed through update_repo_settings: "
+                f"the {rt.value} settings endpoint does not accept it. "
+                f"It is reported read-only by get_{rt.value}()."
+            )
+        switch = payload.pop("gated_mode", None)
+        if switch is not None and not isinstance(switch, bool):
+            raise InvalidParameter("gated_mode must be True, False or None, not an approval-policy string.")
+        raw_visibility = payload.pop("visibility", None)
+        visibility = cls._normalize_visibility(raw_visibility)
+        if visibility is not None:
+            if visibility not in (int(Visibility.PRIVATE), int(Visibility.PUBLIC)):
+                raise InvalidParameter(
+                    f"visibility={raw_visibility!r} is not supported by the {rt.value} settings endpoint; "
+                    "there is no equivalent legacy settings endpoint."
+                )
+            wire_visibility = cls._openapi_visibility(rt, visibility)
+            assert wire_visibility is not None
+            payload["visibility"] = wire_visibility.value
+        if switch is not None:
+            if visibility is None:
+                visibility = int(Visibility.PRIVATE)
+                payload["visibility"] = RepoVisibility.PRIVATE.value
+            if visibility == int(Visibility.PRIVATE):
+                if switch:
+                    # OpenAPI represents application access as a wire access mode.
+                    payload["visibility"] = RepoVisibility.GATED.value
+                    payload["gated_mode"] = "auto"
+                else:
+                    payload["visibility"] = RepoVisibility.PRIVATE.value
+            else:
+                logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
+        return payload
 
     # ==================================================================
     # Secrets

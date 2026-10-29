@@ -417,6 +417,13 @@ class RepoInfo(_FromDictMixin):
     hardware: str | None = None
     mcp_support: bool | None = None
     runtime: dict[str, Any] | None = None
+    # Zone membership. Reported by the model/dataset detail endpoints; ``None``
+    # for repo kinds that have no zones (studio / skill / mcp) and for payloads
+    # predating the field.
+    model_category: str | None = None
+    dataset_category: str | None = None
+    # Approval mode of a gated repository, returned only when ``gated`` is true.
+    gated_mode: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.repo_type, str):
@@ -451,6 +458,9 @@ class RepoInfo(_FromDictMixin):
             "hardware",
             "mcp_support",
             "runtime",
+            "model_category",
+            "dataset_category",
+            "gated_mode",
         }
         result = {}
         for f in fields(self):  # type: ignore[arg-type]
@@ -730,7 +740,275 @@ class TokenSignPayload(TypedDict):
     signature: str
 
 
+# ---------------------------------------------------------------------------
+# Model / dataset zone structures
+#
+# Shapes shared by the category endpoints and the enum option endpoints. Field
+# names follow the OpenAPI schemas exactly: the server rejects unknown keys, so
+# a convenience alias here would turn into a 400 at the call site.
+# ---------------------------------------------------------------------------
+class SampleImage(TypedDict, total=False):
+    """A sample image attached to an AIGC model version.
+
+    ``url`` is required. The schema accepts only these three keys -- notably
+    there is no ``text`` field.
+    """
+
+    url: str
+    prompt: str
+    negative_prompt: str
+
+
+class WeightFileReference(TypedDict):
+    """Reference to a weight file already uploaded to the repository.
+
+    Only the repo-relative path is sent; the server resolves size and digest
+    itself. The suffix must be one of :data:`WEIGHT_FILE_SUFFIXES`.
+    """
+
+    path_in_repo: str
+
+
+class AigcContentCategories(TypedDict, total=False):
+    """Three-level content classification of an AIGC model."""
+
+    style: str
+    function: str
+    element: str
+
+
+class ModelOptionItem(TypedDict):
+    """One selectable value returned by an ``*/options`` endpoint.
+
+    Submit ``id``; ``label`` is for display only. ``type`` is self-describing
+    (``task``, ``license``, ``base_architecture``, ``specialization``, ...).
+    """
+
+    type: str
+    id: str
+    label: str
+
+
+class BaseArchitectureOption(TypedDict):
+    """A first-level AIGC base architecture and its second-level subtypes."""
+
+    type: str
+    id: str
+    label: str
+    subtypes: list[ModelOptionItem]
+
+
+class ScienceSubjectOption(TypedDict):
+    """A first-level science subject area and its specializations."""
+
+    type: str
+    id: str
+    label: str
+    specializations: list[ModelOptionItem]
+
+
+# ---------------------------------------------------------------------------
+# Model / dataset request payloads
+#
+# Each mirrors one OpenAPI request schema exactly. Fields the schema omits are
+# omitted here too, because the endpoints reject unknown keys with a 400 --
+# notably ``base_model_id`` (the base model is derived from the architecture
+# subtype), ``login_required`` (read-only), and the category discriminator on
+# the PATCH payloads (the server reads the current category from its own
+# database and rejects the field).
+# ---------------------------------------------------------------------------
+class CreateModelPayload(TypedDict, total=False):
+    """Payload for ``POST /models``. ``owner`` and ``repo_name`` are required.
+
+    Carries general metadata only; a newly created model is ``base``. Zone
+    fields are set afterwards via ``PUT /models/{owner}/{repo_name}/category``.
+    """
+
+    owner: str
+    repo_name: str
+    display_name: str
+    license: str
+    license_name: str
+    license_link: str
+    visibility: str
+    gated_mode: str
+    description: str
+    # The schema declares ``string | null``: an explicit null means "not set".
+    task: str | None
+
+
+class CreateDatasetPayload(TypedDict, total=False):
+    """Payload for ``POST /datasets``. ``owner`` and ``repo_name`` are required.
+
+    Mirrors :class:`CreateModelPayload` without ``task``, which the dataset
+    schema does not declare.
+    """
+
+    owner: str
+    repo_name: str
+    display_name: str
+    license: str
+    license_name: str
+    license_link: str
+    visibility: str
+    gated_mode: str
+    description: str
+
+
+class SetModelCategoryPayload(TypedDict, total=False):
+    """Payload for ``PUT /models/{owner}/{repo_name}/category``.
+
+    ``model_category`` is required and names the *target* zone; which other
+    fields are required follows from it, not from the model's current zone:
+
+    * ``base`` -- nothing else; every zone field is cleared.
+    * ``aigc`` -- ``aigc_type``, both architecture levels, ``version_name``, and
+      non-empty ``weight_files`` and ``sample_images``. Creates a new version.
+    * ``science`` -- ``primary_subject_area`` and ``secondary_specialization``;
+      ``cover_image`` is optional.
+
+    Passing a field that does not apply to the target zone returns 400.
+    """
+
+    model_category: str
+    # AIGC
+    aigc_type: str
+    base_model_architecture_type: str
+    base_model_architecture_subtype: str
+    content_categories: AigcContentCategories
+    version_name: str
+    version_description: str
+    trigger_words: list[str]
+    sample_images: list[SampleImage]
+    weight_files: list[WeightFileReference]
+    # Science
+    primary_subject_area: str
+    secondary_specialization: str
+    cover_image: str
+
+
+class UpdateModelCategoryPayload(TypedDict, total=False):
+    """Payload for ``PATCH /models/{owner}/{repo_name}/category``.
+
+    Updates zone metadata in place. The server determines the zone itself, so
+    ``model_category`` is not accepted; use ``PUT`` to change zones.
+
+    For AIGC, ``version_id`` (the numeric id from a detail response's
+    ``versions[]``) is required to update ``trigger_words``,
+    ``version_description`` or ``sample_images``. Science updates must not send
+    it. An existing version's weights are immutable: ``weight_files``,
+    ``version_name`` and ``base_model_id`` are rejected -- create a new version
+    with ``PUT`` instead. Omitted fields are unchanged; explicit nulls clear.
+    """
+
+    version_id: int
+    # AIGC
+    aigc_type: str | None
+    base_model_architecture_type: str | None
+    base_model_architecture_subtype: str | None
+    content_categories: AigcContentCategories | None
+    trigger_words: list[str] | None
+    version_description: str | None
+    sample_images: list[SampleImage]
+    # Science
+    primary_subject_area: str | None
+    secondary_specialization: str | None
+    cover_image: str | None
+
+
+class SetDatasetCategoryPayload(TypedDict, total=False):
+    """Payload for ``PUT /datasets/{owner}/{repo_name}/category``.
+
+    ``dataset_category`` is required and is ``base`` or ``science`` -- the
+    general value is ``base``, not ``basic``. ``science`` requires a matching
+    subject area and specialization; ``base`` clears the science fields.
+    """
+
+    dataset_category: str
+    primary_subject_area: str | None
+    secondary_specialization: str | None
+    cover_image: str | None
+
+
+class UpdateDatasetCategoryPayload(TypedDict, total=False):
+    """Payload for ``PATCH /datasets/{owner}/{repo_name}/category``.
+
+    ``dataset_category`` is not accepted -- the server reads the current one and
+    returns 400 if the field is present; use ``PUT`` to change zones.
+    """
+
+    primary_subject_area: str | None
+    secondary_specialization: str | None
+    cover_image: str | None
+
+
+class UpdateDatasetSettingsPayload(TypedDict, total=False):
+    """Payload for ``PATCH /datasets/{owner}/{repo_name}/settings``.
+
+    General settings only; zone fields are rejected. ``login_required`` is
+    deliberately absent -- the schema does not accept it, the field is only ever
+    reported back by the detail endpoint.
+
+    Omitted fields are unchanged; explicit nulls clear. ``gated_mode`` is valid
+    only alongside ``visibility="gated"`` (or on a repo that is already gated).
+    """
+
+    display_name: str | None
+    license: str | None
+    visibility: str | None
+    gated_mode: str
+    description: str | None
+
+
+class UpdateModelSettingsPayload(TypedDict, total=False):
+    """Payload for ``PATCH /models/{owner}/{repo_name}/settings``.
+
+    General settings only; zone fields are rejected. Mirrors
+    :class:`UpdateDatasetSettingsPayload` plus ``task``.
+
+    Omitted fields are unchanged; explicit nulls clear. ``gated_mode`` is valid
+    only alongside ``visibility="gated"`` (or on a repo that is already gated).
+    """
+
+    task: str | None
+    display_name: str | None
+    license: str | None
+    visibility: str | None
+    gated_mode: str
+    description: str | None
+
+
+class DeleteFilesPayload(TypedDict, total=False):
+    """Payload for ``DELETE /{models,datasets}/{owner}/{repo_name}/files``.
+
+    ``file_paths`` is required: 1 to 100 distinct repo-relative file paths. No
+    directories and no traversal. The whole request is one commit and is
+    all-or-nothing -- a single unresolvable path fails the lot.
+
+    ``revision`` must name a branch, not a tag.
+    """
+
+    file_paths: list[str]
+    revision: str
+    commit_message: str
+
+
 __all__ = [
+    "AigcContentCategories",
+    "BaseArchitectureOption",
+    "CreateDatasetPayload",
+    "CreateModelPayload",
+    "DeleteFilesPayload",
+    "ModelOptionItem",
+    "SampleImage",
+    "ScienceSubjectOption",
+    "SetDatasetCategoryPayload",
+    "SetModelCategoryPayload",
+    "UpdateDatasetCategoryPayload",
+    "UpdateDatasetSettingsPayload",
+    "UpdateModelCategoryPayload",
+    "UpdateModelSettingsPayload",
+    "WeightFileReference",
     "DownloadRetryPolicy",
     "DownloadFileResult",
     "DownloadReport",
