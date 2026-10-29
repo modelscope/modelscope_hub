@@ -139,6 +139,97 @@ class StudioVisibility(StrEnum):
         return None
 
 
+class RepoVisibility(StrEnum):
+    """Visibility values the OpenAPI model/dataset endpoints accept.
+
+    Deliberately separate from :class:`Visibility`: the ``/openapi/v1`` model and
+    dataset endpoints take a string enum whose third state (``gated``) the 1/3/5
+    integer encoding cannot express, while that encoding's ``INTERNAL`` has no
+    string counterpart. Neither enum is a relabelling of the other, so they are
+    mapped explicitly at the call site rather than merged.
+
+    * ``public`` -- visible to everyone.
+    * ``private`` -- visible only to the owner and collaborators.
+    * ``gated`` -- discoverable, but downloads require an approved application.
+    """
+
+    PUBLIC = "public"
+    PRIVATE = "private"
+    GATED = "gated"
+
+    @classmethod
+    def parse(cls, value: object) -> RepoVisibility | None:
+        """Return the matching member, or ``None`` when *value* is not one.
+
+        Mirrors :meth:`StudioVisibility.parse`: returning ``None`` lets callers
+        fall back to the integer :class:`Visibility` encoding for inputs this
+        enum does not own.
+        """
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            try:
+                return cls(value.strip().lower())
+            except ValueError:
+                return None
+        return None
+
+
+class GatedMode(StrEnum):
+    """How download applications against a gated repository are approved.
+
+    Only meaningful when visibility is ``gated``; the endpoints reject the field
+    for ``public``/``private`` repositories.
+    """
+
+    AUTO = "auto"
+    MANUAL = "manual"
+
+    @classmethod
+    def parse(cls, value: object) -> GatedMode | None:
+        """Return the matching member, or ``None`` when *value* is not one."""
+        if isinstance(value, cls):
+            return value
+        if isinstance(value, str):
+            try:
+                return cls(value.strip().lower())
+            except ValueError:
+                return None
+        return None
+
+
+class ModelCategory(StrEnum):
+    """Which curated zone a model belongs to.
+
+    A freshly created model is ``base``; ``PUT /models/{owner}/{name}/category``
+    moves it into a zone, and passing ``base`` moves it back out and clears the
+    zone-specific fields.
+    """
+
+    BASE = "base"
+    AIGC = "aigc"
+    SCIENCE = "science"
+
+
+class DatasetCategory(StrEnum):
+    """Which curated zone a dataset belongs to.
+
+    Note the general value is ``base`` -- matching the model enum and the wire
+    protocol -- not ``basic``.
+    """
+
+    BASE = "base"
+    SCIENCE = "science"
+
+
+class AigcModelType(StrEnum):
+    """Sub-type of an AIGC model. Values are case-sensitive on the wire."""
+
+    CHECKPOINT = "Checkpoint"
+    LORA = "LoRA"
+    VAE = "VAE"
+
+
 class TokenScope(StrEnum):
     """Permission tiers a ModelScope API token can be issued with.
 
@@ -196,6 +287,109 @@ REPO_TYPE_DATASET: str = RepoType.DATASET.value
 REPO_TYPE_STUDIO: str = RepoType.STUDIO.value
 REPO_TYPE_SUPPORT: list[str] = [REPO_TYPE_MODEL, REPO_TYPE_DATASET, REPO_TYPE_STUDIO]
 DEFAULT_DATASET_REVISION: str = "master"
+
+# ---------------------------------------------------------------------------
+# OpenAPI model/dataset contract limits.
+#
+# These mirror constraints the ``/openapi/v1`` specification declares. They are
+# kept here so a request that the server would certainly reject can be rejected
+# locally with a message that names the fix, rather than costing a round trip
+# for an opaque 400.
+# ---------------------------------------------------------------------------
+
+# Suffixes accepted for an AIGC version's weight files (matched case-insensitively).
+WEIGHT_FILE_SUFFIXES: tuple[str, ...] = (
+    ".safetensors",
+    ".ckpt",
+    ".pt",
+    ".pth",
+    ".bin",
+    ".gguf",
+    ".ggml",
+    ".h5",
+    ".hdf5",
+    ".npz",
+    ".msgpack",
+    ".pdparams",
+    ".params",
+    ".onnx",
+)
+
+# ``DELETE /{models,datasets}/{owner}/{name}/files`` accepts 1..100 paths.
+OPENAPI_DELETE_FILES_MAX_PATHS: int = 100
+
+# Largest ``page_size`` the OpenAPI list endpoints accept. Advisory: the value is
+# forwarded as given so a server-side change does not need an SDK release.
+OPENAPI_PAGE_SIZE_MAX: int = 50
+
+# Longest ``version_name`` accepted when creating an AIGC version.
+OPENAPI_VERSION_NAME_MAX_LENGTH: int = 20
+
+# ``POST /models`` constrains ``license`` to a closed set, storing the value
+# verbatim and case-sensitively. Anything outside it answers 400, so a caller
+# supplying another identifier is routed to the legacy endpoint instead, which
+# accepts free-form values. ``POST /datasets`` declares no such restriction.
+OPENAPI_MODEL_LICENSES: frozenset[str] = frozenset(
+    {
+        "",
+        "apache-2.0",
+        "Apache License 2.0",
+        "gpl-2.0",
+        "GPL-2.0",
+        "lgpl-3.0",
+        "LGPL-3.0",
+        "mit",
+        "MIT License",
+        "lgpl-2.1",
+        "LGPL-2.1",
+        "gpl-3.0",
+        "GPL-3.0",
+        "afl-3.0",
+        "AFL-3.0",
+        "ecl-2.0",
+        "ECL-2.0",
+        "cc-by-4.0",
+        "CC-BY-4.0",
+        "creativeml-openrail-m",
+        "cc-by-nc-nd",
+        "CC-BY-NC-ND",
+        "agpl-3.0",
+        "cc-by-nc-4.0",
+        "CC-BY-NC-4.0",
+        "cc-by-nc-sa-4.0",
+        "CC-BY-NC-SA-4.0",
+        "odc-by-1.0",
+        "ODC-BY-1.0",
+        "cc-by-sa-4.0",
+        "CC-BY-SA-4.0",
+        "cc0-1.0",
+        "CC0-1.0",
+        "bsd-3-clause",
+        "BSD-3-Clause",
+        "other",
+    }
+)
+
+# Every field ``POST /models`` and ``POST /datasets`` accept. The endpoints answer
+# 400 for anything else, so a caller passing an extra field is routed to the
+# legacy endpoint, which forwards unknown keys verbatim.
+OPENAPI_CREATE_MODEL_FIELDS: frozenset[str] = frozenset(
+    {
+        "owner",
+        "repo_name",
+        "display_name",
+        "license",
+        "license_name",
+        "license_link",
+        "visibility",
+        "gated_mode",
+        "description",
+        "task",
+    }
+)
+
+# Same list minus ``task``, which the dataset schema does not declare.
+OPENAPI_CREATE_DATASET_FIELDS: frozenset[str] = OPENAPI_CREATE_MODEL_FIELDS - {"task"}
 
 # ---------------------------------------------------------------------------
 # Legacy modelscope domain / endpoint / filesystem constants.
@@ -603,6 +797,21 @@ once -- commonly 16 or more for bulk transfers -- so the default silently
 discards the excess connections ("Connection pool is full, discarding
 connection") and every discarded one costs a fresh TLS handshake on its next
 use. This must be at least as large as the worker count to avoid that churn.
+"""
+
+OPTIONS_CACHE_TTL_SECONDS: int = _env_int(
+    "MODELSCOPE_OPTIONS_CACHE_TTL",
+    300,
+    "Seconds to cache the model/dataset enum option endpoints (0 disables)",
+    "Network",
+    allow_zero=True,
+)
+"""Lifetime of the in-process cache for the ``*/options`` endpoints.
+
+Those endpoints publish product configuration (AIGC architectures, science
+subject areas, tasks, licenses) that changes on a release cadence, not per
+request, and they need no credentials. Setting a category therefore does not
+have to re-fetch the enum every call. Set to ``0`` to disable caching.
 """
 
 REPO_TREE_PAGE_MAX_ATTEMPTS: int = _env_int(

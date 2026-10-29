@@ -19,7 +19,18 @@ from .agent_idp import (
 )
 from .api import HubApi
 from .config import HubConfig, get_default_config, set_default_config
-from .constants import License, RepoType, StudioVisibility, TokenScope, Visibility
+from .constants import (
+    AigcModelType,
+    DatasetCategory,
+    GatedMode,
+    License,
+    ModelCategory,
+    RepoType,
+    RepoVisibility,
+    StudioVisibility,
+    TokenScope,
+    Visibility,
+)
 from .errors import (
     APIError,
     AuthenticationError,
@@ -75,8 +86,13 @@ __all__ = [
     "get_default_config",
     "set_default_config",
     # Enums
+    "AigcModelType",
+    "DatasetCategory",
+    "GatedMode",
     "License",
+    "ModelCategory",
     "RepoType",
+    "RepoVisibility",
     "StudioVisibility",
     "TokenScope",
     "Visibility",

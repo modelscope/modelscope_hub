@@ -269,6 +269,62 @@ ms-hub create my-org/my-model --repo-type model --visibility private
 api.create_repo("my-org/my-model", "model", visibility="private", license="apache-2.0")
 ```
 
+### Visibility and gated access
+
+A repository is `public`, `private`, or `gated`. Gated repositories are
+discoverable, but downloading requires an application, approved either
+automatically (`"auto"`) or by a maintainer (`"manual"`):
+
+```python
+api.create_repo("my-org/my-data", "dataset", visibility="gated", gated="manual")
+api.update_repo_settings("my-org/my-data", "dataset", visibility="gated", gated="auto")
+
+# Turn gating off by leaving the gated state.
+api.update_repo_settings("my-org/my-data", "dataset", visibility="private")
+```
+
+The older boolean `gated_mode=True` / `gated_mode=False` still works and keeps
+its original behaviour exactly, but it cannot express the approval mode. Prefer
+`gated`.
+
+`visibility="internal"` (visible within an organisation) has no equivalent in
+the OpenAPI surface, so those requests continue to use the legacy endpoint.
+
+### Model and dataset zones
+
+Models belong to the `base`, `aigc`, or `science` zone; datasets to `base` or
+`science`. A new repository is always `base`. Upload the files first, then set
+the zone — the AIGC endpoint checks that each weight path already exists:
+
+```python
+api.create_repo("my-org/my-lora", "model")
+api.upload_folder("my-org/my-lora", "model", "./my-lora-files")
+
+options = api.list_aigc_model_options()  # enum ids, no credentials needed
+api.set_model_category(
+    "my-org/my-lora",
+    model_category="aigc",
+    aigc_type="LoRA",
+    base_model_architecture_type=options["base_architectures"][0]["id"],
+    base_model_architecture_subtype=options["base_architectures"][0]["subtypes"][0]["id"],
+    version_name="v1.0",
+    weight_files=[{"path_in_repo": "model.safetensors"}],
+    sample_images=[{"url": "https://example.com/sample.png", "prompt": "a cat"}],
+)
+
+# Edit a version's metadata in place, addressed by version name or numeric id.
+api.update_model_category("my-org/my-lora", version_name="v1.0", trigger_words=["anime"])
+
+# Read the zone fields back; which keys are present depends on the category.
+detail = api.get_model("my-org/my-lora")
+print(detail["model_category"], [v["version_id"] for v in detail.get("versions", [])])
+```
+
+Enum values (`aigc_type`, architectures, subject areas, `task`, `license`) come
+from the options endpoints; pass each option's `id`, not its `label`. An
+existing version's weights are immutable — changing them means creating a new
+version with `set_model_category`.
+
 ### Deploy a Studio
 
 ```bash
@@ -831,9 +887,19 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `whoami()` | Get current user info |
 | **Repo** | `create_repo(repo_id, repo_type, ...)` | Create a repository |
 | | `get_repo(repo_id, repo_type)` | Get repository metadata |
+| | `get_model(repo_id)` / `model_info(repo_id)` | Model detail, including zone fields |
+| | `get_dataset(repo_id)` / `dataset_info(repo_id)` | Dataset detail, including science fields |
 | | `list_repos(repo_type, ...)` | Paginated listing (`model`, `dataset`, `studio`, `skill`, `mcp`) |
 | | `delete_repo(repo_id, repo_type)` | Delete a repository *(deprecated — see note below)* |
 | | `repo_exists(repo_id, repo_type)` | Check existence |
+| **Zones** | `set_model_category(repo_id, model_category=...)` | Move a model into `base` / `aigc` / `science` |
+| | `update_model_category(repo_id, ...)` | Edit a model's zone fields in place |
+| | `set_dataset_category(repo_id, dataset_category=...)` | Move a dataset into `base` / `science` |
+| | `update_dataset_category(repo_id, ...)` | Edit a dataset's science fields in place |
+| | `list_aigc_model_options()` | AIGC enums (types, architectures, content categories) |
+| | `list_science_model_options()` | Science model subject areas |
+| | `list_science_dataset_options()` | Science dataset subject areas |
+| | `list_model_options()` | Valid model `task` and `license` values |
 | **Files** | `upload_file(repo_id, repo_type, local, remote)` | Upload a single file |
 | | `upload_folder(repo_id, repo_type, folder, ...)` | Upload a directory |
 | | `download_file(repo_id, repo_type, file, ...)` | Download a single file (with retry, resume, offline mode) |
@@ -845,7 +911,7 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | **Deploy** | `deploy_repo(repo_id, repo_type)` | Deploy Studio or MCP |
 | | `stop_repo(repo_id, repo_type)` | Stop deployment |
 | | `get_repo_logs(repo_id, ...)` | Fetch logs |
-| | `update_repo_settings(repo_id, repo_type, ...)` | Update settings |
+| | `update_repo_settings(repo_id, repo_type, ...)` | Update settings (`model`, `dataset`, `studio`, `skill`) |
 | **Secrets** | `add_secret(repo_id, key, value)` | Add a secret |
 | | `list_secrets(repo_id)` | List secret keys (values are never returned) |
 | | `update_secret(repo_id, key, value)` | Update a secret |
@@ -942,6 +1008,7 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | `MODELSCOPE_API_TIMEOUT` | `60` | HTTP request timeout (seconds) |
 | `MODELSCOPE_API_CONNECT_TIMEOUT` | `10` | HTTP connect timeout (seconds) |
 | `MODELSCOPE_API_MAX_RETRIES` | `5` | Regular API retries; downloads and file listings use separate retry policies |
+| `MODELSCOPE_OPTIONS_CACHE_TTL` | `300` | Seconds to cache the model/dataset enum option endpoints; `0` disables caching |
 | `MODELSCOPE_REPO_TREE_PAGE_TIMEOUT_SECONDS` | `15` | Per-page listing timeout (seconds) |
 | `MODELSCOPE_REPO_TREE_PAGE_MAX_ATTEMPTS` | `4` | Maximum attempts per listing page, including the initial request |
 | `MODELSCOPE_REPO_TREE_PAGE_RETRY_MAX_DELAY_SECONDS` | `8` | Maximum listing retry delay (seconds) |
@@ -1013,6 +1080,34 @@ from modelscope_hub.compat import LegacyHubApi as HubApi
 ```
 
 All legacy parameter names (`allow_file_pattern`, `ignore_file_pattern`, `cookies`, etc.) are accepted and mapped to the new implementation.
+
+### Behaviour changes when model/dataset writes moved to OpenAPI
+
+Model and dataset creation and settings now use the `/openapi/v1` endpoints.
+Inputs those endpoints cannot express keep using the legacy ones, so existing
+calls continue to work; three observable differences remain:
+
+| Change | Detail |
+|--------|--------|
+| Gated repositories in metadata | A gated repository is now reported as `Visibility.PRIVATE` with `gated=True`. Previously the server's `private: false` made it read back as `Visibility.PUBLIC`. The field stays a `Visibility` integer. |
+| Default license | When `license` is omitted the Hub applies its own default (`apache-2.0`) instead of the SDK sending `Apache-2.0`. Only affects calls that take the OpenAPI route. |
+| `LegacyHubApi.create_dataset(description=...)` | The argument was previously accepted and then dropped; it is now sent. |
+
+Unchanged on purpose:
+
+- **`gated_mode=True` / `gated_mode=False`** keep the exact legacy request
+  (`Visibility=PRIVATE` plus `ProtectedMode=1`/`2`), including the warn-and-ignore
+  when visibility is public. The boolean cannot name an approval mode and the two
+  surfaces default differently, so translating it could have turned a
+  review-gated repository into an auto-approving one. `ms-hub create --gated`
+  is therefore also byte-for-byte unchanged.
+- `delete_files()` still commits deletions directly, so it keeps glob support
+  and has no 100-path ceiling.
+- `visibility="internal"`, licenses outside the OpenAPI enum, a `task` on a
+  dataset, and extra request fields all still reach the legacy endpoint.
+- The AIGC creation path in `modelscope_hub.compat`
+  (`create_model(aigc_model=...)`, `create_model_tag(aigc_model=...)`) is
+  untouched.
 
 ---
 

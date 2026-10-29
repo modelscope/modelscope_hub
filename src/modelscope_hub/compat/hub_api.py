@@ -167,6 +167,25 @@ class LegacyHubApi:
         info = self._api.get_repo(model_id, RepoType.MODEL, revision=revision)
         return _repo_info_to_dict(info)
 
+    def get_model_detail(
+        self,
+        model_id: str,
+        *,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """Fetch a model's full detail payload, zone fields included.
+
+        Distinct from :meth:`get_model`, which keeps its historical shape: a
+        ``RepoInfo`` flattened to legacy PascalCase keys. That shape has no room
+        for the AIGC / science zone fields, so this method returns the server's
+        snake_case ``ModelDetail`` verbatim instead.
+        """
+        api = self._api
+        if token or endpoint:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
+        return api.get_model(model_id)
+
     def get_model_files(
         self,
         model_id: str,
@@ -262,6 +281,82 @@ class LegacyHubApi:
             if exist_ok and is_repo_exists_error(exc):
                 return None
             raise
+
+    def set_model_category(
+        self,
+        model_id: str,
+        *,
+        token: str | None = None,
+        endpoint: str | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Set or change a model's zone. Wraps :meth:`HubApi.set_model_category`."""
+        return self._api_for_write(token, endpoint).set_model_category(model_id, RepoType.MODEL, **kwargs)
+
+    def update_model_category(
+        self,
+        model_id: str,
+        *,
+        token: str | None = None,
+        endpoint: str | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Update a model's zone fields. Wraps :meth:`HubApi.update_model_category`."""
+        return self._api_for_write(token, endpoint).update_model_category(model_id, RepoType.MODEL, **kwargs)
+
+    def set_dataset_category(
+        self,
+        dataset_id: str,
+        *,
+        token: str | None = None,
+        endpoint: str | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Set or change a dataset's zone. Wraps :meth:`HubApi.set_dataset_category`."""
+        return self._api_for_write(token, endpoint).set_dataset_category(dataset_id, RepoType.DATASET, **kwargs)
+
+    def update_dataset_category(
+        self,
+        dataset_id: str,
+        *,
+        token: str | None = None,
+        endpoint: str | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Update a dataset's science fields. Wraps :meth:`HubApi.update_dataset_category`."""
+        return self._api_for_write(token, endpoint).update_dataset_category(dataset_id, RepoType.DATASET, **kwargs)
+
+    def update_dataset(
+        self,
+        dataset_id: str,
+        *,
+        token: str | None = None,
+        endpoint: str | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Update a dataset's general settings. Wraps :meth:`HubApi.update_repo_settings`."""
+        return self._api_for_write(token, endpoint).update_repo_settings(dataset_id, RepoType.DATASET, **kwargs)
+
+    def update_model(
+        self,
+        model_id: str,
+        *,
+        token: str | None = None,
+        endpoint: str | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Update a model's general settings. Wraps :meth:`HubApi.update_repo_settings`."""
+        return self._api_for_write(token, endpoint).update_repo_settings(model_id, RepoType.MODEL, **kwargs)
+
+    def _api_for_write(self, token: str | None, endpoint: str | None) -> HubApi:
+        """Return the façade to use, honouring per-call token/endpoint overrides."""
+        if token or endpoint:
+            return HubApi(
+                endpoint=endpoint or self._endpoint,
+                token=token,
+                user_agent={"invoked_by": "compat"},
+            )
+        return self._api
 
     def create_model(self, model_id: str, **kwargs: Any) -> str:
         """Create a model repo (legacy signature).
@@ -918,6 +1013,9 @@ class LegacyHubApi:
             visibility=visibility,
             license=license,
             chinese_name=chinese_name,
+            # Forwarded explicitly: this argument used to be accepted and then
+            # dropped, so a caller's description never reached the Hub.
+            description=description,
         )
         ep = endpoint or self._endpoint or api._config.endpoint
         return f"{ep}/datasets/{namespace}/{dataset_name}"
@@ -955,6 +1053,24 @@ class LegacyHubApi:
         if token:
             api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
         return api.get_repo(dataset_id, RepoType.DATASET, revision=revision)
+
+    def get_dataset_detail(
+        self,
+        dataset_id: str,
+        *,
+        endpoint: str | None = None,
+        token: str | None = None,
+    ) -> dict:
+        """Fetch a dataset's full detail payload, science fields included.
+
+        Distinct from :meth:`get_dataset`, which keeps its historical shape (a
+        ``RepoInfo``) and has no room for the science zone fields. Returns the
+        server's snake_case ``DatasetDetail`` verbatim.
+        """
+        api = self._api
+        if token or endpoint:
+            api = HubApi(endpoint=endpoint or self._endpoint, token=token, user_agent={"invoked_by": "compat"})
+        return api.get_dataset(dataset_id)
 
     def delete_model(
         self,
