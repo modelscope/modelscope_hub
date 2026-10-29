@@ -16,7 +16,7 @@ import pytest
 
 from modelscope_hub import HubApi
 from modelscope_hub import api as api_module
-from modelscope_hub.constants import GatedMode, RepoType, RepoVisibility, Visibility
+from modelscope_hub.constants import RepoType, Visibility
 from modelscope_hub.errors import AlreadyExistsError, InvalidParameter, NotExistError, ServerError
 
 
@@ -81,7 +81,9 @@ def routes(api: HubApi):
         ("private", "private"),
         (Visibility.PUBLIC, "public"),
         (Visibility.PRIVATE, "private"),
-        ("gated", "gated"),
+        (1, "private"),
+        (5, "public"),
+        ("1", "private"),
     ],
 )
 def test_ordinary_visibility_uses_openapi(api, routes, repo_type, visibility, expected):
@@ -140,11 +142,9 @@ def test_task_is_rejected_for_datasets(api, routes):
             "alice",
             "thing",
             visibility=None,
-            repo_visibility=None,
             license=None,
             chinese_name=None,
             description=None,
-            gated=None,
             license_name=None,
             license_link=None,
             task="text-classification",
@@ -155,30 +155,10 @@ def test_task_is_rejected_for_datasets(api, routes):
 # ---------------------------------------------------------------------------
 # Gated access
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("mode", ["auto", "manual", GatedMode.MANUAL])
-def test_gated_mode_is_sent_with_gated_visibility(api, routes, mode):
-    api.create_repo("alice/thing", "model", visibility="gated", gated=mode)
-
-    assert routes.went_openapi
-    body = routes.openapi_body
-    assert body["visibility"] == "gated"
-    assert body["gated_mode"] == str(mode)
-
-
-def test_gated_without_visibility_implies_gated_visibility(api, routes):
-    api.create_repo("alice/thing", "model", gated="manual")
-
-    assert routes.openapi_body["visibility"] == "gated"
-    assert routes.openapi_body["gated_mode"] == "manual"
-
-
 def test_legacy_boolean_gated_mode_keeps_the_legacy_wire_format(api, routes):
     """The historical boolean must produce the request it always produced.
 
-    It carries no approval mode, and the two surfaces default differently:
-    legacy sends ``ProtectedMode=1`` and lets the server decide, while the
-    OpenAPI schema defaults ``gated_mode`` to ``auto``. Translating it could
-    silently turn a review-gated repository into an auto-approving one.
+    This pins the historical request format, not a new approval policy.
     """
     api.create_repo("alice/thing", "model", gated_mode=True)
 
@@ -211,70 +191,11 @@ def test_gated_mode_with_public_visibility_warns_and_is_ignored(api, routes, cap
     assert "only effective when visibility is PRIVATE" in caplog.text
 
 
-def test_the_new_gated_parameter_goes_through_openapi(api, routes):
-    """``gated`` can state the approval mode, so it has no legacy equivalent."""
-    api.create_repo("alice/thing", "model", gated="manual")
-
-    assert routes.went_openapi
-    assert routes.openapi_body["visibility"] == "gated"
-    assert routes.openapi_body["gated_mode"] == "manual"
-
-
-def test_gated_false_without_visibility_implies_private_on_openapi(api, routes):
-    api.create_repo("alice/thing", "model", gated=False)
-
-    assert routes.went_openapi
-    assert routes.openapi_body["visibility"] == RepoVisibility.PRIVATE.value
-    assert "gated_mode" not in routes.openapi_body
-
-
-def test_gated_with_public_visibility_warns_and_is_dropped(api, routes, caplog, monkeypatch):
-    """The endpoint 400s on the pair, so mirror the legacy warn-and-ignore."""
-    # The SDK logger deliberately does not propagate, so caplog needs attaching.
-    monkeypatch.setattr(api_module.logger, "handlers", [*api_module.logger.handlers, caplog.handler])
-    with caplog.at_level("WARNING", logger="modelscope_hub.api"):
-        api.create_repo("alice/thing", "model", visibility="public", gated="manual")
-
-    assert routes.openapi_body["visibility"] == "public"
-    assert "gated_mode" not in routes.openapi_body
-    assert "only effective when visibility is gated" in caplog.text
-
-
-def test_an_unknown_gated_value_is_rejected(api, routes):
-    with pytest.raises(InvalidParameter, match="gated must be"):
-        api.create_repo("alice/thing", "model", gated="sometimes")
-
-
-@pytest.mark.parametrize(
-    ("extra", "expected_route"),
-    [({}, "openapi"), ({"create_default_config": True}, "legacy")],
-)
-def test_private_plus_an_approval_mode_means_gated_on_either_route(api, routes, extra, expected_route):
-    """``private`` + a mode is what the legacy encoding always called gated.
-
-    The two routes must agree: adding an unrelated field should not change the
-    access policy the repository ends up with.
-    """
-    api.create_repo("alice/thing", "model", visibility="private", gated="manual", **extra)
-
-    if expected_route == "openapi":
-        assert routes.went_openapi
-        assert routes.openapi_body["visibility"] == "gated"
-        assert routes.openapi_body["gated_mode"] == "manual"
-    else:
-        assert routes.went_legacy
-        assert routes.legacy_body["Visibility"] == int(Visibility.PRIVATE)
-        assert routes.legacy_body["ProtectedMode"] == 1
-
-
-def test_gated_visibility_survives_a_forced_legacy_route(api, routes):
-    """``visibility="gated"`` states the intent through visibility alone, so the
-    legacy encoding has to restate it as ``ProtectedMode``."""
-    api.create_repo("alice/thing", "model", visibility="gated", create_default_config=True)
-
-    assert routes.went_legacy
-    assert routes.legacy_body["Visibility"] == int(Visibility.PRIVATE)
-    assert routes.legacy_body["ProtectedMode"] == 1
+@pytest.mark.parametrize("repo_type", ["model", "dataset"])
+def test_native_gated_visibility_is_not_a_high_level_input(api, routes, repo_type):
+    with pytest.raises(ValueError, match="Unknown visibility"):
+        api.create_repo("alice/thing", repo_type, visibility="gated")
+    assert not routes.openapi.called and not routes.legacy.called
 
 
 # ---------------------------------------------------------------------------
@@ -419,9 +340,7 @@ def test_request_values_backfill_the_sparse_create_response(api, routes):
         ({"visibility": "private"}, Visibility.PRIVATE),
         ({"visibility": "public"}, Visibility.PUBLIC),
         ({"visibility": 5}, Visibility.PUBLIC),
-        # Gating alone implies a visibility the caller never named.
-        ({"gated": False}, Visibility.PRIVATE),
-        ({"gated": "manual"}, Visibility.PRIVATE),
+        ({"visibility": "1"}, Visibility.PRIVATE),
     ],
 )
 def test_the_backfilled_visibility_is_an_enum_not_a_bare_int(api, routes, kwargs, expected):
@@ -436,9 +355,66 @@ def test_the_backfilled_visibility_is_an_enum_not_a_bare_int(api, routes, kwargs
     assert info.visibility.label == expected.label
 
 
-def test_a_gated_repo_reports_private_visibility_and_its_mode(api, routes):
-    info = api.create_repo("alice/thing", "model", visibility="gated", gated="manual")
+def test_native_gated_response_preserves_historical_visibility_type(api):
+    with mock.patch.object(
+        api.openapi,
+        "get_model",
+        return_value={"visibility": "gated", "private": False, "gated": True, "gated_mode": "auto"},
+    ):
+        info = api.get_repo("alice/thing", "model")
+    assert isinstance(info.visibility, Visibility) and info.visibility == Visibility.PRIVATE
+    assert info.gated is True and info.gated_mode == "auto"
+    assert not hasattr(info, "approval_mode")
 
-    assert info.visibility == Visibility.PRIVATE
-    assert info.gated is True
-    assert info.gated_mode == "manual"
+
+# Preserve the v0.5.1 switch/visibility contract rather than inventing aliases.
+@pytest.mark.parametrize("repo_type", ["model", "dataset"])
+@pytest.mark.parametrize("switch", [True, False])
+@pytest.mark.parametrize("visibility", [None, "private", Visibility.PRIVATE, "public", "internal"])
+def test_historical_switch_matrix_is_unchanged(api, routes, repo_type, switch, visibility):
+    import warnings
+
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        api.create_repo("alice/thing", repo_type, visibility=visibility, gated_mode=switch)
+    assert routes.went_legacy
+    vis = (
+        int(Visibility.PRIVATE)
+        if visibility is None
+        else int(Visibility.from_label(visibility))
+        if isinstance(visibility, str)
+        else int(visibility)
+    )
+    assert int(routes.legacy_body["Visibility"]) == vis
+    if vis == int(Visibility.PRIVATE):
+        assert int(routes.legacy_body["ProtectedMode"]) == (1 if switch else 2)
+    else:
+        assert "ProtectedMode" not in routes.legacy_body
+    assert not any(issubclass(w.category, DeprecationWarning) for w in recorded)
+    assert "approval_mode" not in routes.legacy_body
+
+
+@pytest.mark.parametrize("repo_type", ["model", "dataset", "studio", "skill"])
+@pytest.mark.parametrize("name", ["approval_mode", "gated"])
+@pytest.mark.parametrize("value", [None, False, "manual"])
+def test_removed_parameters_cannot_leak_through_extra(api, routes, repo_type, name, value):
+    with pytest.raises(TypeError, match=name):
+        api.create_repo("alice/thing", repo_type, **{name: value})
+    assert not routes.openapi.called and not routes.legacy.called
+
+
+@pytest.mark.parametrize(
+    "method",
+    ["create_repo", "_create_model_or_dataset", "_create_via_openapi", "_create_via_legacy", "_openapi_visibility"],
+)
+def test_request_signatures_have_no_removed_aliases(method):
+    import inspect
+
+    assert not {"approval_mode", "gated"} & set(inspect.signature(getattr(HubApi, method)).parameters)
+
+
+@pytest.mark.parametrize("bad", ["auto", "manual", 1])
+def test_historical_switch_is_not_an_approval_string(api, routes, bad):
+    with pytest.raises(InvalidParameter, match="gated_mode must be"):
+        api.create_repo("alice/thing", "model", gated_mode=bad)
+    assert not routes.openapi.called and not routes.legacy.called

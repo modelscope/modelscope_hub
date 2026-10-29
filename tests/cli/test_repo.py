@@ -53,6 +53,16 @@ class TestCreateParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["create", "o/r", "--repo-type", "model", "--visibility", "secret"])
 
+    @pytest.mark.parametrize("mode", ["auto", "manual"])
+    def test_removed_approval_mode_flag(self, parser, mode):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["create", "o/r", "--repo-type", "model", "--gated", "--approval-mode", mode])
+
+    def test_old_gated_flag_remains_boolean(self, parser):
+        args = parser.parse_args(["create", "o/r", "--repo-type", "model", "--gated"])
+        assert args.gated is True
+        assert not hasattr(args, "approval_mode")
+
     def test_license_flag(self, parser):
         args = parser.parse_args(["create", "o/r", "--repo-type", "model", "--license", "apache-2.0"])
         assert args.license == "apache-2.0"
@@ -338,6 +348,15 @@ class TestCreateExecute:
         )
         out = capsys.readouterr().out
         assert "Created" in out
+
+    @pytest.mark.parametrize("flag, expected", [("--gated", True), ("--no-gated", False)])
+    def test_create_with_historical_boolean_flag(self, parser, mock_api, flag, expected):
+        args = parser.parse_args(["create", "owner/model", "--repo-type", "model", flag])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            CreateCommand(args).execute()
+        kwargs = mock_api.create_repo.call_args.kwargs
+        assert kwargs["gated_mode"] is expected
+        assert "gated" not in kwargs and "approval_mode" not in kwargs
 
     def test_create_studio_with_extras(self, parser, mock_api, capsys):
         args = parser.parse_args(

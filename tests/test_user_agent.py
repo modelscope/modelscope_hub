@@ -329,3 +329,16 @@ def test_compat_download_user_agent_applies_to_all_transports(download, monkeypa
     else:
         assert download("alice/m", **kwargs) == "local-path"
     assert len(seen) == 1
+
+
+@pytest.mark.parametrize("switch", [True, False])
+@responses.activate
+def test_compat_historical_switch_uses_prepared_request_marker(switch):
+    """Per-call credentials preserve the SDK/compat UA on historical creation."""
+    responses.add(responses.POST, f"{CN}/api/v1/models", json={"Data": {"Id": "alice/m"}}, status=201)
+    api = LegacyHubApi(endpoint=CN, token=TOKEN)
+    api.create_repo("alice/m", visibility=1, gated_mode=switch, token=TOKEN, endpoint=CN)
+    prepared = responses.calls[0].request
+    assert isinstance(prepared, requests.PreparedRequest)
+    assert "invoked_by/compat" in _assert_sdk(prepared.headers["User-Agent"])
+    assert prepared.headers["Authorization"] == f"Bearer {TOKEN}"

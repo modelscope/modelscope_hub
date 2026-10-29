@@ -51,6 +51,31 @@ def _fake_files():
     ]
 
 
+@pytest.mark.parametrize("name", ["approval_mode", "gated"])
+@pytest.mark.parametrize("value", [None, "manual"])
+def test_legacy_aigc_rejects_removed_parameters_before_upload(name, value):
+    lha = LegacyHubApi(token="ms-test")
+    aigc = _FakeAigcModel()
+    with pytest.raises(TypeError, match=name):
+        lha.create_model("owner/repo", aigc_model=aigc, visibility=1, gated_mode=True, **{name: value})
+    aigc.preupload_weights.assert_not_called()
+    aigc.upload_to_repo.assert_not_called()
+
+
+@pytest.mark.parametrize("method", ["create_repo", "create_model", "update_model", "update_dataset"])
+@pytest.mark.parametrize("name", ["approval_mode", "gated"])
+def test_plain_compat_wrappers_reject_removed_request_parameters(method, name):
+    lha = LegacyHubApi(token="ms-test")
+    with (
+        mock.patch.object(lha._api.legacy, "create_repo") as legacy,
+        mock.patch.object(lha._api.openapi, "_request") as native,
+    ):
+        with pytest.raises(TypeError, match=name):
+            getattr(lha, method)("owner/repo", **{name: None})
+    legacy.assert_not_called()
+    native.assert_not_called()
+
+
 class TestGetModelFilesLegacyCompat:
     def test_revision_is_accepted_and_forwarded(self):
         lha = LegacyHubApi()

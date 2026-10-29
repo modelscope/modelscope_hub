@@ -51,7 +51,6 @@ from .constants import (
     WEIGHT_FILE_SUFFIXES,
     AigcModelType,
     DatasetCategory,
-    GatedMode,
     ModelCategory,
     RepoType,
     RepoVisibility,
@@ -455,8 +454,8 @@ class HubApi:
         for key, value in data.items():
             normalised[aliases.get(key, key)] = value
 
-        # The OpenAPI surface uses ``private`` bool for visibility.
-        # gated is orthogonal and does not affect visibility mapping.
+        # Normalize native access modes to the historical SDK enum. The server
+        # reports private=false for gated repos, so the private flag alone is insufficient.
         raw_visibility = normalised.get("visibility")
         if isinstance(raw_visibility, str):
             # Two string encodings arrive here. Studio payloads use
@@ -860,7 +859,6 @@ class HubApi:
         chinese_name: str | None = None,
         description: str | None = None,
         gated_mode: bool | None = None,
-        gated: bool | str | GatedMode | None = None,
         license_name: str | None = None,
         license_link: str | None = None,
         task: str | None = None,
@@ -883,7 +881,7 @@ class HubApi:
             One of ``"model"``, ``"dataset"``, ``"studio"``, ``"skill"``.
         visibility : int, str or Visibility, optional
             Visibility level. Accepts the integer wire encoding, a label
-            (``"public"`` / ``"private"`` / ``"gated"``) or a
+            (``"public"`` / ``"private"`` / ``"internal"``) or a
             :class:`Visibility` value. Defaults to public.
         license : str, optional
             SPDX-style license identifier (e.g. ``"apache-2.0"``). Values the
@@ -894,14 +892,12 @@ class HubApi:
         description : str, optional
             Short description of the repository.
         gated_mode : bool, optional
-            Deprecated. ``True`` requests an application-gated repository and
-            ``False`` an ordinary private one. Prefer ``gated``, which can also
-            say *how* applications are approved.
-        gated : bool, "auto", "manual" or GatedMode, optional
-            Application-gated download policy. ``"auto"`` approves applications
-            automatically, ``"manual"`` requires review, ``True`` means
-            ``"auto"``, and ``False`` means not gated. Only meaningful when
-            visibility is gated or unset; ignored with a warning otherwise.
+            Historical application-access switch, not deprecated. Effective
+            only for private repositories; explicit public/internal visibility
+            takes precedence and the switch is warned about and ignored.
+            Either explicit boolean with omitted visibility implies private.
+            These calls retain the legacy ProtectedMode=1/2 request format.
+            This boolean does not select an approval policy.
         license_name : str, optional
             Custom license name. Required when ``license="other"``.
         license_link : str, optional
@@ -940,14 +936,15 @@ class HubApi:
         >>> info.repo_id
         'alice/llama-7b-finetuned'
 
-        Create a dataset that requires a reviewed application to download:
+        Create a private dataset with application-gated access:
 
-        >>> api.create_repo("alice/my-data", "dataset", visibility="gated", gated="manual")
+        >>> api.create_repo("alice/my-data", "dataset", visibility="private", gated_mode=True)
 
         Create a public Studio space:
 
         >>> api.create_repo("alice/chat-demo", repo_type="studio", visibility="public")
         """
+        self._reject_removed_gating_parameters(extra)
         rt = self._normalize_repo_type(repo_type)
         if rt not in _CREATABLE_TYPES:
             supported = ", ".join(sorted(t.value for t in _CREATABLE_TYPES))
@@ -956,12 +953,7 @@ class HubApi:
             )
         owner, name = self._parse_repo_id(repo_id)
         studio_visibility = StudioVisibility.parse(visibility) if rt is RepoType.STUDIO else None
-        repo_visibility = RepoVisibility.parse(visibility) if rt in _LEGACY_CREATE_FALLBACK_TYPES else None
-        vis = (
-            None
-            if studio_visibility is not None or repo_visibility is RepoVisibility.GATED
-            else self._normalize_visibility(visibility)
-        )
+        vis = None if studio_visibility is not None else self._normalize_visibility(visibility)
         if license is not None:
             license = _LICENSE_DISPLAY_TO_SPDX.get(license, license)
 
@@ -971,12 +963,10 @@ class HubApi:
                 owner,
                 name,
                 visibility=vis,
-                repo_visibility=repo_visibility,
                 license=license,
                 chinese_name=chinese_name,
                 description=description,
                 gated_mode=gated_mode,
-                gated=gated,
                 license_name=license_name,
                 license_link=license_link,
                 task=task,
@@ -1021,31 +1011,11 @@ class HubApi:
         return self._repo_info_from_payload(data, rt, owner_hint=owner, name_hint=name)
 
     @staticmethod
-    def _resolve_gated(
-        gated: bool | str | GatedMode | None,
-        gated_mode: bool | None,
-    ) -> GatedMode | bool | None:
-        """Collapse the two gated parameters into one value.
-
-        ``gated`` is expressive (it can name the approval mode); ``gated_mode``
-        is the older boolean and wins only when ``gated`` is not given. A
-        ``True`` from either resolves to :data:`GatedMode.AUTO`.
-
-        For ``create_repo`` that resolved mode is only ever used as "gating was
-        requested": a call that used the boolean is routed to the legacy
-        endpoint, whose ``ProtectedMode`` field carries no mode at all, so the
-        historical behaviour is preserved exactly.
-        """
-        value = gated if gated is not None else gated_mode
-        if value is None or value is False:
-            return value
-        if value is True:
-            return GatedMode.AUTO
-        mode = GatedMode.parse(value)
-        if mode is None:
-            allowed = ", ".join(repr(m.value) for m in GatedMode)
-            raise InvalidParameter(f"gated must be False, True, or one of {allowed} (got {value!r}).")
-        return mode
+    def _reject_removed_gating_parameters(parameters: Mapping[str, Any]) -> None:
+        """Reject removed request parameters before kwargs can reach a backend."""
+        removed = sorted({"approval_mode", "gated"} & set(parameters))
+        if removed:
+            raise TypeError(f"Unexpected keyword argument(s): {', '.join(removed)}; use gated_mode=True/False.")
 
     @staticmethod
     def _legacy_create_reason(
@@ -1067,14 +1037,8 @@ class HubApi:
         endpoint can serve the request.
         """
         if gated_mode is not None:
-            # The historical boolean has no approval mode, and the two surfaces
-            # default differently: legacy sends ``ProtectedMode=1`` and lets the
-            # server decide, while the OpenAPI schema defaults ``gated_mode`` to
-            # ``auto``. Translating the boolean could therefore silently turn a
-            # repository that required review into one that auto-approves, so it
-            # keeps using the wire format it has always used. ``gated`` is the
-            # parameter that can state the mode, and it does go through OpenAPI.
-            return "gated_mode is the historical boolean; use gated= to reach the OpenAPI endpoint"
+            # Retain the historical boolean wire contract, not a new policy selector.
+            return "historical gated_mode boolean keeps the legacy ProtectedMode wire"
         if visibility is not None and visibility == int(Visibility.INTERNAL):
             return "visibility=internal is not part of the OpenAPI visibility enum"
         if rt is RepoType.MODEL and license is not None and license not in OPENAPI_MODEL_LICENSES:
@@ -1097,23 +1061,18 @@ class HubApi:
         name: str,
         *,
         visibility: int | None,
-        repo_visibility: RepoVisibility | None,
         license: str | None,
         chinese_name: str | None,
         description: str | None,
         gated_mode: bool | None,
-        gated: bool | str | GatedMode | None,
         license_name: str | None,
         license_link: str | None,
         task: str | None,
         extra: Mapping[str, Any],
     ) -> RepoInfo:
         """Create a model or dataset, preferring OpenAPI over the legacy endpoint."""
-        if repo_visibility is not None and repo_visibility is not RepoVisibility.GATED:
-            # ``public``/``private`` already round-tripped through the integer
-            # encoding; only ``gated`` needs the string form carried forward.
-            repo_visibility = None
-        resolved_gated = self._resolve_gated(gated, gated_mode)
+        if gated_mode is not None and not isinstance(gated_mode, bool):
+            raise InvalidParameter("gated_mode must be True, False or None, not an approval-policy string.")
         reason = self._legacy_create_reason(
             rt,
             visibility=visibility,
@@ -1129,11 +1088,9 @@ class HubApi:
                     owner,
                     name,
                     visibility=visibility,
-                    repo_visibility=repo_visibility,
                     license=license,
                     chinese_name=chinese_name,
                     description=description,
-                    gated=resolved_gated,
                     license_name=license_name,
                     license_link=license_link,
                     task=task,
@@ -1152,11 +1109,9 @@ class HubApi:
             owner,
             name,
             visibility=visibility,
-            repo_visibility=repo_visibility,
             license=license,
             chinese_name=chinese_name,
             description=description,
-            gated=resolved_gated,
             gated_mode=gated_mode,
             # ``task`` / ``license_name`` / ``license_link`` are named parameters
             # only because the OpenAPI schema declares them. The legacy endpoint
@@ -1178,11 +1133,9 @@ class HubApi:
         name: str,
         *,
         visibility: int | None,
-        repo_visibility: RepoVisibility | None,
         license: str | None,
         chinese_name: str | None,
         description: str | None,
-        gated: GatedMode | bool | None,
         license_name: str | None,
         license_link: str | None,
         task: str | None,
@@ -1190,19 +1143,9 @@ class HubApi:
     ) -> RepoInfo:
         """Create a model or dataset via ``POST /models`` / ``POST /datasets``."""
         payload: dict[str, Any] = {"owner": owner, "repo_name": name}
-        wire_visibility = self._openapi_visibility(rt, visibility, repo_visibility, gated)
+        wire_visibility = self._openapi_visibility(rt, visibility)
         if wire_visibility is not None:
             payload["visibility"] = wire_visibility.value
-        if isinstance(gated, GatedMode):
-            if wire_visibility is RepoVisibility.GATED:
-                payload["gated_mode"] = gated.value
-            else:
-                # The endpoint rejects ``gated_mode`` outside a gated repo, and
-                # the legacy path has always warned-and-ignored here. Keep that.
-                logger.warning(
-                    "gated is only effective when visibility is gated, ignored (visibility=%s).",
-                    wire_visibility.value if wire_visibility else "public",
-                )
         if chinese_name is not None:
             payload["display_name"] = chinese_name
         # ``license`` is omitted rather than defaulted: the server's own default
@@ -1240,9 +1183,7 @@ class HubApi:
         # The create response carries only identity fields, while the legacy one
         # echoed the settings back. Backfill from the request so a caller reading
         # ``info.visibility`` after create does not see None where it saw a value.
-        # Derived from the wire value rather than the raw argument: the argument
-        # may be absent (gating alone implies a visibility) and must not leak a
-        # plain ``int`` past the dataclass's enum coercion.
+        # Backfill enum instances, not bare ints, after dataclass construction.
         if info.visibility is None and wire_visibility is not None:
             info.visibility = Visibility.PUBLIC if wire_visibility is RepoVisibility.PUBLIC else Visibility.PRIVATE
         if info.license is None:
@@ -1250,50 +1191,24 @@ class HubApi:
         if info.description is None:
             info.description = description
         if info.gated is None:
-            info.gated = wire_visibility is RepoVisibility.GATED
-        if info.gated_mode is None and isinstance(gated, GatedMode) and wire_visibility is RepoVisibility.GATED:
-            info.gated_mode = gated.value
+            info.gated = False
         return info
 
     @staticmethod
-    def _openapi_visibility(
-        rt: RepoType,
-        visibility: int | None,
-        repo_visibility: RepoVisibility | None,
-        gated: GatedMode | bool | None,
-    ) -> RepoVisibility | None:
-        """Pick the ``visibility`` string the create endpoints expect.
+    def _openapi_visibility(rt: RepoType, visibility: int | None) -> RepoVisibility | None:
+        """Map historical ordinary visibility values to OpenAPI strings.
 
-        Returns ``None`` to omit the field entirely, letting the server apply
-        its own default of ``public``.
-
-        A private repository that also carries an approval mode *is* a gated
-        repository: the legacy encoding spelled exactly that as
-        ``Visibility=PRIVATE`` plus ``ProtectedMode=1``. Resolving it to plain
-        ``private`` would quietly drop the gating, and would disagree with the
-        legacy route for the same arguments.
+        None omits the field, retaining the public server default. Internal
+        visibility and explicit application switches are routed to legacy
+        before this helper is called.
         """
-        if repo_visibility is RepoVisibility.GATED:
-            return RepoVisibility.GATED
-        wants_gated = isinstance(gated, GatedMode)
-        if visibility is not None:
-            if visibility == int(Visibility.PRIVATE):
-                return RepoVisibility.GATED if wants_gated else RepoVisibility.PRIVATE
-            if visibility == int(Visibility.PUBLIC):
-                # Gating a public repository is contradictory; the caller is
-                # warned and the gating dropped, as the legacy path has always
-                # done.
-                return RepoVisibility.PUBLIC
-            raise InvalidParameter(
-                f"visibility={visibility!r} is not supported for repo_type={rt.value!r}. "
-                f"Expected one of: {', '.join(v.value for v in RepoVisibility)}."
-            )
-        if gated is None:
+        if visibility is None:
             return None
-        # Visibility was not stated but the gating intent was. The legacy path
-        # has always made that imply a non-public repository, so both a request
-        # for gating and an explicit opt-out land on a private repo.
-        return RepoVisibility.GATED if wants_gated else RepoVisibility.PRIVATE
+        if visibility == int(Visibility.PRIVATE):
+            return RepoVisibility.PRIVATE
+        if visibility == int(Visibility.PUBLIC):
+            return RepoVisibility.PUBLIC
+        raise InvalidParameter(f"visibility={visibility!r} is not supported by the OpenAPI {rt.value} create endpoint.")
 
     def _create_via_legacy(
         self,
@@ -1302,11 +1217,9 @@ class HubApi:
         name: str,
         *,
         visibility: int | None,
-        repo_visibility: RepoVisibility | None,
         license: str | None,
         chinese_name: str | None,
         description: str | None,
-        gated: GatedMode | bool | None,
         gated_mode: bool | None,
         extra: Mapping[str, Any],
     ) -> RepoInfo:
@@ -1318,10 +1231,6 @@ class HubApi:
         get must be the one they got before the OpenAPI route existed.
         """
         vis = visibility
-        if repo_visibility is RepoVisibility.GATED:
-            # The legacy encoding has no ``gated`` state: it is PRIVATE plus
-            # ``ProtectedMode=1``.
-            vis = int(Visibility.PRIVATE)
         if rt is RepoType.DATASET:
             body: dict[str, Any] = {
                 "Owner": owner,
@@ -1341,17 +1250,15 @@ class HubApi:
         if description is not None:
             body["Description"] = description
 
-        # gated -> ProtectedMode wire field (1=gated, 2=off).
-        # gated only effective with PRIVATE; when vis=None + gated requested,
-        # implicitly set visibility to PRIVATE (user intent: gated repo).
-        wants_gated = isinstance(gated, GatedMode) or repo_visibility is RepoVisibility.GATED
-        if gated is not None or repo_visibility is RepoVisibility.GATED:
+        # Preserve v0.5.1: either explicit boolean with no visibility implies
+        # PRIVATE; public/internal visibility wins and ignores the switch.
+        if gated_mode is not None:
             if vis is None:
                 vis = int(Visibility.PRIVATE)
                 body["Visibility"] = vis
-                body["ProtectedMode"] = 1 if wants_gated else 2
+                body["ProtectedMode"] = 1 if gated_mode else 2
             elif vis == int(Visibility.PRIVATE):
-                body["ProtectedMode"] = 1 if wants_gated else 2
+                body["ProtectedMode"] = 1 if gated_mode else 2
             else:
                 logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
 
@@ -2925,7 +2832,8 @@ class HubApi:
 
         Supported for ``model``, ``dataset``, ``studio`` and ``skill``. Only the
         keys you pass are changed; for models and datasets an explicit ``None``
-        clears a field. Zone membership is not a setting -- use
+        clears metadata fields, while None for visibility/gated_mode leaves
+        those controls unchanged. Zone membership is not a setting -- use
         :meth:`set_model_category` / :meth:`set_dataset_category` for that.
 
         Parameters
@@ -2936,8 +2844,13 @@ class HubApi:
             ``"model"``, ``"dataset"``, ``"studio"`` or ``"skill"``.
         **settings : Any
             Setting key/value pairs forwarded to the backend. For models and
-            datasets: ``display_name``, ``license``, ``visibility``, ``gated`` /
-            ``gated_mode``, ``description``, and ``task`` (models only).
+            datasets: ``display_name``, ``license``, ``visibility``, ``description``
+            and ``task`` (models only). ``gated_mode`` remains a boolean switch:
+            True enables application access, False disables it, None leaves it
+            unchanged. Omitted visibility with either explicit boolean implies
+            private; explicit public takes precedence and ignores the switch.
+            High-level visibility accepts the historical integer enum/labels,
+            not the native OpenAPI 'gated' access-mode string.
 
         Returns
         -------
@@ -2958,8 +2871,13 @@ class HubApi:
         ...     visibility="public",
         ...     hardware="GPU-A10",
         ... )
-        >>> api.update_repo_settings("alice/rna-seq", "dataset", visibility="gated", gated="manual")
+        >>> api.update_repo_settings(
+        ...     "alice/rna-seq", "dataset", visibility="private",
+        ...     gated_mode=True,
+        ... )
+        >>> api.update_repo_settings("alice/rna-seq", "dataset", gated_mode=False)
         """
+        self._reject_removed_gating_parameters(settings)
         rt = self._normalize_repo_type(repo_type)
         owner, name = self._parse_repo_id(repo_id)
         if rt is RepoType.STUDIO:
@@ -2978,22 +2896,13 @@ class HubApi:
 
     @classmethod
     def _repo_settings_payload(cls, rt: RepoType, settings: Mapping[str, Any]) -> dict[str, Any]:
-        """Translate model/dataset settings kwargs into the wire payload.
+        """Adapt the historical boolean switch and visibility to OpenAPI.
 
-        Two spellings are accepted and they are kept apart on purpose:
-
-        * ``gated`` is the SDK's convenience argument (``True`` / ``False`` /
-          ``"auto"`` / ``"manual"``). It is translated into the endpoint's two
-          fields, including the visibility change that turning gating off
-          requires.
-        * ``gated_mode`` is the wire field itself. It is forwarded as given, so
-          the contract's own rules apply -- notably that an empty string is
-          valid and means "default to auto", while an explicit ``null`` or a
-          boolean is rejected.
-
-        Settings the endpoint cannot change are rejected rather than dropped,
-        since silently dropping them would look like the update had succeeded.
+        None leaves the switch/visibility unchanged. True/False with omitted
+        visibility implies private. Native strings belong to the low-level
+        OpenAPI payload, not to this high-level boolean parameter.
         """
+        cls._reject_removed_gating_parameters(settings)
         payload = dict(settings)
         unsupported = sorted(_UNSETTABLE_FIELDS & set(payload))
         if unsupported:
@@ -3002,62 +2911,33 @@ class HubApi:
                 f"the {rt.value} settings endpoint does not accept it. "
                 f"It is reported read-only by get_{rt.value}()."
             )
-
-        has_native_mode = "gated_mode" in payload
-        native_mode = payload.pop("gated_mode", None)
-        gated = cls._resolve_gated(payload.pop("gated", None), None)
-        if has_native_mode and gated is not None:
-            raise InvalidParameter("Pass either gated or gated_mode, not both.")
-
-        if "visibility" in payload:
-            raw = payload["visibility"]
-            if raw is None or raw == "":
-                # An explicit empty value clears the setting server-side.
-                payload["visibility"] = raw
+        switch = payload.pop("gated_mode", None)
+        if switch is not None and not isinstance(switch, bool):
+            raise InvalidParameter("gated_mode must be True, False or None, not an approval-policy string.")
+        raw_visibility = payload.pop("visibility", None)
+        visibility = cls._normalize_visibility(raw_visibility)
+        if visibility is not None:
+            if visibility not in (int(Visibility.PRIVATE), int(Visibility.PUBLIC)):
+                raise InvalidParameter(
+                    f"visibility={raw_visibility!r} is not supported by the {rt.value} settings endpoint; "
+                    "there is no equivalent legacy settings endpoint."
+                )
+            wire_visibility = cls._openapi_visibility(rt, visibility)
+            assert wire_visibility is not None
+            payload["visibility"] = wire_visibility.value
+        if switch is not None:
+            if visibility is None:
+                visibility = int(Visibility.PRIVATE)
+                payload["visibility"] = RepoVisibility.PRIVATE.value
+            if visibility == int(Visibility.PRIVATE):
+                if switch:
+                    # OpenAPI represents application access as a wire access mode.
+                    payload["visibility"] = RepoVisibility.GATED.value
+                    payload["gated_mode"] = "auto"
+                else:
+                    payload["visibility"] = RepoVisibility.PRIVATE.value
             else:
-                visibility = RepoVisibility.parse(raw)
-                if visibility is None:
-                    normalised = cls._normalize_visibility(raw)
-                    if normalised == int(Visibility.PUBLIC):
-                        visibility = RepoVisibility.PUBLIC
-                    elif normalised == int(Visibility.PRIVATE):
-                        visibility = RepoVisibility.PRIVATE
-                    else:
-                        allowed = ", ".join(v.value for v in RepoVisibility)
-                        raise InvalidParameter(
-                            f"visibility={raw!r} is not supported for repo_type={rt.value!r}. "
-                            f"Expected one of: {allowed}."
-                        )
-                payload["visibility"] = visibility.value
-
-        if has_native_mode:
-            # Forwarded verbatim. The endpoint accepts ``auto``/``manual``/``""``
-            # and rejects an explicit null or a boolean; the boolean is caught
-            # here because it is the historical ``gated_mode`` spelling and would
-            # otherwise reach the server as JSON ``true``/``false``.
-            if isinstance(native_mode, bool) or native_mode is None:
-                raise InvalidParameter(
-                    f"gated_mode must be one of {', '.join(repr(m.value) for m in GatedMode)} or '' "
-                    f"(got {native_mode!r}). Use gated=True/False to switch gating on or off."
-                )
-            payload["gated_mode"] = native_mode
-        elif isinstance(gated, GatedMode):
-            target = payload.get("visibility")
-            if target is not None and target != RepoVisibility.GATED.value:
-                # The endpoint rejects the pair outright; refuse locally so the
-                # contradiction is reported against the caller's own arguments.
-                raise InvalidParameter(
-                    f"gated={gated.value!r} conflicts with visibility={target!r}. "
-                    f"Set visibility='gated' to keep an approval mode, or drop gated."
-                )
-            if target is None:
-                # Naming a mode asks for gating, which is a visibility change.
-                payload["visibility"] = RepoVisibility.GATED.value
-            payload["gated_mode"] = gated.value
-        elif gated is False and "visibility" not in payload:
-            # Turning gating off is expressed by leaving the gated state, which
-            # the endpoint models as a visibility change.
-            payload["visibility"] = RepoVisibility.PRIVATE.value
+                logger.warning("gated_mode is only effective when visibility is PRIVATE, ignored.")
         return payload
 
     # ==================================================================

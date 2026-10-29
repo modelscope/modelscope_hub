@@ -382,6 +382,7 @@ class LegacyHubApi:
 
     def _create_aigc_model(self, model_id: str, aigc_model: Any, kwargs: dict[str, Any]) -> str:
         """Create an AIGC model without changing the plain-model code path."""
+        HubApi._reject_removed_gating_parameters(kwargs)
         token = kwargs.pop("token", None)
         endpoint = kwargs.pop("endpoint", None)
         visibility = kwargs.pop("visibility", None)

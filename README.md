@@ -271,21 +271,45 @@ api.create_repo("my-org/my-model", "model", visibility="private", license="apach
 
 ### Visibility and gated access
 
-A repository is `public`, `private`, or `gated`. Gated repositories are
-discoverable, but downloading requires an application, approved either
-automatically (`"auto"`) or by a maintainer (`"manual"`):
+The SDK keeps its historical `Visibility` integer enum: `PRIVATE=1`,
+`INTERNAL=3`, `PUBLIC=5`. Application gating is a separate boolean switch,
+`gated_mode=True` / `False`, and is not deprecated. It is effective for private
+repositories; with explicit public/internal visibility it is warned about and
+ignored. Either explicit boolean with no visibility still implies private.
+
+Use the same high-level spelling as v0.5.1. A gated repository requires an
+approved application to download; the boolean switch does not select an
+approval policy:
 
 ```python
-api.create_repo("my-org/my-data", "dataset", visibility="gated", gated="manual")
-api.update_repo_settings("my-org/my-data", "dataset", visibility="gated", gated="auto")
+api.create_repo(
+    "my-org/my-data", "dataset", visibility="private",
+    gated_mode=True,
+)
 
-# Turn gating off by leaving the gated state.
-api.update_repo_settings("my-org/my-data", "dataset", visibility="private")
+# Turn the application switch off; the repository becomes ordinary private.
+api.update_repo_settings("my-org/my-data", "dataset", gated_mode=False)
 ```
 
-The older boolean `gated_mode=True` / `gated_mode=False` still works and keeps
-its original behaviour exactly, but it cannot express the approval mode. Prefer
-`gated`.
+Ordinary creation prefers OpenAPI. Explicit `gated_mode=True/False` creation
+retains the legacy `Visibility` plus `ProtectedMode=1/2` request format to keep
+v0.5.1 behaviour. Settings adapt the boolean to the OpenAPI access mode internally;
+`True` enables gating with the server's `auto` approval default, `False` leaves an
+ordinary private repository, and `None` leaves the control unchanged.
+
+High-level `visibility` accepts the historical enum/labels, not `"gated"`.
+`approval_mode` and `gated` request parameters have been removed, including the
+`--approval-mode` CLI flag; passing them through `**kwargs` raises `TypeError`
+before any request. This does not remove the existing `RepoInfo.gated` boolean
+response field or the native `gated_mode` string in new detail responses.
+`get_repo()` preserves `Visibility` for models/datasets, while raw `get_model()` /
+`get_dataset()` retain native OpenAPI fields. Native approval-policy strings
+belong only to the low-level `api.openapi` payloads, not to the high-level
+`gated_mode` boolean.
+
+```bash
+ms-hub create my-org/my-data --repo-type dataset --visibility private --gated
+```
 
 `visibility="internal"` (visible within an organisation) has no equivalent in
 the OpenAPI surface, so those requests continue to use the legacy endpoint.
@@ -311,6 +335,17 @@ api.set_model_category(
     weight_files=[{"path_in_repo": "model.safetensors"}],
     sample_images=[{"url": "https://example.com/sample.png", "prompt": "a cat"}],
 )
+
+# Detail reads can lag behind writes; wait briefly before resolving a new version name.
+import time
+
+for _ in range(10):
+    detail = api.get_model("my-org/my-lora")
+    if any(v.get("version_name") == "v1.0" for v in detail.get("versions", [])):
+        break
+    time.sleep(1)
+else:
+    raise TimeoutError("The new version is not visible yet; retry the detail read later.")
 
 # Edit a version's metadata in place, addressed by version name or numeric id.
 api.update_model_category("my-org/my-lora", version_name="v1.0", trigger_words=["anime"])
@@ -556,6 +591,7 @@ ms-hub delete my-org/my-model --repo-type model --yes
 | `--chinese-name` | no | Display name in Chinese |
 | `--description` | no | Repository description |
 | `--exist-ok` | no | No error if repository already exists |
+| `--gated` / `--no-gated` | no | Historical application switch; explicit public/internal visibility takes precedence |
 | `--sdk-type` | no | Studio SDK: `gradio`, `streamlit`, `docker`, `static` |
 | `--sdk-version` | no | Studio SDK version |
 | `--base-image` | no | Studio base Docker image |
@@ -1089,18 +1125,19 @@ calls continue to work; three observable differences remain:
 
 | Change | Detail |
 |--------|--------|
-| Gated repositories in metadata | A gated repository is now reported as `Visibility.PRIVATE` with `gated=True`. Previously the server's `private: false` made it read back as `Visibility.PUBLIC`. The field stays a `Visibility` integer. |
+| Gated repositories in metadata | The historical `Visibility` enum is preserved. New OpenAPI `"gated"` responses map to `Visibility.PRIVATE` with `gated=True`, rather than leaking a raw string as in 0.5.1 against that response. Older payloads without `visibility` could instead be misclassified as PUBLIC from `private: false`; both parsing cases are handled. |
 | Default license | When `license` is omitted the Hub applies its own default (`apache-2.0`) instead of the SDK sending `Apache-2.0`. Only affects calls that take the OpenAPI route. |
 | `LegacyHubApi.create_dataset(description=...)` | The argument was previously accepted and then dropped; it is now sent. |
 
 Unchanged on purpose:
 
 - **`gated_mode=True` / `gated_mode=False`** keep the exact legacy request
-  (`Visibility=PRIVATE` plus `ProtectedMode=1`/`2`), including the warn-and-ignore
-  when visibility is public. The boolean cannot name an approval mode and the two
-  surfaces default differently, so translating it could have turned a
-  review-gated repository into an auto-approving one. `ms-hub create --gated`
-  is therefore also byte-for-byte unchanged.
+  (`Visibility=PRIVATE` plus `ProtectedMode=1`/`2`), including warn-and-ignore for
+  explicit public/internal visibility and implicit private for either boolean
+  when visibility is omitted. `ms-hub create --gated/--no-gated` stays unchanged.
+- High-level `approval_mode`, `gated`, `visibility="gated"` and string-valued
+  `gated_mode` are not supported. The removed request aliases must not leak into
+  legacy extra fields. Native OpenAPI payload/response fields remain unchanged.
 - `delete_files()` still commits deletions directly, so it keeps glob support
   and has no 100-path ceiling.
 - `visibility="internal"`, licenses outside the OpenAPI enum, a `task` on a
