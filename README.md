@@ -297,7 +297,7 @@ Models belong to the `base`, `aigc`, or `science` zone; datasets to `base` or
 the zone — the AIGC endpoint checks that each weight path already exists:
 
 ```python
-api.create_repo("my-org/my-lora", "model")
+api.create_repo("my-org/my-lora", "model", visibility="private")
 api.upload_folder("my-org/my-lora", "model", "./my-lora-files")
 
 options = api.list_aigc_model_options()  # enum ids, no credentials needed
@@ -540,9 +540,9 @@ ms-hub list --repo-type studio --owner my-org
 ms-hub delete my-org/my-model --repo-type model --yes
 ```
 
-> **Deprecation notice:** `delete_repo` / `ms-hub delete` emits a `DeprecationWarning` — programmatic repo deletion is restricted for security reasons and will be restored once token-scoped auth is available. Use the [web console](https://modelscope.cn) to delete repos.
+> **Deletion permission:** `delete_repo` / `ms-hub delete` needs repository deletion permission; ordinary write permission alone is not sufficient. An admin-level token has been verified to work. Tokens without the required permission are refused (`10010101003` for models, `10020301011` for datasets) and directed to the [web console](https://modelscope.cn). Retrying a permission rejection with the same token will not help.
 >
-> `delete_files` requires cookie-based session auth; API tokens may receive a 401 error.
+> `delete_files` uses the legacy commit/session path. File-deletion permission is distinct from repository-deletion permission; a write token may delete files even when it cannot delete the repository.
 
 <details>
 <summary><code>ms-hub create</code> options</summary>
@@ -890,7 +890,7 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `get_model(repo_id)` / `model_info(repo_id)` | Model detail, including zone fields |
 | | `get_dataset(repo_id)` / `dataset_info(repo_id)` | Dataset detail, including science fields |
 | | `list_repos(repo_type, ...)` | Paginated listing (`model`, `dataset`, `studio`, `skill`, `mcp`) |
-| | `delete_repo(repo_id, repo_type)` | Delete a repository *(deprecated — see note below)* |
+| | `delete_repo(repo_id, repo_type)` | Delete a repository *(needs deletion permission — see note below)* |
 | | `repo_exists(repo_id, repo_type)` | Check existence |
 | **Zones** | `set_model_category(repo_id, model_category=...)` | Move a model into `base` / `aigc` / `science` |
 | | `update_model_category(repo_id, ...)` | Edit a model's zone fields in place |
@@ -938,8 +938,8 @@ api = HubApi(token="...", endpoint="https://modelscope.ai")
 | | `clear_cache(cache_dir, ...)` | Free disk space |
 
 > **Deletion restrictions:**
-> - `delete_repo` is deprecated for security reasons (emits `DeprecationWarning`). Will be restored with token-scoped auth. Use the [web console](https://modelscope.cn) instead.
-> - `delete_files` requires cookie-based session auth; API tokens (`ms-...`) may receive a 401 error.
+> - `delete_repo` needs repository deletion permission. Insufficient permission is rejected (`10010101003` / `10020301011`); use an authorised token or the [web console](https://modelscope.cn). An admin-level token has been verified to work. The SDK uses the legacy endpoint; the current OpenAPI contract has no repository-deletion route.
+> - `delete_files` uses the legacy commit/session path and checks file-deletion permission separately. It does not inherit the OpenAPI file-deletion endpoint's 100-path limit. Editing a tag revision may be rejected by repository policy.
 
 > **Token permission levels:** every write method needs a token issued with
 > `write` permission or higher. A rejected write raises `PermissionDeniedError`

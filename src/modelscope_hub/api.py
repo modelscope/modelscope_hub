@@ -2025,12 +2025,11 @@ class HubApi:
     def delete_repo(self, repo_id: str, repo_type: RepoTypeLike) -> None:
         """Delete a repository.
 
-        .. deprecated::
-            Programmatic repository deletion is not currently supported by
-            the Hub API for security reasons. This method will be restored
-            in a future release once proper token-scoped authentication is
-            available. To delete a repository now, use the web console at
-            https://modelscope.cn.
+        Needs a token carrying repository deletion permission; an admin-level
+        token has been verified to work, while ordinary write permission does
+        not guarantee it. Do not infer the permission from the token's name or
+        kind. Deletion uses the legacy endpoint -- the current OpenAPI contract
+        exposes no repository-deletion route.
 
         Parameters
         ----------
@@ -2038,16 +2037,20 @@ class HubApi:
             Canonical ``owner/name`` identifier.
         repo_type : str or RepoType
             Repository type (``"model"``, ``"dataset"``, etc.).
-        """
-        import warnings
 
-        warnings.warn(
-            "This function is deprecated due to security reasons, "
-            "and will be recovered in future versions with proper token authentication. "
-            "Please go to https://modelscope.cn to delete repositories via the web console.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+        Raises
+        ------
+        AuthenticationError or InvalidParameter
+            When the token lacks deletion permission. The Hub answers business
+            code ``10010101003`` for models and ``10020301011`` for datasets,
+            both saying the operation must be performed at
+            https://modelscope.cn. Retrying with the same token will not help;
+            use a token with deletion permission or the web console.
+
+        Examples
+        --------
+        >>> api.delete_repo("alice/my-model", "model")
+        """
         rt = self._normalize_repo_type(repo_type)
         self._parse_repo_id(repo_id)
         self.legacy.delete_repo(repo_id=repo_id, repo_type=str(rt))

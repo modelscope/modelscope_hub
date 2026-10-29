@@ -1090,10 +1090,17 @@ class LegacyHubApi:
         endpoint: str | None = None,
         token: str | None = None,
     ) -> None:
-        """Delete a dataset repository."""
+        """Delete a dataset repository.
+
+        Needs a token carrying deletion permission; see
+        :meth:`HubApi.delete_repo`. The warning is kept so callers that filter
+        on it keep behaving as before, but its wording now describes the actual
+        constraint rather than claiming the method is going away.
+        """
         warnings.warn(
-            "This function is deprecated due to security reasons, "
-            "and will be recovered in future versions with proper token authentication.",
+            "delete_dataset requires a token with deletion permission. "
+            "Ordinary write permission alone may not authorise repository deletion; "
+            "use an admin-level token or delete via https://modelscope.cn.",
             DeprecationWarning,
             stacklevel=2,
         )
