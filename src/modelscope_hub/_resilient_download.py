@@ -16,7 +16,13 @@ from typing import TYPE_CHECKING
 from filelock import FileLock, Timeout
 
 from ._download import _listing_roots, _matches_patterns
-from ._download_control import _DownloadCancelledError, _DownloadControl, _DownloadDeferredError, _RecoveryBudget
+from ._download_control import (
+    _DownloadCancelledError,
+    _DownloadControl,
+    _DownloadDeadlineError,
+    _DownloadDeferredError,
+    _RecoveryBudget,
+)
 from ._download_state import _DownloadState, safe_error
 from .constants import DOWNLOAD_TOTAL_TIMEOUT, REPO_TREE_LIST_TIMEOUT_SECONDS
 from .errors import AuthenticationError, FileIntegrityError, InvalidParameter, NotSupportedError
@@ -180,7 +186,12 @@ def _run(
                         break
                     put(entry)
             else:
-                with _DownloadControl(total_timeout=REPO_TREE_LIST_TIMEOUT_SECONDS, cancel_event=stop) as control:
+                with _DownloadControl(
+                    total_timeout=REPO_TREE_LIST_TIMEOUT_SECONDS,
+                    cancel_event=stop,
+                    budget_label="Repository listing",
+                    budget_env="MODELSCOPE_REPO_TREE_LIST_TIMEOUT_SECONDS",
+                ) as control:
                     with manager._client.read_context(control):
                         for root in _listing_roots(include):
                             if repo_type == "dataset":
@@ -216,7 +227,12 @@ def _run(
             _validate_entry({"Path": result.path, "Size": result.size, "Sha256": result.sha256}, output)
             if result.status in ("FAILED", "DEFERRED") and not retry_failed:
                 target = output / result.path
-                with _DownloadControl(total_timeout=DOWNLOAD_TOTAL_TIMEOUT, cancel_event=stop) as control:
+                with _DownloadControl(
+                    total_timeout=DOWNLOAD_TOTAL_TIMEOUT,
+                    cancel_event=stop,
+                    budget_label="Cached file validation",
+                    budget_env="MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT",
+                ) as control:
                     valid = target.is_file() and manager._cache_hit(
                         target,
                         result.sha256,
@@ -261,6 +277,13 @@ def _run(
         except _DownloadCancelledError:
             state.finish(result.path, result.status if result.status in ("FAILED", "DEFERRED") else "PENDING")
             raise
+        except _DownloadDeadlineError as exc:
+            # An expired time budget is an externally imposed stop, not a verdict on
+            # the file: the partial bytes stay valid, so record it as unfinished work
+            # rather than isolating it. A plain re-run then resumes it without
+            # needing retry_failed, which only exists for genuinely suspect files.
+            state.finish(result.path, "PENDING", exc)
+            logger.warning("Time budget stopped %s; re-run to resume: %s", result.path, safe_error(exc))
         except Exception as exc:
             origin = exc.__cause__ if isinstance(exc, _DownloadDeferredError) and exc.__cause__ else exc
             terminal = isinstance(origin, (FileIntegrityError, InvalidParameter)) or not getattr(

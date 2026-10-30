@@ -57,6 +57,27 @@ def test_new_api_instances_and_batches_share_failure_isolation(hub, api, dirs):
     assert [file.path for file in first.iter_files()] == ["bad.bin"]
 
 
+def test_time_budget_stop_is_resumable_without_retry_failed(hub, api, dirs, monkeypatch):
+    """An expired budget is an external stop, so a plain re-run must continue the partial file."""
+    from modelscope_hub import _download
+
+    content = hub.add("big.bin", b"x" * 400, trickle_interval=0.01)
+    hub.add("small.bin", b"ok")
+    monkeypatch.setattr(_download, "DOWNLOAD_TOTAL_TIMEOUT", 0.4)
+    first = run(api, dirs, max_workers=1)
+    assert first.status == "PARTIAL"
+    assert first.pending == 1 and first.failed == 0 and first.deferred == 0
+    assert (dirs[0] / "big.bin.incomplete").exists()
+
+    # No retry_failed: an externally imposed stop must not isolate the file.
+    monkeypatch.setattr(_download, "DOWNLOAD_TOTAL_TIMEOUT", 0)
+    hub.files["big.bin"].trickle_interval = 0
+    second = run(api, dirs, max_workers=1)
+    assert second.complete
+    assert second.skipped_failures == 0
+    assert (dirs[0] / "big.bin").read_bytes() == content
+
+
 def test_failed_file_is_only_reopened_explicitly_or_on_metadata_change(hub, api, dirs):
     hub.add("bad.bin", b"data", served=b"")
     first = run(api, dirs)

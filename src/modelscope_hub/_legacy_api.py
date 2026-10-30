@@ -252,7 +252,11 @@ class LegacyClient:
         control = getattr(self._read_state, "control", None)
         if single_attempt and control is None:
             # Bound both headers and body reads for single-page calls without an external controller.
-            with _DownloadControl(total_timeout=REPO_TREE_PAGE_TIMEOUT_SECONDS) as page_control:
+            with _DownloadControl(
+                total_timeout=REPO_TREE_PAGE_TIMEOUT_SECONDS,
+                budget_label="Repository listing page",
+                budget_env="MODELSCOPE_REPO_TREE_PAGE_TIMEOUT_SECONDS",
+            ) as page_control:
                 with self.read_context(page_control):
                     return self._request(
                         method,
@@ -817,6 +821,8 @@ class LegacyClient:
             with _DownloadControl(
                 total_timeout=budget,
                 cancel_event=parent.cancel_event if parent is not None else None,
+                budget_label="Repository listing page",
+                budget_env="MODELSCOPE_REPO_TREE_PAGE_TIMEOUT_SECONDS",
             ) as page_control:
                 with self.read_context(page_control):
                     return self._request(
@@ -829,7 +835,9 @@ class LegacyClient:
         except _DownloadDeadlineError as exc:
             if parent is not None:
                 parent.check()
-            raise RequestTimeoutError(f"列表单页请求超过 {REPO_TREE_PAGE_TIMEOUT_SECONDS}s") from exc
+            raise RequestTimeoutError(
+                f"Repository listing page request exceeded {REPO_TREE_PAGE_TIMEOUT_SECONDS}s"
+            ) from exc
 
     def _request_repo_tree(
         self,

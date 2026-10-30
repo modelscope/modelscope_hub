@@ -208,6 +208,12 @@ class HubApi:
     user_agent : dict, str or None, optional
         Application or channel information appended to the SDK UA and propagated
         to OpenAPI, legacy, probe and download requests. Must not contain credentials.
+    download_total_timeout : float or None, optional
+        Per-file download time budget in seconds, covering lock waits, probes,
+        transfers, retries and validation. ``None`` uses
+        ``MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT``; ``0`` or less imposes no overall
+        limit, leaving idle timeouts, the low-speed watchdog and bounded
+        retries as the only stop conditions.
 
     Examples
     --------
@@ -231,8 +237,10 @@ class HubApi:
         endpoint: str | None = None,
         token: str | None = None,
         user_agent: dict | str | None = None,
+        download_total_timeout: float | None = None,
     ) -> None:
         self._user_agent_extra = dict(user_agent) if isinstance(user_agent, dict) else user_agent
+        self._download_total_timeout = download_total_timeout
         base = config or get_default_config()
         if config is None and (endpoint is not None or token is not None):
             from dataclasses import replace
@@ -285,7 +293,12 @@ class HubApi:
     def downloader(self) -> DownloadManager:
         """Lazily-constructed :class:`DownloadManager`."""
         if self._downloader is None:
-            self._downloader = DownloadManager(self.legacy, self._config, user_agent=self._user_agent_extra)
+            self._downloader = DownloadManager(
+                self.legacy,
+                self._config,
+                user_agent=self._user_agent_extra,
+                total_timeout=self._download_total_timeout,
+            )
         return self._downloader
 
     @property
@@ -2040,7 +2053,11 @@ class HubApi:
                 user_agent=self._user_agent_extra,
             )
             try:
-                with _DownloadControl(total_timeout=REPO_TREE_PAGE_TIMEOUT_SECONDS) as control:
+                with _DownloadControl(
+                    total_timeout=REPO_TREE_PAGE_TIMEOUT_SECONDS,
+                    budget_label="Endpoint probe",
+                    budget_env="MODELSCOPE_REPO_TREE_PAGE_TIMEOUT_SECONDS",
+                ) as control:
                     with probe.openapi.read_context(control):
                         return probe.repo_exists(repo_id, repo_type)
             finally:
