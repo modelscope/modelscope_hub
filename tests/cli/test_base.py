@@ -97,14 +97,18 @@ class TestMakeApi:
         args = Namespace(token="my_token", endpoint=None)
         with patch("modelscope_hub.cli.base.HubApi") as mock_hub:
             make_api(args)
-            mock_hub.assert_called_once_with(token="my_token", endpoint=None, user_agent={"invoked_by": "cli"})
+            mock_hub.assert_called_once_with(
+                token="my_token", endpoint=None, user_agent={"invoked_by": "cli"}, download_total_timeout=None
+            )
 
     def test_make_api_without_token(self):
         """make_api passes None when no token."""
         args = Namespace(token=None, endpoint=None)
         with patch("modelscope_hub.cli.base.HubApi") as mock_hub:
             make_api(args)
-            mock_hub.assert_called_once_with(token=None, endpoint=None, user_agent={"invoked_by": "cli"})
+            mock_hub.assert_called_once_with(
+                token=None, endpoint=None, user_agent={"invoked_by": "cli"}, download_total_timeout=None
+            )
 
     def test_make_api_with_endpoint(self):
         """make_api passes endpoint to HubApi."""
@@ -112,7 +116,19 @@ class TestMakeApi:
         with patch("modelscope_hub.cli.base.HubApi") as mock_hub:
             make_api(args)
             mock_hub.assert_called_once_with(
-                token=None, endpoint="https://custom.endpoint.com", user_agent={"invoked_by": "cli"}
+                token=None,
+                endpoint="https://custom.endpoint.com",
+                user_agent={"invoked_by": "cli"},
+                download_total_timeout=None,
+            )
+
+    def test_make_api_forwards_a_download_time_budget(self):
+        """A subcommand's --total-timeout reaches HubApi without extra plumbing."""
+        args = Namespace(token=None, endpoint=None, total_timeout=1800.0)
+        with patch("modelscope_hub.cli.base.HubApi") as mock_hub:
+            make_api(args)
+            mock_hub.assert_called_once_with(
+                token=None, endpoint=None, user_agent={"invoked_by": "cli"}, download_total_timeout=1800.0
             )
 
 

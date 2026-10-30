@@ -58,9 +58,11 @@ class _FromDictMixin:
 class DownloadRetryPolicy:
     """Short recovery limits for report-mode downloads, shared by all file parts.
 
-    Healthy transfers keep the regular total file timeout. Only failed-request
-    inactivity and retry waits consume recovery_timeout. Longer Retry-After
-    values defer the file instead of occupying a worker or retrying early.
+    Healthy transfers are not bounded by these limits, nor by an overall time
+    cap unless MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT is set to a positive value.
+    Only failed-request inactivity and retry waits consume recovery_timeout.
+    Longer Retry-After values defer the file instead of occupying a worker or
+    retrying early.
     """
 
     max_retries: int = 2

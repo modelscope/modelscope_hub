@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import socket
 import threading
 import time
@@ -66,9 +67,18 @@ class _DownloadCancelledError(Exception):
 
 
 class _DownloadDeadlineError(RequestTimeoutError):
-    """The total download time budget has been exhausted."""
+    """A configured time budget has been exhausted.
+
+    Stays non-retryable so the current run never loops on an expired budget.
+    Callers that track per-file state treat it as a resumable stop rather than
+    a rejected file, because the partial file on disk is still valid.
+    """
 
     retryable = False
+    suggestion = (
+        "A time budget expired rather than the transfer failing. Partial files are kept, so re-running "
+        "resumes them; raise MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT or set it to 0 to remove the per-file limit."
+    )
 
 
 class _DownloadTooSlowError(NetworkError):
@@ -83,6 +93,7 @@ class _WatchedResponse:
     error: Exception | None = None
     monitor_speed: bool = True
     header_deadline: float | None = None
+    header_limit: float = 0
 
 
 def _response_socket(response: requests.Response) -> Any:
@@ -107,13 +118,23 @@ class _DownloadControl:
         cancel_event: threading.Event | None = None,
         min_rate: int = 0,
         speed_window: float = 60,
+        header_timeout: float = 0,
         recovery: _RecoveryBudget | None = None,
+        budget_label: str = "Download",
+        budget_env: str = "",
     ) -> None:
         self.cancel_event = cancel_event if cancel_event is not None else threading.Event()
-        self.deadline = time.monotonic() + total_timeout
+        self.total_timeout = total_timeout
+        # A non-positive budget means "no overall limit": idle timeouts, the
+        # low-speed watchdog, bounded retries and cancellation still apply, so
+        # an infinite deadline removes only the wall-clock cap on healthy work.
+        self.deadline = math.inf if total_timeout <= 0 else time.monotonic() + total_timeout
         self.min_rate = min_rate
         self.speed_window = speed_window
+        self.header_timeout = header_timeout
         self.recovery = recovery
+        self.budget_label = budget_label
+        self.budget_env = budget_env
         self._responses: dict[requests.Response, _WatchedResponse] = {}
         self._transports: dict[Any, _WatchedResponse] = {}
         self._lock = threading.Lock()
@@ -133,11 +154,15 @@ class _DownloadControl:
         for response in responses:
             response.close()
 
+    def _deadline_error(self) -> _DownloadDeadlineError:
+        hint = f"; raise {self.budget_env} or set it to 0 to disable the limit" if self.budget_env else ""
+        return _DownloadDeadlineError(f"{self.budget_label} time budget of {self.total_timeout:g}s is exhausted{hint}")
+
     def check(self) -> None:
         if self.cancel_event.is_set():
-            raise _DownloadCancelledError("下载已取消")
+            raise _DownloadCancelledError("Download cancelled")
         if time.monotonic() >= self.deadline:
-            raise _DownloadDeadlineError("下载总时限已耗尽；已保存可继续下载的临时文件")
+            raise self._deadline_error()
 
     def timeouts(self, connect: float, read: float) -> tuple[float, float]:
         self.check()
@@ -168,12 +193,22 @@ class _DownloadControl:
 
     @contextlib.contextmanager
     def transport(self, sock: Any) -> Iterator[None]:
-        """Interrupt sockets while reading headers so trickling headers cannot bypass deadlines."""
+        """Interrupt sockets while reading headers so trickling headers cannot bypass deadlines.
+
+        ``requests`` cannot apply its read timeout before the status line
+        arrives, so a server that emits one header byte at a time never trips
+        an idle timeout. The header budget is therefore the only bound on that
+        fault when no overall deadline is configured.
+        """
         self.check()
         state = _WatchedResponse(sock, time.monotonic(), monitor_speed=False)
         if self.recovery is not None:
             started = getattr(self.recovery.activity, "last", time.monotonic())
-            state.header_deadline = min(self.deadline, started + self.recovery.policy.idle_timeout)
+            state.header_limit = self.recovery.policy.idle_timeout
+            state.header_deadline = min(self.deadline, started + state.header_limit)
+        elif self.header_timeout > 0:
+            state.header_limit = self.header_timeout
+            state.header_deadline = min(self.deadline, state.started + state.header_limit)
         with self._lock:
             self._transports[sock] = state
             self._start_monitor()
@@ -220,16 +255,19 @@ class _DownloadControl:
                     if state.error is not None:
                         continue
                     if self.cancel_event.is_set():
-                        state.error = _DownloadCancelledError("下载已取消")
+                        state.error = _DownloadCancelledError("Download cancelled")
                     elif now >= self.deadline:
-                        state.error = _DownloadDeadlineError("下载总时限已耗尽")
+                        state.error = self._deadline_error()
                     elif state.header_deadline is not None and now >= state.header_deadline:
-                        state.error = RequestTimeoutError("Response headers exceeded the short recovery time limit")
+                        state.error = RequestTimeoutError(
+                            f"No response headers within the {state.header_limit:g}s idle time limit"
+                        )
                     elif state.monitor_speed and self.min_rate and now - state.started >= self.speed_window:
                         rate = state.received / (now - state.started)
                         if rate < self.min_rate:
                             state.error = _DownloadTooSlowError(
-                                f"下载速率 {rate:.0f} B/s 低于 {self.min_rate} B/s，观察窗口 {self.speed_window:g}s"
+                                f"Download rate {rate:.0f} B/s stayed below {self.min_rate} B/s "
+                                f"over a {self.speed_window:g}s window"
                             )
                         else:
                             state.started, state.received = now, 0
@@ -241,7 +279,7 @@ class _DownloadControl:
         """Abort active responses without cancelling the parent, allowing single-stream fallback."""
         with self._lock:
             for state in [*self._responses.values(), *self._transports.values()]:
-                state.error = _DownloadCancelledError("分片组已取消")
+                state.error = _DownloadCancelledError("Range part group cancelled")
                 if state.sock is not None:
                     with contextlib.suppress(OSError):
                         state.sock.shutdown(socket.SHUT_RDWR)
@@ -274,7 +312,7 @@ class _DownloadControl:
                         yield chunk
         except (Urllib3HTTPError, OSError) as exc:
             self._check_response(response)
-            raise requests.ConnectionError(f"下载流读取失败：{type(exc).__name__}") from exc
+            raise requests.ConnectionError(f"Download stream read failed: {type(exc).__name__}") from exc
         finally:
             self.release(response)
 

@@ -33,6 +33,12 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
+**v0.6.1** (2026-10-30)
+- **Feature**: `ms-hub download --total-timeout` (and `HubApi(download_total_timeout=...)`) sets a per-file time budget that overrides the environment variable; `0` means no limit
+- **Behaviour**: a transfer that keeps making progress is no longer capped by default — `MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT` now defaults to `0` (was `3600`), while idle timeouts, the low-speed watchdog and bounded retries still apply; set a positive value to restore a cap
+- **Fix**: a stop caused by an expired budget keeps its partial data and is reported as pending, so a plain re-run resumes it instead of requiring `--retry-failed`; trickling response headers stay bounded by the idle timeout when no overall budget is set
+- **Quality**: budget and cancellation messages are English and name both the budget and the variable that relaxes it
+
 **v0.4.0** (2026-09-01)
 - **Feature**: complete OpenAPI coverage for Agent-IDP, MCP, and Studios — Agent Ed25519 identities, OIDC discovery/JWKS and signed JWT issuance (`HubApi`, `ms-hub agent-idp`); Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier. Agent private JWKs are only written to an explicitly requested owner-only file.
 - **Fix**: Studio compat calls no longer leak connection options or API tokens, or drop cover images; errors distinguish permission, quota and conflicts; anonymous Studio info and log pagination work
@@ -232,7 +238,7 @@ print(report.status, report.succeeded, report.failed, report.deferred, report.re
 report.close()  # Release temporary per-file results after consumption.
 ```
 
-- Recovery defaults: at most **2 extra retries per file**, shared by range parts and integrity recovery; failed-request inactivity and waits have a **60-second cumulative budget**. Idle/header waits are limited to **15 seconds**, low-speed checks use a **10-second window**, and cooldowns longer than **5 seconds** defer the file instead of tying up a worker. Size/hash mismatches get at most one full re-download. Healthy transfer time still uses `MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT`; large files are not capped at 60 seconds.
+- Recovery defaults: at most **2 extra retries per file**, shared by range parts and integrity recovery; failed-request inactivity and waits have a **60-second cumulative budget**. Idle/header waits are limited to **15 seconds**, low-speed checks use a **10-second window**, and cooldowns longer than **5 seconds** defer the file instead of tying up a worker. Size/hash mismatches get at most one full re-download. Healthy transfer time is **not** capped by default: a transfer that keeps making progress runs to completion, and `MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT` only applies when set to a positive value.
 - Each task uses **one hidden JSON file** outside downloaded contents (`cache_dir/.download_state/.ms_download_<key>.json` by default), with no embedded database dependency. It combines sparse failures, recovery budgets, failed pages, and the latest call's summary under `report`; `report.report_path` equals `report.tracker_path`. Reruns and batches replace the same file, without extra report JSON or JSONL files. Successful files have no persistent per-file records; a healthy run writes only its scope header and final summary, not an update per file. Its scope is endpoint/repository/revision/output, independent of batch filters. Standard reusable lock files remain separate from JSON metadata.
 - State is advisory, never the sole evidence of success. Every rerun validates actual files against current size/hash metadata, even if hints say `FAILED` or `DEFERRED`; a repaired valid file clears its stale hint without network IO. Otherwise failures remain isolated until metadata changes or `retry_failed=True`. Missing or corrupt hints allow bounded fresh recovery; load/write problems are logged and exposed in `report.state_warnings`, not treated as data corruption or success. A crash during recovery preserves its budget if hints were saved; healthy in-flight files need no markers and resume from actual partial files. Old database-format trackers are not read or migrated: select a new JSON path; existing correct data is reused through validation.
 - Dataset pages are streamed with bounded queues. Failed pages are recorded and isolated across calls; later pages/roots can continue. Two consecutive failed pages stop that root, and `listing_complete=False` prevents false success. The next run can use `retry_failed=True` or an authoritative `file_list` iterable to recover incomplete enumeration. Model listings that hit an unrecoverable server cap also return a partial report.
@@ -243,7 +249,11 @@ report.close()  # Release temporary per-file results after consumption.
 ms-hub download owner/dataset --repo-type dataset --local-dir ./data --continue-on-error
 # Explicit repair run after the source is fixed
 ms-hub download owner/dataset --repo-type dataset --local-dir ./data --continue-on-error --retry-failed
+# Cap each file at one hour, e.g. for a scheduled job with a fixed window
+ms-hub download owner/dataset --repo-type dataset --local-dir ./data --total-timeout 3600
 ```
+
+A file stopped by `--total-timeout` keeps its partial data and is reported as pending rather than failed, so a plain re-run resumes it; `--retry-failed` stays reserved for genuinely suspect files.
 
 CLI exit codes: `0` complete, `3` partial after remaining known files have been processed, `1` global failure, `130` interrupted. Schedulers must treat `3` as partial completion, not an instruction to retry the whole task indefinitely. The SDK's `modelscope_hub.compat.snapshot_download(..., continue_on_error=True, tracker_path=...)` preserves a string return path and logs the report location; use `HubApi.download_repo_report` to read results directly. Older `modelscope.hub.snapshot_download` wrappers may not accept the new options: import the compat function from `modelscope_hub` directly until the wrapper is updated.
 
@@ -1060,7 +1070,7 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | `MODELSCOPE_DOWNLOAD_PART_SIZE_MB` | `160` | Parallel range chunk size (MB) |
 | `MODELSCOPE_DOWNLOAD_MAX_RETRIES` | `5` | Single-layer transport retries; `0` disables them; integrity retries are separately bounded |
 | `MODELSCOPE_DOWNLOAD_TIMEOUT` | `60` | Idle read timeout for streams and range parts, not the whole file (seconds) |
-| `MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT` | `3600` | Per-file time budget, including locks, probes, transfers, retries, and validation (seconds) |
+| `MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT` | `0` | Per-file time budget, including locks, probes, transfers, retries, and validation (seconds); `0` imposes no overall limit |
 | `MODELSCOPE_DOWNLOAD_MIN_BYTES_PER_SECOND` | `1024` | Minimum rate per connection (B/s); `0` disables low-speed detection |
 | `MODELSCOPE_DOWNLOAD_LOW_SPEED_WINDOW_SECONDS` | `60` | Minimum-rate observation window (seconds) |
 | `MODELSCOPE_DOWNLOAD_RETRY_MAX_DELAY_SECONDS` | `60` | Maximum download Retry-After or backoff delay (seconds) |
