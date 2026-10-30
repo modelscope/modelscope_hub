@@ -56,6 +56,7 @@ from .constants import (
     DOWNLOAD_PART_SIZE,
     DOWNLOAD_RETRY_MAX_DELAY_SECONDS,
     DOWNLOAD_RETRY_TIMES,
+    DOWNLOAD_TIMEOUT,
     DOWNLOAD_TOTAL_TIMEOUT,
     ENV_FILE_LOCK,
     ENV_INTER_CLOUD_REGIONS,
@@ -356,7 +357,9 @@ def _wait_download_retry(retry: Retry, exc: Exception, path: str, control: _Down
     except MaxRetryError:
         if isinstance(exc, HubError):
             raise exc
-        raise NetworkError(f"下载 {path} 在 {DOWNLOAD_RETRY_TIMES} 次重试后失败：{type(exc).__name__}") from exc
+        raise NetworkError(
+            f"Download of {path} failed after {DOWNLOAD_RETRY_TIMES} retries: {type(exc).__name__}"
+        ) from exc
     requested = getattr(exc, "retry_after", None)
     if control.recovery is not None:
         delay = max(0, requested) if requested is not None else min(retry.get_backoff_time(), 2)
@@ -436,7 +439,7 @@ def _download_part_with_retry(params: tuple) -> None:
         try:
             control.check()
             if part_stop.is_set():
-                raise _DownloadCancelledError("分片组已取消")
+                raise _DownloadCancelledError("Range part group cancelled")
             partial_length = os.path.getsize(part_file_name) if os.path.exists(part_file_name) else 0
             if partial_length > expected:
                 # Left over from a different split of the file; it cannot be resumed.
@@ -467,7 +470,7 @@ def _download_part_with_retry(params: tuple) -> None:
                 raise
             with control.response(r):
                 if part_stop.is_set():
-                    raise _DownloadCancelledError("分片组已取消")
+                    raise _DownloadCancelledError("Range part group cancelled")
                 content_range = _parse_content_range(r.headers.get("Content-Range"))
                 if content_range is not None and content_range[2] is not None and content_range[2] != file_size:
                     raise FileSizeMismatchError(
@@ -634,12 +637,21 @@ class DownloadManager:
     Dependencies are injected via constructor to keep this class testable.
     """
 
-    def __init__(self, legacy_client: LegacyClient, config: HubConfig, *, user_agent: dict | str | None = None) -> None:
+    def __init__(
+        self,
+        legacy_client: LegacyClient,
+        config: HubConfig,
+        *,
+        user_agent: dict | str | None = None,
+        total_timeout: float | None = None,
+    ) -> None:
         from .utils import build_user_agent
 
         self._client = legacy_client
         self._config = config
         self._user_agent = build_user_agent(config=config, extra=user_agent)
+        # None defers to MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT; 0 or less means no limit.
+        self._total_timeout = total_timeout
         self._cached_region: str | None = None
         self._region_lock = threading.Lock()
         # Cache only confirmed OSS-internal resolutions. A repository can contain
@@ -875,13 +887,16 @@ class DownloadManager:
     ) -> Path:
         """Download one file with cache-first lookup and a shared budget for locks, probes, and retries."""
         with _DownloadControl(
-            total_timeout=DOWNLOAD_TOTAL_TIMEOUT,
+            total_timeout=DOWNLOAD_TOTAL_TIMEOUT if self._total_timeout is None else self._total_timeout,
             cancel_event=_cancel_event,
             min_rate=DOWNLOAD_MIN_BYTES_PER_SECOND,
             speed_window=_recovery.policy.low_speed_window
             if _recovery is not None
             else DOWNLOAD_LOW_SPEED_WINDOW_SECONDS,
+            header_timeout=DOWNLOAD_TIMEOUT,
             recovery=_recovery,
+            budget_label="Per-file download",
+            budget_env="MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT",
         ) as control:
             with self._client.read_context(control):
                 return self._download_file(
@@ -1201,6 +1216,8 @@ class DownloadManager:
             with _DownloadControl(
                 total_timeout=REPO_TREE_LIST_TIMEOUT_SECONDS,
                 cancel_event=cancel_event,
+                budget_label="Repository listing",
+                budget_env="MODELSCOPE_REPO_TREE_LIST_TIMEOUT_SECONDS",
             ) as listing_control:
                 with self._client.read_context(listing_control):
                     for listing_root in _listing_roots(allow_patterns):
@@ -1341,9 +1358,12 @@ class DownloadManager:
         try:
             with (
                 _DownloadControl(
-                    total_timeout=DOWNLOAD_TOTAL_TIMEOUT,
+                    total_timeout=DOWNLOAD_TOTAL_TIMEOUT if self._total_timeout is None else self._total_timeout,
                     min_rate=DOWNLOAD_MIN_BYTES_PER_SECOND,
                     speed_window=DOWNLOAD_LOW_SPEED_WINDOW_SECONDS,
+                    header_timeout=DOWNLOAD_TIMEOUT,
+                    budget_label="Archive download",
+                    budget_env="MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT",
                 ) as control,
                 self._client.read_context(control),
             ):
@@ -1361,7 +1381,9 @@ class DownloadManager:
                                 tmp.write(chunk)
                         announced = _checkable_content_length(resp)
                         if announced is not None and tmp_path.stat().st_size != announced:
-                            raise _IncompleteBodyError("归档内容长度与响应头不一致")
+                            raise _IncompleteBodyError(
+                                "Archive body length does not match the announced Content-Length"
+                            )
                         break
                     except (_DownloadCancelledError, _DownloadDeadlineError):
                         raise
@@ -1936,7 +1958,9 @@ class DownloadManager:
 
                     if resp.status_code == 206 and (content_range is None or content_range[0] != offset):
                         tmp_path.unlink(missing_ok=True)
-                        raise _IncompleteBodyError("服务器返回了不匹配请求起点的分段响应")
+                        raise _IncompleteBodyError(
+                            "Server returned a partial response that does not match the requested start offset"
+                        )
                     announced: int | None = None
                     if content_range is not None and content_range[2] is not None:
                         announced = content_range[2]

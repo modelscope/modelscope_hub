@@ -95,6 +95,17 @@ class DownloadCommand(CLICommand):
             help="Single hidden JSON for recovery hints and summary, outside downloaded contents.",
         )
         p.add_argument("--retry-failed", action="store_true", help="Explicitly reset isolated files' recovery budgets.")
+        p.add_argument(
+            "--total-timeout",
+            dest="total_timeout",
+            type=float,
+            default=None,
+            help=(
+                "Per-file time budget in seconds, covering lock waits, probes, transfers, retries and "
+                "validation. 0 means no limit (the default); idle timeouts and low-speed detection still "
+                "apply. Overrides MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT."
+            ),
+        )
 
         # Legacy compat (hidden from --help)
         add_legacy_download_args(p)
@@ -178,10 +189,16 @@ class DownloadCommand(CLICommand):
         """
         endpoint = getattr(self.args, "endpoint", None)
         token = getattr(self.args, "token", None)
+        total_timeout = getattr(self.args, "total_timeout", None)
 
         if endpoint:
             endpoint = _resolve_cli_endpoint(endpoint)
-            return HubApi(token=token, endpoint=endpoint, user_agent={"invoked_by": "cli"})
+            return HubApi(
+                token=token,
+                endpoint=endpoint,
+                user_agent={"invoked_by": "cli"},
+                download_total_timeout=total_timeout,
+            )
 
         api = make_api(self.args)
         try:
@@ -189,7 +206,12 @@ class DownloadCommand(CLICommand):
                 self.args.repo_id,
                 repo_type=self.args.repo_type,
             )
-            return HubApi(token=token, endpoint=resolved, user_agent={"invoked_by": "cli"})
+            return HubApi(
+                token=token,
+                endpoint=resolved,
+                user_agent={"invoked_by": "cli"},
+                download_total_timeout=total_timeout,
+            )
         except Exception:
             return api
 

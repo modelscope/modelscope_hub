@@ -562,6 +562,65 @@ class TestBoundedDownloads:
         assert len(hub.seen("slow.bin", "cdn")) == 1
         assert not (dirs[0] / "slow.bin").exists()
 
+    def test_trickling_headers_are_bounded_without_an_overall_deadline(self, hub, api, dirs, monkeypatch):
+        """requests cannot time out before the status line, so the header budget is the only bound.
+
+        The fixture trickles response headers for about 1.9s and then stops
+        without a body. Failing before the headers even finish proves the
+        header budget interrupted it; urllib3 re-wraps the reason as its own
+        read timeout, so only timing and type are asserted.
+        """
+        monkeypatch.setattr(_download, "DOWNLOAD_TOTAL_TIMEOUT", 0)
+        monkeypatch.setattr(_download, "DOWNLOAD_TIMEOUT", 0.3)
+        monkeypatch.setattr(_download, "DOWNLOAD_RETRY_TIMES", 0)
+        hub.add("drip.bin", b"x" * 100, header_trickle=True)
+        started = time.monotonic()
+        with pytest.raises(NetworkError):
+            api.download_file(REPO, "dataset", "drip.bin", local_dir=dirs[0], cache_dir=dirs[1], file_size=100)
+        assert time.monotonic() - started < 1.5
+
+    def test_a_steady_transfer_is_not_capped_by_default(self, hub, api, dirs):
+        """A healthy transfer slower than any fixed wall clock must still complete."""
+        assert _download.DOWNLOAD_TOTAL_TIMEOUT == 0
+        content = hub.add("steady.bin", os.urandom(4000), trickle_interval=0.0002)
+        path = api.download_file(
+            REPO, "dataset", "steady.bin", local_dir=dirs[0], cache_dir=dirs[1], file_size=len(content)
+        )
+        assert path.read_bytes() == content
+
+    def test_an_explicit_budget_names_the_variable_that_relaxes_it(self, hub, api, dirs, monkeypatch):
+        from modelscope_hub._download_control import _DownloadDeadlineError
+
+        monkeypatch.setattr(_download, "DOWNLOAD_TOTAL_TIMEOUT", 0.3)
+        hub.add("capped.bin", b"x" * 100, trickle_interval=0.05)
+        with pytest.raises(_DownloadDeadlineError) as excinfo:
+            api.download_file(REPO, "dataset", "capped.bin", local_dir=dirs[0], cache_dir=dirs[1], file_size=100)
+        message = str(excinfo.value)
+        assert "Per-file download time budget of 0.3s" in message
+        assert "MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT" in message
+
+    def test_cli_total_timeout_overrides_the_environment_default(self, hub, dirs, monkeypatch):
+        monkeypatch.setenv("MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT", "0")
+        hub.add("capped.bin", b"x" * 100, trickle_interval=0.05)
+        code = run_cmd(
+            [
+                "--endpoint",
+                hub.url,
+                "download",
+                REPO,
+                "--repo-type",
+                "dataset",
+                "--local-dir",
+                str(dirs[0]),
+                "--cache-dir",
+                str(dirs[1]),
+                "--total-timeout",
+                "0.3",
+            ]
+        )
+        assert code != 0
+        assert not (dirs[0] / "capped.bin").exists()
+
     def test_minimum_rate_interrupts_a_connection_that_never_goes_idle(self, hub, api, dirs, monkeypatch):
         from modelscope_hub._download_control import _DownloadTooSlowError
 
@@ -734,7 +793,7 @@ class TestDownloadConfiguration:
         import modelscope_hub.constants as constants
 
         expected = {
-            "DOWNLOAD_TOTAL_TIMEOUT": 3600,
+            "DOWNLOAD_TOTAL_TIMEOUT": 0,
             "DOWNLOAD_MIN_BYTES_PER_SECOND": 1024,
             "DOWNLOAD_LOW_SPEED_WINDOW_SECONDS": 60,
             "DOWNLOAD_RETRY_MAX_DELAY_SECONDS": 60,

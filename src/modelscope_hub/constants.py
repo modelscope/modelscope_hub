@@ -921,9 +921,10 @@ DOWNLOAD_TIMEOUT: int = _env_int(
 
 DOWNLOAD_TOTAL_TIMEOUT: int = _env_int(
     "MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT",
-    3600,
-    "Total time budget per file including retries, probes and lock wait (seconds)",
+    0,
+    "Per-file total time budget incl. retries, probes and lock wait (seconds; 0 = no limit)",
     "Download",
+    allow_zero=True,
 )
 DOWNLOAD_MIN_BYTES_PER_SECOND: int = _env_int(
     "MODELSCOPE_DOWNLOAD_MIN_BYTES_PER_SECOND",

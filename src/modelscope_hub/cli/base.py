@@ -76,6 +76,7 @@ def make_api(args: Namespace) -> HubApi:
         token=getattr(args, "token", None),
         endpoint=getattr(args, "endpoint", None),
         user_agent={"invoked_by": "cli"},
+        download_total_timeout=getattr(args, "total_timeout", None),
     )
 
 
