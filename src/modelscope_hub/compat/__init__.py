@@ -32,11 +32,15 @@ from .constants import (
     ModelVisibility_PUBLIC,
 )
 from .file_download import dataset_file_download, model_file_download
+from .hf_hub_patcher import hf_hub_patch_scope, patch_hf_hub, unpatch_hf_hub
 from .hub_api import LegacyHubApi
 from .snapshot_download import dataset_snapshot_download, snapshot_download
 
 __all__ = [
     "LegacyHubApi",
+    "hf_hub_patch_scope",
+    "patch_hf_hub",
+    "unpatch_hf_hub",
     "dataset_file_download",
     "dataset_snapshot_download",
     "model_file_download",
