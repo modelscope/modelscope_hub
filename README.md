@@ -246,10 +246,10 @@ Notes:
 
 ### Redirect huggingface_hub (`modelscope_hub.compat`)
 
-`modelscope_hub.compat.hf_hub_patcher` monkey-patches the `huggingface_hub` module-level functions that HF-ecosystem code calls — `hf_hub_download`, `file_exists`, `whoami`, `create_repo`, `upload_file`, `upload_folder`, `create_commit`, and the `repocard` helpers — onto ModelScope-backed implementations:
+`modelscope_hub.compat.hf_hub_patcher` monkey-patches the `huggingface_hub` module-level functions that HF-ecosystem code calls — `hf_hub_download`, `file_exists`, `whoami`, `create_repo`, `upload_file`, `upload_folder`, `create_commit`, and the `repocard` helpers — onto ModelScope-backed implementations. `huggingface_hub` is not a dependency of this SDK: install it yourself (`>=0.19` recommended) and the patch entry points check for it at call time, failing with an actionable error when it is missing:
 
 ```bash
-pip install "modelscope-hub[hf]"
+pip install huggingface_hub
 ```
 
 ```python

@@ -3,8 +3,10 @@
 Adapted from ``modelscope/utils/hf_util/patcher.py`` (Apache-2.0, Alibaba),
 re-targeted from the legacy ``modelscope`` SDK onto ``modelscope_hub``.
 The transformers/peft/diffusers patches stay with the ``modelscope`` package;
-this module must stay importable without transformers and only depends on
-``huggingface_hub`` (the optional ``hf`` extra).
+this module must stay importable without transformers. ``huggingface_hub``
+itself is *not* a declared dependency of this SDK — the patch entry points
+check for it at call time and raise an actionable ``ImportError`` when it is
+not installed.
 
 :func:`patch_hf_hub` replaces the ``huggingface_hub`` module-level functions
 that HF-ecosystem code calls — ``hf_hub_download``, ``file_exists``,
@@ -27,9 +29,9 @@ One deliberate behaviour change: uploads go through the ModelScope commit
 API (resumable, LFS-routed) instead of a local git clone + push.
 
 Version support: verified against ``huggingface_hub`` 0.19.4 (source-level
-symbol audit) and 1.32 (full test suite); the ``hf`` extra pins
-``huggingface_hub>=0.19``. Note that ``kernels>=0.17`` itself requires
-``huggingface_hub>=1.10``, so installing both extras resolves to a 1.x hub.
+symbol audit) and 1.32 (full test suite); ``huggingface_hub>=0.19`` is the
+documented minimum. Note that ``kernels>=0.17`` itself requires
+``huggingface_hub>=1.10``, so a ``kernels`` install resolves to a 1.x hub.
 """
 
 from __future__ import annotations
@@ -48,6 +50,24 @@ from modelscope_hub.utils.logger import get_logger
 logger = get_logger()
 
 __all__ = ["patch_hf_hub", "unpatch_hf_hub", "hf_hub_patch_scope"]
+
+
+def _require_hf_hub():
+    """Import ``huggingface_hub`` or raise an actionable ``ImportError``.
+
+    ``huggingface_hub`` is deliberately not a declared dependency of this
+    SDK; the huggingface_hub patches simply cannot work without it, so the
+    entry points fail with installation instructions at call time.
+    """
+    try:
+        import huggingface_hub
+    except ImportError as e:
+        raise ImportError(
+            "The `huggingface_hub` package is required to redirect huggingface_hub "
+            "calls to ModelScope, but it is not installed. "
+            "Install it with: pip install huggingface_hub"
+        ) from e
+    return huggingface_hub
 
 
 def _ms_revision(revision: str | None) -> str:
@@ -308,8 +328,11 @@ def patch_hf_hub() -> None:
     Idempotent: each function is guarded by its historical origin marker, so
     a legacy ``modelscope`` patcher that has already applied the same
     attribute names is respected instead of being double-patched.
+
+    Raises:
+        ImportError: when ``huggingface_hub`` is not installed.
     """
-    import huggingface_hub
+    huggingface_hub = _require_hf_hub()
     from huggingface_hub import hf_api, repocard
 
     if not hasattr(hf_api, "_hf_hub_download_origin"):
@@ -362,9 +385,17 @@ def patch_hf_hub() -> None:
 
 
 def unpatch_hf_hub() -> None:
-    """Undo :func:`patch_hf_hub` and restore the original huggingface_hub functions."""
-    import huggingface_hub
-    from huggingface_hub import hf_api, repocard
+    """Undo :func:`patch_hf_hub` and restore the original huggingface_hub functions.
+
+    Without ``huggingface_hub`` nothing can have been patched, so this is a
+    silent no-op rather than an error (patch/unpatch stay symmetric in
+    minimal environments).
+    """
+    try:
+        import huggingface_hub
+        from huggingface_hub import hf_api, repocard
+    except ImportError:
+        return
 
     if hasattr(repocard.RepoCard, "_validate_origin"):
         repocard.RepoCard.validate = repocard.RepoCard._validate_origin
@@ -430,7 +461,11 @@ def hf_hub_patch_scope():
     Nesting is safe: an already-applied patch (including one applied by the
     legacy ``modelscope`` patcher) is reused, and only the outermost scope
     restores the original functions.
+
+    Raises:
+        ImportError: when ``huggingface_hub`` is not installed.
     """
+    _require_hf_hub()
     from huggingface_hub import hf_api
 
     if hasattr(hf_api, "_hf_hub_download_origin"):

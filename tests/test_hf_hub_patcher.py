@@ -351,3 +351,32 @@ def test_module_has_no_transformers_import():
     source = inspect.getsource(hf_hub_patcher)
     assert "import transformers" not in source
     assert "from transformers" not in source
+
+
+# ---------------------------------------------------------------------------
+# huggingface_hub is not a declared dependency: fail at call time
+# ---------------------------------------------------------------------------
+def test_patch_raises_actionable_error_without_hf_hub(monkeypatch):
+    """No `hf` extra exists: patch_hf_hub fails with install instructions."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    with pytest.raises(ImportError, match="pip install huggingface_hub"):
+        patch_hf_hub()
+
+
+def test_unpatch_is_noop_without_hf_hub(monkeypatch):
+    """Nothing can have been patched, so unpatch stays a silent no-op."""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    unpatch_hf_hub()  # must not raise
+
+
+def test_patch_scope_raises_actionable_error_without_hf_hub(monkeypatch):
+    import sys
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", None)
+    with pytest.raises(ImportError, match="pip install huggingface_hub"):
+        with hf_hub_patch_scope():
+            pass

@@ -41,12 +41,6 @@ dev = [
 kernels = [
     "kernels>=0.17",
 ]
-# Runtime extra for the huggingface_hub monkey-patcher in
-# `modelscope_hub.compat.hf_hub_patcher` (also a transitive dependency of the
-# `kernels` extra).
-hf = [
-    "huggingface-hub>=0.19",
-]
 
 [project.scripts]
 # This package owns every ModelScope console script. Keeping all four in one
