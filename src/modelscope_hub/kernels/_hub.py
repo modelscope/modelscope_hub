@@ -22,6 +22,7 @@ and this module must stay importable without it.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -68,6 +69,29 @@ def _note_commit_hash_hint(exc: BaseException, revision: str | None) -> None:
 def _ms_revision(revision: str | None) -> str:
     """Translate an HF revision string into one ModelScope accepts."""
     return "master" if revision in (None, "main") else revision
+
+
+#: Synthetic OID -> ModelScope branch/tag name, filled by ``list_repo_refs``.
+#: ModelScope's revision API does not expose git commit hashes, but kernels
+#: 0.18 validates ``Oid.from_str(target_commit)`` (40/64 hex digits) and both
+#: kernels 0.17 and 0.18 use ``target_commit`` as the download revision. The
+#: shim therefore hands out a deterministic synthetic OID per (repo, ref) and
+#: maps it back to the real ref name at every download/list entry point.
+_synthetic_oids: dict[str, str] = {}
+
+
+def _synthetic_oid(repo_id: str, ref_name: str) -> str:
+    """A stable 40-hex stand-in for the commit hash ModelScope does not expose."""
+    oid = hashlib.sha1(f"{repo_id}:{ref_name}".encode()).hexdigest()
+    _synthetic_oids.setdefault(oid, ref_name)
+    return oid
+
+
+def _resolve_revision(revision: str | None) -> str | None:
+    """Map a synthetic OID back to its ModelScope branch/tag name."""
+    if revision is None:
+        return None
+    return _synthetic_oids.get(str(revision), revision)
 
 
 def _ms_repo_type(repo_type: str | None) -> str:
@@ -128,11 +152,12 @@ class MsKernelApi:
         """Download a repository snapshot, mirroring ``HfApi.snapshot_download``."""
         from huggingface_hub.errors import LocalEntryNotFoundError
 
+        ms_revision = _ms_revision(_resolve_revision(revision))
         try:
             return self._api().download_repo(
                 repo_id,
                 _ms_repo_type(repo_type),
-                revision=_ms_revision(revision),
+                revision=ms_revision,
                 cache_dir=Path(cache_dir) if cache_dir else None,
                 allow_patterns=allow_patterns,
                 ignore_patterns=ignore_patterns,
@@ -141,7 +166,7 @@ class MsKernelApi:
             )
         except modelscope_hub.CacheNotFound as e:
             raise LocalEntryNotFoundError(
-                f"Cannot find a local snapshot for {repo_id} (revision: {_ms_revision(revision)}). "
+                f"Cannot find a local snapshot for {repo_id} (revision: {ms_revision}). "
                 "The kernel must be downloaded while online first."
             ) from e
         except modelscope_hub.NotExistError as e:
@@ -164,12 +189,13 @@ class MsKernelApi:
 
         if repo_id is None or filename is None:
             raise ValueError("Both `repo_id` and `filename` must be provided.")
+        ms_revision = _ms_revision(_resolve_revision(revision))
         try:
             return self._api().download_file(
                 repo_id,
                 _ms_repo_type(repo_type),
                 file_path=filename,
-                revision=_ms_revision(revision),
+                revision=ms_revision,
                 cache_dir=Path(cache_dir) if cache_dir else None,
                 local_files_only=local_files_only,
                 user_agent=_user_agent(self._user_agent),
@@ -177,13 +203,11 @@ class MsKernelApi:
         except modelscope_hub.CacheNotFound as e:
             raise LocalEntryNotFoundError(
                 f"Cannot find the local cache entry for {repo_id}/{filename} "
-                f"(revision: {_ms_revision(revision)}). The file must be downloaded while online first."
+                f"(revision: {ms_revision}). The file must be downloaded while online first."
             ) from e
         except modelscope_hub.NotExistError as e:
             _note_commit_hash_hint(e, revision)
-            raise EntryNotFoundError(
-                f"File {filename} does not exist in {repo_id} (revision: {_ms_revision(revision)})."
-            ) from e
+            raise EntryNotFoundError(f"File {filename} does not exist in {repo_id} (revision: {ms_revision}).") from e
 
     # ------------------------------------------------------------------
     # Repository metadata
@@ -191,12 +215,16 @@ class MsKernelApi:
     def list_repo_refs(self, repo_id: str | None = None, *, repo_type: str | None = None, **kwargs):
         """List repository branches and tags, mirroring ``HfApi.list_repo_refs``.
 
-        ModelScope accepts branch/tag names as revisions, so ``target_commit``
-        reuses the name: kernels passes it on as the revision for later calls.
-        When the repository carries no ``v<N>`` refs at all (typical for a
-        plain mirror with only a ``master`` branch), ``master`` is exposed as
-        kernel version ``v1`` so that ``get_kernel(..., version=1)`` works
-        without the mirror having to create version branches.
+        ModelScope's revision API does not expose git commit hashes, so every
+        ref's ``target_commit`` is a deterministic synthetic OID for the ref
+        name (see :func:`_synthetic_oid`); the download entry points map it
+        back to the real name, so both kernels 0.17 (which downloads by
+        ``target_commit`` verbatim) and kernels 0.18 (which validates it with
+        ``Oid.from_str`` before fetching) work unchanged. When the repository
+        carries no ``v<N>`` refs at all (typical for a plain mirror with only
+        a ``master`` branch), ``master`` is exposed as kernel version ``v1``
+        so that ``get_kernel(..., version=1)`` works without the mirror having
+        to create version branches.
         """
         from huggingface_hub.hf_api import GitRefInfo
 
@@ -204,15 +232,25 @@ class MsKernelApi:
             raise ValueError("`repo_id` must be provided.")
         branches, tags = self._api().legacy.list_revisions_detail(repo_id, _ms_repo_type(repo_type))
         branch_refs = [
-            GitRefInfo(name=ref["Revision"], ref=f"refs/heads/{ref['Revision']}", target_commit=ref["Revision"])
+            GitRefInfo(
+                name=ref["Revision"],
+                ref=f"refs/heads/{ref['Revision']}",
+                target_commit=_synthetic_oid(repo_id, ref["Revision"]),
+            )
             for ref in branches or []
         ]
         tag_refs = [
-            GitRefInfo(name=ref["Revision"], ref=f"refs/tags/{ref['Revision']}", target_commit=ref["Revision"])
+            GitRefInfo(
+                name=ref["Revision"],
+                ref=f"refs/tags/{ref['Revision']}",
+                target_commit=_synthetic_oid(repo_id, ref["Revision"]),
+            )
             for ref in tags or []
         ]
         if not any(_VERSION_REF_RE.fullmatch(ref.name) for ref in branch_refs + tag_refs):
-            branch_refs.append(GitRefInfo(name="v1", ref="refs/heads/v1", target_commit="master"))
+            branch_refs.append(
+                GitRefInfo(name="v1", ref="refs/heads/v1", target_commit=_synthetic_oid(repo_id, "master"))
+            )
         return SimpleNamespace(branches=branch_refs, tags=tag_refs, converts=[])
 
     def list_repo_tree(
@@ -240,7 +278,7 @@ class MsKernelApi:
         infos = self._api().list_repo_files(
             repo_id,
             _ms_repo_type(repo_type),
-            revision=_ms_revision(revision),
+            revision=_ms_revision(_resolve_revision(revision)),
             recursive=True,
         )
         folders: set[str] = set()
@@ -275,7 +313,7 @@ class MsKernelApi:
         infos = self._api().list_repo_files(
             repo_id,
             _ms_repo_type(repo_type),
-            revision=_ms_revision(revision),
+            revision=_ms_revision(_resolve_revision(revision)),
             recursive=True,
         )
         return any(info.path == filename for info in infos)

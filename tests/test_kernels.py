@@ -157,16 +157,19 @@ def test_list_repo_refs_builds_hf_ref_objects():
     fake.legacy.list_revisions_detail.assert_called_once_with("kernels-community/activation", "model")
     assert [b.name for b in refs.branches] == ["v1", "v2", "master"]
     assert [t.name for t in refs.tags] == ["1.0"]
-    # ModelScope accepts branch/tag names as revisions, so the name doubles
-    # as the target commit used by later kernels calls.
     assert all(isinstance(b, hf_api.GitRefInfo) for b in refs.branches)
-    assert all(b.target_commit == b.name for b in refs.branches)
+    # target_commit is a synthetic hex OID (kernels 0.18 validates it with
+    # Oid.from_str); the download entry points map it back to the ref name.
+    import re as _re
+
+    assert all(_re.fullmatch(r"[0-9a-f]{40}", b.target_commit) for b in refs.branches)
     assert refs.converts == []
 
 
 def test_list_repo_refs_synthesizes_v1_when_no_version_refs():
     """A plain ModelScope mirror with only `master` exposes it as kernel version v1."""
     pytest.importorskip("huggingface_hub.hf_api")
+    import re as _re
 
     fake = mock.MagicMock()
     fake.legacy.list_revisions_detail.return_value = ([{"Revision": "master"}], [])
@@ -176,8 +179,9 @@ def test_list_repo_refs_synthesizes_v1_when_no_version_refs():
 
     v1 = [b for b in refs.branches if b.name == "v1"]
     assert len(v1) == 1
-    # The synthetic v1 ref resolves downloads back onto `master`.
-    assert v1[0].target_commit == "master"
+    # The synthetic v1 ref carries a hex OID that resolves downloads back
+    # onto `master` (see test_synthetic_oid_resolved_back_to_branch_on_downloads).
+    assert _re.fullmatch(r"[0-9a-f]{40}", v1[0].target_commit)
 
 
 # ---------------------------------------------------------------------------
@@ -529,3 +533,62 @@ def test_hf_hub_download_branch_failure_gets_no_lockfile_hint():
         api.hf_hub_download("kernels-community/activation", filename="missing.json", revision="v1")
 
     assert not list(getattr(excinfo.value.__cause__, "__notes__", ()))
+
+
+# ---------------------------------------------------------------------------
+# Synthetic OIDs (kernels 0.18 validates target_commit as a git object id)
+# ---------------------------------------------------------------------------
+def test_list_repo_refs_returns_hex_target_commits():
+    import re as _re
+
+    fake = mock.MagicMock()
+    fake.legacy.list_revisions_detail.return_value = ([{"Revision": "master"}], [])
+    api = MsKernelApi(hub_api=fake)
+
+    refs = api.list_repo_refs("kernels-community/activation")
+    # kernels 0.18 requires Oid.from_str(target_commit): 40/64 hex digits.
+    for ref in refs.branches + refs.tags:
+        assert _re.fullmatch(r"[0-9a-f]{40}", ref.target_commit), ref
+    # Master-only mirror: the synthesized v1 ref also carries a hex OID.
+    v1 = next(r for r in refs.branches if r.name == "v1")
+    assert _re.fullmatch(r"[0-9a-f]{40}", v1.target_commit)
+    # Deterministic: same repo/ref always maps to the same OID.
+    fake.legacy.list_revisions_detail.return_value = ([{"Revision": "master"}], [])
+    again = api.list_repo_refs("kernels-community/activation")
+    assert next(r for r in again.branches if r.name == "v1").target_commit == v1.target_commit
+
+
+def test_synthetic_oid_resolved_back_to_branch_on_downloads():
+    fake = mock.MagicMock()
+    fake.legacy.list_revisions_detail.return_value = ([{"Revision": "master"}], [])
+    api = MsKernelApi(hub_api=fake)
+
+    refs = api.list_repo_refs("kernels-community/activation")
+    oid = refs.branches[0].target_commit  # master's synthetic OID (0.17-style resolve)
+    v1_oid = next(r.target_commit for r in refs.branches if r.name == "v1")
+
+    # kernels passes the OID as the download revision (both 0.17 and 0.18);
+    # the shim maps it back to the real ModelScope ref name.
+    api.snapshot_download("kernels-community/activation", repo_type="kernel", revision=oid)
+    assert fake.download_repo.call_args.kwargs["revision"] == "master"
+
+    api.hf_hub_download("kernels-community/activation", filename="README.md", revision=v1_oid)
+    assert fake.download_file.call_args.kwargs["revision"] == "master"
+
+    api.list_repo_tree("kernels-community/activation", revision=oid)
+    assert fake.list_repo_files.call_args.kwargs["revision"] == "master"
+
+    api.file_exists("kernels-community/activation", "README.md", revision=oid)
+    assert fake.list_repo_files.call_args.kwargs["revision"] == "master"
+
+
+def test_plain_revision_not_mapped():
+    """A normal branch/tag revision passes through untouched."""
+    fake = mock.MagicMock()
+    api = MsKernelApi(hub_api=fake)
+
+    api.snapshot_download("kernels-community/activation", repo_type="kernel", revision="v2")
+    assert fake.download_repo.call_args.kwargs["revision"] == "v2"
+
+    api.snapshot_download("kernels-community/activation", repo_type="kernel", revision=None)
+    assert fake.download_repo.call_args.kwargs["revision"] == "master"
