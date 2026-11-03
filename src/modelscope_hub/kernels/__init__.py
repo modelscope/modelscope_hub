@@ -29,7 +29,16 @@ Example:
 
 from __future__ import annotations
 
-from modelscope_hub.kernels._load import get_kernel, get_kernel_variants, get_local_kernel, has_kernel
+from modelscope_hub.kernels._load import (
+    get_kernel,
+    get_kernel_variants,
+    get_local_kernel,
+    get_locked_kernel,
+    has_kernel,
+    install_kernel,
+    install_kernel_all_variants,
+    load_kernel,
+)
 from modelscope_hub.kernels._patch import patch_kernels_hub, patch_scope, unpatch_kernels_hub
 
 __all__ = [
@@ -37,6 +46,10 @@ __all__ = [
     "get_kernel_variants",
     "get_local_kernel",
     "has_kernel",
+    "install_kernel",
+    "install_kernel_all_variants",
+    "get_locked_kernel",
+    "load_kernel",
     "patch_kernels_hub",
     "patch_scope",
     "unpatch_kernels_hub",

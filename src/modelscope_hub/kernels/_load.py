@@ -13,7 +13,16 @@ from types import ModuleType
 
 from modelscope_hub.kernels._patch import patch_scope
 
-__all__ = ["get_kernel", "get_kernel_variants", "get_local_kernel", "has_kernel"]
+__all__ = [
+    "get_kernel",
+    "get_kernel_variants",
+    "get_local_kernel",
+    "has_kernel",
+    "install_kernel",
+    "install_kernel_all_variants",
+    "get_locked_kernel",
+    "load_kernel",
+]
 
 
 def _require_kernels() -> ModuleType:
@@ -182,4 +191,142 @@ def get_local_kernel(
             repo_path,
             backend=backend,
             trust_remote_code=trust_remote_code,
+        )
+
+
+def install_kernel(
+    repo_id: str,
+    *,
+    revision: str | None = None,
+    version: int | None = None,
+    backend: str | None = None,
+    local_files_only: bool = False,
+    user_agent: str | dict | None = None,
+    trust_remote_code: bool | list[str] = False,
+) -> Path:
+    """Download a kernel for the current environment into the local cache.
+
+    Unlike :func:`get_kernel` the kernel is not imported; this is the entry
+    point for CI pre-installation and offline preparation. Arguments are the
+    same as :func:`get_kernel` (plus ``local_files_only``).
+
+    Returns:
+        `Path`: The path to the downloaded variant directory.
+    """
+    kernels = _require_kernels()
+    with patch_scope():
+        return kernels.install_kernel(
+            repo_id,
+            revision=revision,
+            version=version,
+            backend=backend,
+            local_files_only=local_files_only,
+            user_agent=user_agent,
+            trust_remote_code=trust_remote_code,
+        )
+
+
+def install_kernel_all_variants(
+    repo_id: str,
+    *,
+    revision: str | None = None,
+    version: int | None = None,
+) -> Path:
+    """Download every build variant of a kernel (and its dependencies).
+
+    Uses the locking code path to resolve the full dependency tree, so the
+    ``revision``/``version`` recorded in the resulting lock state refers to
+    ModelScope commits. A lockfile produced against the Hugging Face Hub
+    cannot resolve here: the two hubs have different git histories, and
+    commit hashes recorded on one are meaningless on the other.
+
+    Returns:
+        `Path`: The path to the ``build`` directory of the requested kernel.
+    """
+    _require_kernels()
+    # Not exported on the `kernels` top level (0.17/0.18); live in the
+    # `kernels.install` submodule, which `kernels` itself imports at load time.
+    from kernels.install import install_kernel_all_variants as _install_all
+
+    with patch_scope():
+        return _install_all(
+            repo_id,
+            revision=revision,
+            version=version,
+        )
+
+
+def get_locked_kernel(
+    repo_id: str,
+    *,
+    lockfile: Path | None = None,
+    trust_remote_code: bool | list[str] = False,
+    user_agent: str | dict | None = None,
+) -> ModuleType:
+    """Load a kernel pinned by a lockfile, downloading missing pieces.
+
+    Important: kernel lockfiles record hub-specific commit hashes. A lockfile
+    created against the Hugging Face Hub (e.g. via the ``kernels`` CLI there)
+    cannot resolve on ModelScope — the recorded commits do not exist on the
+    ModelScope mirror. Create the lockfile in the ModelScope environment
+    (``get_locked_kernel`` / ``install_kernel_all_variants`` from this
+    package, or the ``kernels`` CLI under ``patch_kernels_hub()``) so it
+    records ModelScope commits.
+
+    Args:
+        repo_id (`str`):
+            The ModelScope model repository containing the kernel.
+        lockfile (`Path`, *optional*):
+            Path to the lockfile. When not provided, the lockfile is loaded
+            from the caller's package metadata.
+        trust_remote_code (`bool | list[str]`, *optional*, defaults to `False`):
+            Whether to allow loading kernels from untrusted organisations.
+        user_agent (`Union[str, dict]`, *optional*):
+            Extra telemetry info appended to the ModelScope SDK user agent.
+
+    Returns:
+        `ModuleType`: The imported kernel module.
+    """
+    kernels = _require_kernels()
+    with patch_scope():
+        return kernels.get_locked_kernel(
+            repo_id,
+            lockfile=lockfile,
+            trust_remote_code=trust_remote_code,
+            user_agent=user_agent,
+        )
+
+
+def load_kernel(
+    repo_id: str,
+    *,
+    lockfile: Path | None = None,
+    backend: str | None = None,
+) -> ModuleType:
+    """Import a pre-downloaded, locked kernel from the local cache.
+
+    Never downloads: the kernel must already have been installed locally (via
+    :func:`install_kernel`, :func:`install_kernel_all_variants`, or
+    :func:`get_kernel`). Raises when the kernel is not available locally.
+    The lockfile must have been created in the ModelScope environment (see
+    :func:`get_locked_kernel`).
+
+    Args:
+        repo_id (`str`):
+            The kernel repository the lockfile pins.
+        lockfile (`Path`, *optional*):
+            Path to the lockfile. When not provided, the lockfile is loaded
+            from the caller's package metadata.
+        backend (`str`, *optional*):
+            The backend to load the kernel for.
+
+    Returns:
+        `ModuleType`: The imported kernel module.
+    """
+    kernels = _require_kernels()
+    with patch_scope():
+        return kernels.load_kernel(
+            repo_id,
+            lockfile=lockfile,
+            backend=backend,
         )

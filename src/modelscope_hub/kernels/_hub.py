@@ -39,6 +39,31 @@ TRUSTED_KERNEL_PUBLISHERS: frozenset[str] = frozenset({"kernels-community"})
 # Kernel-version refs (``v1``, ``v2``, ...) as created by the kernels Hub.
 _VERSION_REF_RE = re.compile(r"v(\d+)")
 
+# Full git commit hashes (SHA-1); lockfiles pin revisions this way.
+_COMMIT_HASH_RE = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+
+_LOCKFILE_COMMIT_HINT = (
+    "Revision {revision!r} looks like a commit hash. Commit hashes are "
+    "hub-specific: a kernel lockfile created against the Hugging Face Hub "
+    "cannot resolve on ModelScope. Re-create the lockfile in the ModelScope "
+    "environment (get_locked_kernel / install_kernel_all_variants from "
+    "modelscope_hub.kernels, or the kernels CLI under patch_kernels_hub) so "
+    "it records ModelScope commits."
+)
+
+
+def _note_commit_hash_hint(exc: BaseException, revision: str | None) -> None:
+    """Append a lockfile hint when a full commit-hash revision is not found.
+
+    PEP 678 notes require Python 3.11+; on older interpreters the hint is
+    skipped silently (the original exception propagates unchanged either way).
+    """
+    if revision is None or not _COMMIT_HASH_RE.fullmatch(str(revision)):
+        return
+    add_note = getattr(exc, "add_note", None)
+    if add_note is not None:
+        add_note(_LOCKFILE_COMMIT_HINT.format(revision=revision))
+
 
 def _ms_revision(revision: str | None) -> str:
     """Translate an HF revision string into one ModelScope accepts."""
@@ -119,6 +144,9 @@ class MsKernelApi:
                 f"Cannot find a local snapshot for {repo_id} (revision: {_ms_revision(revision)}). "
                 "The kernel must be downloaded while online first."
             ) from e
+        except modelscope_hub.NotExistError as e:
+            _note_commit_hash_hint(e, revision)
+            raise
 
     def hf_hub_download(
         self,
@@ -152,6 +180,7 @@ class MsKernelApi:
                 f"(revision: {_ms_revision(revision)}). The file must be downloaded while online first."
             ) from e
         except modelscope_hub.NotExistError as e:
+            _note_commit_hash_hint(e, revision)
             raise EntryNotFoundError(
                 f"File {filename} does not exist in {repo_id} (revision: {_ms_revision(revision)})."
             ) from e

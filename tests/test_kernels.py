@@ -386,3 +386,146 @@ def test_scoped_call_inside_global_patch_keeps_global_patch(kernels_modules, mon
         unpatch_kernels_hub()
 
     assert kernels_hf_hub._get_hf_api is original
+
+
+# ---------------------------------------------------------------------------
+# New scoped wrappers: install / lock entries
+# ---------------------------------------------------------------------------
+def test_install_kernel_wrapper_scopes_the_patch(kernels_modules, monkeypatch):
+    from modelscope_hub.kernels import install_kernel
+
+    kernels, kernels_hf_hub, _ = kernels_modules
+    original = kernels_hf_hub._get_hf_api
+    calls = {}
+
+    def fake_install(repo_id, **kwargs):
+        calls["patched"] = kernels_hf_hub._get_hf_api is _ms_api
+        calls["repo_id"] = repo_id
+        calls["kwargs"] = kwargs
+        return Path("/cache/variants/x")
+
+    monkeypatch.setattr(kernels, "install_kernel", fake_install)
+
+    result = install_kernel(
+        "kernels-community/activation",
+        version=1,
+        local_files_only=False,
+        trust_remote_code=True,
+    )
+    assert result == Path("/cache/variants/x")
+    assert calls["patched"] is True
+    assert calls["repo_id"] == "kernels-community/activation"
+    assert calls["kwargs"]["version"] == 1
+    assert calls["kwargs"]["trust_remote_code"] is True
+    assert kernels_hf_hub._get_hf_api is original
+
+
+def test_install_kernel_all_variants_wrapper_scopes_the_patch(kernels_modules, monkeypatch):
+    from modelscope_hub.kernels import install_kernel_all_variants
+
+    kernels, kernels_hf_hub, _ = kernels_modules
+    original = kernels_hf_hub._get_hf_api
+    calls = {}
+
+    def fake_install_all(repo_id, **kwargs):
+        calls["patched"] = kernels_hf_hub._get_hf_api is _ms_api
+        return Path("/cache/build")
+
+    # `install_kernel_all_variants` lives in the `kernels.install` submodule
+    # and is not exported on the `kernels` top level.
+    monkeypatch.setattr(kernels.install, "install_kernel_all_variants", fake_install_all)
+
+    result = install_kernel_all_variants("kernels-community/activation", version=1)
+    assert result == Path("/cache/build")
+    assert calls["patched"] is True
+    assert kernels_hf_hub._get_hf_api is original
+
+
+def test_get_locked_kernel_wrapper_scopes_the_patch(kernels_modules, monkeypatch, tmp_path):
+    from modelscope_hub.kernels import get_locked_kernel
+
+    kernels, kernels_hf_hub, _ = kernels_modules
+    original = kernels_hf_hub._get_hf_api
+    calls = {}
+
+    def fake_get_locked(repo_id, **kwargs):
+        calls["patched"] = kernels_hf_hub._get_hf_api is _ms_api
+        calls["kwargs"] = kwargs
+        return "kernel-module"
+
+    monkeypatch.setattr(kernels, "get_locked_kernel", fake_get_locked)
+
+    lockfile = tmp_path / "kernel-lock.toml"
+    result = get_locked_kernel("kernels-community/activation", lockfile=lockfile)
+    assert result == "kernel-module"
+    assert calls["patched"] is True
+    assert calls["kwargs"]["lockfile"] == lockfile
+    assert kernels_hf_hub._get_hf_api is original
+
+
+def test_load_kernel_wrapper_scopes_the_patch(kernels_modules, monkeypatch, tmp_path):
+    from modelscope_hub.kernels import load_kernel
+
+    kernels, kernels_hf_hub, _ = kernels_modules
+    original = kernels_hf_hub._get_hf_api
+    calls = {}
+
+    def fake_load(repo_id, **kwargs):
+        calls["patched"] = kernels_hf_hub._get_hf_api is _ms_api
+        return "kernel-module"
+
+    monkeypatch.setattr(kernels, "load_kernel", fake_load)
+
+    lockfile = tmp_path / "kernel-lock.toml"
+    result = load_kernel("kernels-community/activation", lockfile=lockfile, backend="cpu")
+    assert result == "kernel-module"
+    assert calls["patched"] is True
+    assert kernels_hf_hub._get_hf_api is original
+
+
+# ---------------------------------------------------------------------------
+# Lockfile commit-hash hint
+# ---------------------------------------------------------------------------
+def test_hf_hub_download_commit_hash_failure_gets_lockfile_hint():
+    hf_errors = pytest.importorskip("huggingface_hub.errors")
+    fake = mock.MagicMock()
+    fake.download_file.side_effect = NotExistError("no such revision")
+    api = MsKernelApi(hub_api=fake)
+
+    commit = "a" * 40
+    with pytest.raises(hf_errors.EntryNotFoundError) as excinfo:
+        api.hf_hub_download("kernels-community/activation", filename="build/x/metadata.json", revision=commit)
+
+    cause = excinfo.value.__cause__
+    assert cause is not None
+    # PEP 678 notes exist on Python 3.11+; the hint text is in the notes.
+    notes = list(getattr(cause, "__notes__", ()))
+    if notes:
+        assert any("lockfile" in note for note in notes)
+        assert commit in "".join(notes)
+
+
+def test_snapshot_download_commit_hash_failure_propagates_with_hint():
+    fake = mock.MagicMock()
+    fake.download_repo.side_effect = NotExistError("no such revision")
+    api = MsKernelApi(hub_api=fake)
+
+    commit = "b" * 40
+    with pytest.raises(NotExistError) as excinfo:
+        api.snapshot_download("kernels-community/activation", repo_type="kernel", revision=commit)
+
+    notes = list(getattr(excinfo.value, "__notes__", ()))
+    if notes:
+        assert any("lockfile" in note for note in notes)
+
+
+def test_hf_hub_download_branch_failure_gets_no_lockfile_hint():
+    hf_errors = pytest.importorskip("huggingface_hub.errors")
+    fake = mock.MagicMock()
+    fake.download_file.side_effect = NotExistError("no such file")
+    api = MsKernelApi(hub_api=fake)
+
+    with pytest.raises(hf_errors.EntryNotFoundError) as excinfo:
+        api.hf_hub_download("kernels-community/activation", filename="missing.json", revision="v1")
+
+    assert not list(getattr(excinfo.value.__cause__, "__notes__", ()))
