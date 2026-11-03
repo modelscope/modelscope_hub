@@ -34,6 +34,13 @@ dev = [
     "ruff",
     "mypy",
 ]
+# Runtime extra for the `modelscope_hub.kernels` package: the upstream
+# `kernels` library (with huggingface_hub as a transitive dependency) provides
+# the kernel loading machinery that `modelscope_hub.kernels` redirects onto
+# ModelScope.
+kernels = [
+    "kernels>=0.17",
+]
 
 [project.scripts]
 # This package owns every ModelScope console script. Keeping all four in one
@@ -94,5 +101,5 @@ strict = false
 warn_return_any = false
 
 [[tool.mypy.overrides]]
-module = ["tqdm.*", "modelscope.*"]
+module = ["tqdm.*", "modelscope.*", "kernels.*", "huggingface_hub.*"]
 ignore_missing_imports = true

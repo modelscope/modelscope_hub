@@ -133,3 +133,4 @@ ckpt/
 
 # ast template
 ast_index_file.py
+modelscope
