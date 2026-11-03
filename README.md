@@ -244,31 +244,6 @@ Notes:
 - ModelScope has no trusted-publisher flag, so untrusted publishers are rejected by default: only `kernels-community` is trusted out of the box. Extend the allowlist with `MS_KERNELS_TRUSTED_PUBLISHERS` (comma-separated), or allow specific repositories / all repositories through the trust parameters of `get_kernel` (its docstring mirrors the kernel library's API).
 - The mirror must contain kernels built for your exact Torch version and platform (`kernels` selects `build/torchXY-...-<cpu>-<os>/`); a repository whose builds predate `kernels` 0.17 metadata cannot be loaded until it is rebuilt with a current `kernel-builder`.
 
-### Redirect huggingface_hub (`modelscope_hub.compat`)
-
-`modelscope_hub.compat.hf_hub_patcher` monkey-patches the `huggingface_hub` module-level functions that HF-ecosystem code calls — `hf_hub_download`, `file_exists`, `whoami`, `create_repo`, `upload_file`, `upload_folder`, `create_commit`, and the `repocard` helpers — onto ModelScope-backed implementations. `huggingface_hub` is not a dependency of this SDK: install it yourself (`>=0.19` recommended) and the patch entry points check for it at call time, failing with an actionable error when it is missing:
-
-```bash
-pip install huggingface_hub
-```
-
-```python
-from modelscope_hub.compat import hf_hub_patch_scope, patch_hf_hub, unpatch_hf_hub
-
-# Globally redirect huggingface_hub to ModelScope
-patch_hf_hub()
-...  # any HF-ecosystem code now downloads/uploads via ModelScope
-unpatch_hf_hub()
-
-# Or scoped to a block; nesting reuses the outer patch
-with hf_hub_patch_scope():
-    ...
-```
-
-- The `modelscope` framework's `patch_hub()` builds on this implementation (plus its transformers/peft/diffusers class patches); the compatibility contract is kept stable: `whoami` returns `{'name': ...}`, `create_repo` returns a `RepoUrl`-shaped str, upload functions return a commit info whose `commit_url` points at `{endpoint}/models/{repo_id}/files`, the default revision is `master`, and `create_commit` only supports `Add` operations.
-- Patches are idempotent and marked with the historical origin attributes, so an already-applied legacy `modelscope` patcher and this module treat each other as already patched.
-- Uploads go through the ModelScope commit API (resumable, LFS-routed) rather than a local git clone + push.
-
 ### Continuous dataset downloads
 
 For migration jobs, `download_repo_report` continues past isolated file failures and returns an explicit `COMPLETE` or `PARTIAL` report. The original `download_repo` and `snapshot_download` remain strict by default.
