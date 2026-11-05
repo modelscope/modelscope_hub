@@ -1,0 +1,11 @@
+# Author identity normalization.
+# Format: Proper Name <proper@email> Commit Name <commit@email>
+
+# Same address, several display names.
+班扬 <xingjun.wxj@alibaba-inc.com> Xingjun.Wang <xingjun.wxj@alibaba-inc.com>
+班扬 <xingjun.wxj@alibaba-inc.com> xingjun.wxj <xingjun.wxj@alibaba-inc.com>
+班扬 <xingjun.wxj@alibaba-inc.com> xingjun.wang <xingjun.wxj@alibaba-inc.com>
+
+# Commits whose author field was overridden by a tooling bug; the committer is
+# the real author. Keep this entry while the recorded history still needs it.
+班扬 <xingjun.wxj@alibaba-inc.com> Cheney Zhang <chen.zhang@zilliz.com>
