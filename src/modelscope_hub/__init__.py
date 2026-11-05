@@ -9,6 +9,8 @@ exported alongside it provide structured return types for type-checked code.
 
 from __future__ import annotations
 
+from ._cache_clear import execute_cache_clear, plan_cache_clear
+from ._cache_layout import identify_cached_repo, resolve_cached_file, resolve_cached_snapshot
 from ._download import ProgressCallback, TqdmCallback
 from .agent_idp import (
     generate_agent_key_pair,
@@ -18,7 +20,7 @@ from .agent_idp import (
     write_private_jwk,
 )
 from .api import HubApi
-from .config import HubConfig, get_default_config, set_default_config
+from .config import HubConfig, get_cache_root, get_default_config, set_default_config
 from .constants import (
     AigcModelType,
     DatasetCategory,
@@ -62,6 +64,8 @@ from .types import (
     AgentJWK,
     AgentToken,
     AgentTokenRecord,
+    CacheClearPlan,
+    CacheClearTarget,
     CachedRepoInfo,
     CacheInfo,
     CacheVerification,
@@ -85,6 +89,14 @@ __all__ = [
     "HubConfig",
     "get_default_config",
     "set_default_config",
+    "get_cache_root",
+    "resolve_cached_snapshot",
+    "resolve_cached_file",
+    "identify_cached_repo",
+    "plan_cache_clear",
+    "execute_cache_clear",
+    "CacheClearPlan",
+    "CacheClearTarget",
     # Enums
     "AigcModelType",
     "DatasetCategory",

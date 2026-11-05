@@ -83,6 +83,7 @@ class _CacheClear(CLICommand):
         )
         p.add_argument("--repo-id", dest="repo_id", default=None)
         p.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt.")
+        p.add_argument("--dry-run", action="store_true", help="Preview exact targets without deleting.")
         p.set_defaults(_command=CacheCommand, _cache_leaf=_CacheClear)
 
     def execute(self) -> None:
@@ -95,17 +96,27 @@ class _CacheClear(CLICommand):
             )
             raise SystemExit(2)
 
-        scope = self.args.repo_id or self.args.repo_type or "the entire cache"
+        scope = self.args.repo_id or self.args.repo_type or "identified repository caches"
+        api = make_api(self.args)
+        plan = api.plan_cache_clear(
+            cache_dir=self.args.cache_dir, repo_type=self.args.repo_type, repo_id=self.args.repo_id
+        )
+        info(f"cache_dir: {plan.cache_dir}; scope: {scope}")
+        for target in plan.targets:
+            info(f"  {target.path} ({_human_size(target.size)})")
+        if getattr(self.args, "dry_run", False):
+            info("Dry run: nothing deleted.")
+            return
         if not self.args.yes:
-            answer = input(f"Clear {scope}? [y/N] ").strip().lower()
+            answer = input(f"Clear the listed cache paths for {scope}? [y/N] ").strip().lower()
             if answer not in ("y", "yes"):
                 info("Aborted.")
                 return
-        api = make_api(self.args)
         freed = api.clear_cache(
             cache_dir=self.args.cache_dir,
             repo_type=self.args.repo_type,
             repo_id=self.args.repo_id,
+            plan=plan,
         )
         success(f"Freed {_human_size(freed)} from cache.")
 

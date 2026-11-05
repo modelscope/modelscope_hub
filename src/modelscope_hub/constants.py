@@ -754,9 +754,21 @@ def _env_register(
 # ---------------------------------------------------------------------------
 _env_register("MODELSCOPE_API_TOKEN", "-", "API authentication token", "Core")
 _env_register("MODELSCOPE_ENDPOINT", DEFAULT_ENDPOINT, "API endpoint URL", "Core")
-_env_register("MODELSCOPE_CACHE", "~/.cache/modelscope", "Local cache directory", "Core")
+_env_register(
+    "MODELSCOPE_CACHE",
+    "~/.cache/modelscope",
+    "Local cache directory",
+    "Core",
+    deprecated_names=("MS_CACHE_HOME",),
+)
 ENV_CACHE: str = "MODELSCOPE_CACHE"
-_env_register("MODELSCOPE_HOME", "~/.modelscope", "SDK config directory", "Core")
+_env_register(
+    "MODELSCOPE_HOME",
+    "~/.modelscope",
+    "SDK config directory",
+    "Core",
+    deprecated_names=("MODELSCOPE_CREDENTIALS_PATH",),
+)
 
 
 # ---------------------------------------------------------------------------

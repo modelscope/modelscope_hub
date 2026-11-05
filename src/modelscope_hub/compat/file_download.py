@@ -7,10 +7,15 @@ These functions replicate the signature of the old
 from __future__ import annotations
 
 import warnings
+from urllib.parse import quote_plus
 
 import requests as _requests
 
+from .._cache_layout import resolve_cached_file, validate_relative, validate_repo_id
+from .._download_url import http_get_file as http_get_file
+from .._download_url import http_get_model_file as http_get_model_file
 from ..api import HubApi
+from ..config import get_cache_root
 from ..constants import RepoType
 from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
 from ..utils import append_user_agent
@@ -46,8 +51,26 @@ def model_file_download(
     endpoint: str | None = None,
     local_files_only: bool = False,
     user_agent: dict | str | None = None,
+    progress_callbacks: list[type] | None = None,
+    reuse_legacy_cache: bool = True,
+    release_timestamp: int | None = None,
 ) -> str:
     """Download a single model file (legacy signature)."""
+    validate_repo_id(model_id)
+    validate_relative(file_path, "file_path")
+    get_cache_root(cache_dir=cache_dir)
+    if local_files_only:
+        return str(
+            resolve_cached_file(
+                model_id,
+                file_path,
+                "model",
+                revision=revision,
+                cache_dir=cache_dir,
+                local_dir=local_dir,
+                reuse_legacy_cache=reuse_legacy_cache,
+            )
+        )
     if cookies is not None:
         warnings.warn(
             "The 'cookies' parameter is deprecated and ignored. Use 'token' instead.",
@@ -62,6 +85,20 @@ def model_file_download(
             api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
         except Exception:
             pass
+    if revision is None and release_timestamp is not None:
+        from .hub_api import LegacyHubApi
+
+        revision_api = LegacyHubApi.from_api(api)
+        try:
+            revision = revision_api.get_valid_revision_detail(
+                model_id,
+                release_timestamp=release_timestamp,
+            ).get("Revision")
+        except (NotExistError, AuthenticationError, PermissionDeniedError) as exc:
+            raise _requests.exceptions.HTTPError(str(exc), response=getattr(exc, "response", None)) from exc
+        except Exception:
+            # 保留在线旧版本选择在服务不可用时回退 master 的兼容行为。
+            revision = None
     effective_cache, effective_local = _resolve_legacy_paths(
         model_id,
         cache_dir,
@@ -78,10 +115,25 @@ def model_file_download(
             local_dir=effective_local,
             local_files_only=local_files_only,
             user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
+            reuse_legacy_cache=reuse_legacy_cache,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
         raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
     return str(result)
+
+
+def get_file_download_url(model_id: str, file_path: str, revision: str, endpoint: str | None = None) -> str:
+    """构造旧下载 URL；不触发下载或认证初始化。"""
+    import os
+
+    from ..constants import DEFAULT_ENDPOINT
+
+    endpoint = endpoint or os.environ.get("MODELSCOPE_ENDPOINT") or DEFAULT_ENDPOINT
+    return (
+        f"{endpoint.rstrip('/')}/api/v1/models/{model_id}/repo?"
+        f"Revision={quote_plus(revision)}&FilePath={quote_plus(file_path)}"
+    )
 
 
 def dataset_file_download(
@@ -96,8 +148,25 @@ def dataset_file_download(
     endpoint: str | None = None,
     local_files_only: bool = False,
     user_agent: dict | str | None = None,
+    progress_callbacks: list[type] | None = None,
+    reuse_legacy_cache: bool = True,
 ) -> str:
     """Download a single dataset file (legacy signature)."""
+    validate_repo_id(dataset_id)
+    validate_relative(file_path, "file_path")
+    get_cache_root(cache_dir=cache_dir)
+    if local_files_only:
+        return str(
+            resolve_cached_file(
+                dataset_id,
+                file_path,
+                "dataset",
+                revision=revision,
+                cache_dir=cache_dir,
+                local_dir=local_dir,
+                reuse_legacy_cache=reuse_legacy_cache,
+            )
+        )
     if cookies is not None:
         warnings.warn(
             "The 'cookies' parameter is deprecated and ignored. Use 'token' instead.",
@@ -128,6 +197,8 @@ def dataset_file_download(
             local_dir=effective_local,
             local_files_only=local_files_only,
             user_agent=user_agent,
+            progress_callbacks=progress_callbacks,
+            reuse_legacy_cache=reuse_legacy_cache,
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
         raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e

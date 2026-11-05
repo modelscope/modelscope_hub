@@ -246,6 +246,7 @@ def _register_clear_cache_alias(subparsers) -> None:
     group.add_argument("--dataset", type=str, default=None, help=SUPPRESS)
     p.add_argument("--cache-dir", dest="cache_dir", default=None, help="Override cache directory.")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
+    p.add_argument("--dry-run", action="store_true", help="Preview exact targets without deleting.")
     p.set_defaults(_command=_ClearCacheAlias)
 
 
@@ -273,10 +274,10 @@ class _ClearCacheAlias(CLICommand):
     def execute(self) -> None:
         model = getattr(self.args, "model", None)
         dataset = getattr(self.args, "dataset", None)
-        if model:
+        if model is not None:
             self.args.repo_type = "model"
             self.args.repo_id = model
-        elif dataset:
+        elif dataset is not None:
             self.args.repo_type = "dataset"
             self.args.repo_id = dataset
         else:

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import IO
 
-from ..constants import DEFAULT_CACHE_DIR_NAME, DOWNLOAD_CHUNK_SIZE, ENV_CACHE
+from ..constants import DOWNLOAD_CHUNK_SIZE
 from ..errors import FileIntegrityError
 
 PathLike = str | os.PathLike[str] | Path
@@ -79,11 +79,10 @@ def get_file_size(path_or_fileobj: PathLike | FileObj) -> int:
 
 
 def get_cache_dir() -> Path:
-    """Return the SDK cache directory, honouring ``MODELSCOPE_CACHE``."""
-    override = os.environ.get(ENV_CACHE)
-    if override:
-        return ensure_dir(override)
-    return ensure_dir(Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME)
+    """获取并创建生效缓存根；只读查询请用 get_cache_root。"""
+    from ..config import get_cache_root
+
+    return ensure_dir(get_cache_root())
 
 
 def ensure_dir(path: PathLike) -> Path:

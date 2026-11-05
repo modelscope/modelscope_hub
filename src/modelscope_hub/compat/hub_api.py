@@ -127,6 +127,14 @@ class LegacyHubApi:
         self._endpoint = endpoint
         self._api = HubApi(endpoint=endpoint, token=token, user_agent={"invoked_by": "compat"})
 
+    @classmethod
+    def from_api(cls, api: HubApi) -> LegacyHubApi:
+        """为已有 facade 添加旧签名，不重建配置、UA 或 HTTP client。"""
+        instance = cls.__new__(cls)
+        instance._endpoint = api._config.endpoint
+        instance._api = api
+        return instance
+
     # ------------------------------------------------------------------
     # Authentication
     # ------------------------------------------------------------------

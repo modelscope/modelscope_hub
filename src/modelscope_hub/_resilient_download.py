@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from filelock import FileLock, Timeout
 
+from ._cache_layout import _warn_legacy_revision, download_output, record_identity
 from ._download import _listing_roots, _matches_patterns
 from ._download_control import (
     _DownloadCancelledError,
@@ -24,6 +25,7 @@ from ._download_control import (
     _RecoveryBudget,
 )
 from ._download_state import _DownloadState, safe_error
+from .config import get_cache_root
 from .constants import DOWNLOAD_TOTAL_TIMEOUT, REPO_TREE_LIST_TIMEOUT_SECONDS
 from .errors import AuthenticationError, FileIntegrityError, InvalidParameter, NotSupportedError
 from .types import DownloadFileResult, DownloadReport, DownloadRetryPolicy
@@ -75,6 +77,7 @@ def download_repo_report(
     retry_policy: DownloadRetryPolicy | None = None,
     user_agent: dict | str | None = None,
     progress_callbacks: list[type[ProgressCallback]] | None = None,
+    reuse_legacy_cache: bool = True,
 ) -> DownloadReport:
     """Ordinary file failures return PARTIAL after all known work has been processed.
 
@@ -86,15 +89,18 @@ def download_repo_report(
         raise InvalidParameter("repo_id and a positive max_workers are required")
     if repo_type not in ("model", "dataset"):
         raise NotSupportedError("Report-mode downloads support model and dataset repositories")
+    requested_revision = revision
     revision = revision or "master"
     revision_path = PurePosixPath(revision)
     if revision_path.is_absolute() or ".." in revision_path.parts:
         raise InvalidParameter("revision must not escape the snapshot cache directory")
-    output = local_dir or manager._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
-    if output is None:
-        output = manager._repo_cache_dir_path(repo_id, repo_type, cache_dir) / "snapshots" / revision
-    output = output.absolute()
+    root = get_cache_root(cache_dir=cache_dir, config=manager._config)
+    output, standard = download_output(repo_id, repo_type, root, revision, local_dir, reuse_legacy_cache)
     output.mkdir(parents=True, exist_ok=True)
+    if local_dir is None and not standard:
+        _warn_legacy_revision(output, requested_revision)
+    if standard:
+        record_identity(repo_id, repo_type, root, revision)
     identity = {
         "endpoint": manager._client.endpoint,
         "repo": repo_id,
@@ -104,7 +110,7 @@ def download_repo_report(
         "schema": "1",
     }
     key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    tracker = tracker_path or (cache_dir or manager._config.cache_dir) / ".download_state" / f".ms_download_{key}.json"
+    tracker = tracker_path or root / ".download_state" / f".ms_download_{key}.json"
     tracker = tracker.absolute()
     if tracker.resolve().is_relative_to(output.resolve()):
         raise InvalidParameter("Keep the tracker outside the download directory to avoid uploading state files")

@@ -68,7 +68,7 @@ def _note_commit_hash_hint(exc: BaseException, revision: str | None) -> None:
 
 def _ms_revision(revision: str | None) -> str:
     """Translate an HF revision string into one ModelScope accepts."""
-    return "master" if revision in (None, "main") else revision
+    return "master" if revision is None or revision == "main" else revision
 
 
 #: Synthetic OID -> ModelScope branch/tag name, filled by ``list_repo_refs``.
@@ -96,7 +96,7 @@ def _resolve_revision(revision: str | None) -> str | None:
 
 def _ms_repo_type(repo_type: str | None) -> str:
     """Map HF repo types onto ModelScope repo types (kernel repos are models)."""
-    return "model" if repo_type in (None, "kernel", "model") else repo_type
+    return "model" if repo_type is None or repo_type in ("kernel", "model") else repo_type
 
 
 def _trusted_publishers() -> frozenset[str]:

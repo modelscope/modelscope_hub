@@ -104,6 +104,57 @@ def _expand(path: str | os.PathLike[str]) -> Path:
     return Path(path).expanduser().resolve()
 
 
+def _environment_cache_root() -> Path:
+    """Cache root from the environment; ``MS_CACHE_HOME`` is a deprecated alias."""
+    from .constants import _env
+
+    value = _env(ENV_CACHE, "MS_CACHE_HOME")
+    return _expand(value or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME)
+
+
+def _environment_config_dir() -> Path:
+    """Config directory from the environment.
+
+    ``MODELSCOPE_CREDENTIALS_PATH`` is the deprecated name used by the legacy
+    SDK. It names the ``credentials`` directory (or a file inside it), so the
+    config directory is its parent.
+    """
+    from .constants import _env
+
+    home = os.environ.get(ENV_HOME)
+    if home:
+        return _expand(home)
+    legacy = _env(ENV_HOME, "MODELSCOPE_CREDENTIALS_PATH")
+    if legacy:
+        path = _expand(legacy)
+        if path.is_file() or path.name == CREDENTIALS_DIR_NAME:
+            return path.parent
+        return path
+    return _expand(Path.home() / CONFIG_DIR_NAME)
+
+
+def get_cache_root(
+    *,
+    cache_dir: str | os.PathLike[str] | None = None,
+    config: HubConfig | None = None,
+) -> Path:
+    """Return the active cache root without creating it or loading credentials.
+
+    Precedence: explicit ``cache_dir`` > ``config`` > the initialised process
+    default config > ``MODELSCOPE_CACHE`` (``MS_CACHE_HOME``) > ``~/.cache/modelscope``.
+    This is the root that downloads use; it is not the location of a specific
+    repository (use :func:`resolve_cached_snapshot` for that).
+    """
+    if cache_dir is not None:
+        if not os.fspath(cache_dir):
+            raise InvalidParameter("cache_dir must not be empty")
+        return Path(os.fspath(cache_dir)).expanduser().absolute()
+    active = config if config is not None else _default_config
+    if active is not None:
+        return Path(active.cache_dir).expanduser().absolute()
+    return _environment_cache_root()
+
+
 @dataclass(slots=True)
 class HubConfig:
     """Centralised runtime configuration object.
@@ -113,10 +164,8 @@ class HubConfig:
     """
 
     endpoint: str | None = None  # type: ignore[assignment]  # sentinel; always str after __post_init__
-    cache_dir: Path = field(
-        default_factory=lambda: _expand(os.environ.get(ENV_CACHE) or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME)
-    )
-    config_dir: Path = field(default_factory=lambda: _expand(os.environ.get(ENV_HOME) or Path.home() / CONFIG_DIR_NAME))
+    cache_dir: Path = field(default_factory=_environment_cache_root)
+    config_dir: Path = field(default_factory=_environment_config_dir)
     token: str | None = None
     _logged_out: bool = field(default=False, init=False, repr=False)
     _endpoint_overridden: bool = field(default=False, init=False, repr=False)
@@ -126,6 +175,11 @@ class HubConfig:
     # Construction helpers
     # ------------------------------------------------------------------
     def __post_init__(self) -> None:
+        # Accept str/PathLike for path fields; downstream code relies on Path.
+        if not os.fspath(self.cache_dir) or not os.fspath(self.config_dir):
+            raise InvalidParameter("cache_dir and config_dir must not be empty")
+        self.cache_dir = _expand(self.cache_dir)
+        self.config_dir = _expand(self.config_dir)
         # Precedence: explicit arg > MODELSCOPE_ENDPOINT > MODELSCOPE_DOMAIN > default
         if self.endpoint is not None:
             self._endpoint_overridden = True
@@ -396,5 +450,6 @@ __all__ = [
     "ENV_TOKEN",
     "HubConfig",
     "get_default_config",
+    "get_cache_root",
     "set_default_config",
 ]

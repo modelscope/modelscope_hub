@@ -588,10 +588,36 @@ class CacheInfo:
     repos: list[CachedRepoInfo] = field(default_factory=list)
     total_size: int = 0
     cache_dir: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def total_repos(self) -> int:
         return len(self.repos)
+
+
+@dataclass(frozen=True, slots=True)
+class CacheClearTarget:
+    path: str
+    repo_id: str
+    repo_type: str
+    layout: str
+    size: int
+    fingerprint: tuple[int, int, int]
+    identity: str
+
+
+@dataclass(frozen=True, slots=True)
+class CacheClearPlan:
+    cache_dir: str
+    repo_id: str | None
+    repo_type: str | None
+    targets: tuple[CacheClearTarget, ...]
+    root_fingerprint: tuple[int, int, int] | None = None
+    diagnostics: tuple[str, ...] = ()
+
+    @property
+    def total_size(self) -> int:
+        return sum(target.size for target in self.targets)
 
 
 @dataclass(slots=True)
