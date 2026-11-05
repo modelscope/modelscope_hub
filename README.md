@@ -219,6 +219,31 @@ path = api.download_file("Qwen/Qwen3-0.6B", "model", "config.json", local_files_
 
 Downloads validate available size and SHA-256 metadata before replacing files, with safe resume, bounded retries, timeouts, and cancellation. Incomplete snapshots raise `FileDownloadError` (CLI exit code `1`), preserving completed files for subsequent retries.
 
+### Load kernels (`modelscope_hub.kernels`)
+
+`modelscope_hub.kernels` is a drop-in wrapper around the [`kernels`](https://github.com/huggingface/kernels) library that downloads optimized compute kernels from ModelScope instead of the Hugging Face Hub. A kernel repository is an ordinary ModelScope model repository mirroring the HF kernel layout (`build/<variant>/...` plus `v1`-style version branches or tags):
+
+```bash
+pip install "modelscope-hub[kernels]"
+```
+
+```python
+from modelscope_hub.kernels import get_kernel
+
+# Download optimized kernels from the ModelScope hub
+activation = get_kernel("kernels-community/activation", version=1)
+```
+
+Also available: `has_kernel()` (environment compatibility check), `get_kernel_variants()` (build-variant decisions), `get_local_kernel()` (load from a local path, dependencies from ModelScope), `install_kernel()` (download to the local cache without importing — CI pre-installation / offline preparation), `install_kernel_all_variants()` (download every build variant plus the dependency tree), `get_locked_kernel()` (load a kernel pinned by a lockfile, downloading missing pieces), and `load_kernel()` (import an already-installed locked kernel; never downloads). Under `patch_kernels_hub()` every other networked `kernels` entry point (the `layer`/`kernelize` APIs, benchmarks, etc.) is redirected the same way, because the whole library routes through one Hub API factory.
+
+Notes:
+
+- The kernel loading, variant resolution, and dependency logic of `kernels` are reused unchanged — only its Hub API factory is swapped for a ModelScope-backed shim while a `modelscope_hub.kernels` call is in flight, so a plain `import kernels` elsewhere keeps using the Hugging Face Hub. `patch_kernels_hub()` / `unpatch_kernels_hub()` / `patch_scope()` switch this explicitly if you need it globally; the `modelscope` package's `patch_hub()` builds on the same implementation.
+- `version=N` resolves against the repository's `v<N>` branches/tags. A mirror that only carries `master` exposes it as kernel version `v1` automatically.
+- Kernel lockfiles record hub-specific commit hashes: a lockfile created against the Hugging Face Hub cannot resolve on ModelScope (the two hubs have different git histories). Create the lockfile in the ModelScope environment (`get_locked_kernel` / `install_kernel_all_variants`, or the `kernels` CLI under `patch_kernels_hub()`) so it records ModelScope commits; a commit-hash revision that cannot be found raises with a note explaining this.
+- ModelScope has no trusted-publisher flag, so untrusted publishers are rejected by default: only `kernels-community` is trusted out of the box. Extend the allowlist with `MS_KERNELS_TRUSTED_PUBLISHERS` (comma-separated), or allow specific repositories / all repositories through the trust parameters of `get_kernel` (its docstring mirrors the kernel library's API).
+- The mirror must contain kernels built for your exact Torch version and platform (`kernels` selects `build/torchXY-...-<cpu>-<os>/`); a repository whose builds predate `kernels` 0.17 metadata cannot be loaded until it is rebuilt with a current `kernel-builder`.
+
 ### Continuous dataset downloads
 
 For migration jobs, `download_repo_report` continues past isolated file failures and returns an explicit `COMPLETE` or `PARTIAL` report. The original `download_repo` and `snapshot_download` remain strict by default.
@@ -1106,6 +1131,12 @@ Capacity thresholds are advisory and emit warnings without blocking upload. Stru
 |----------|---------|-------------|
 | `MODELSCOPE_LOG_LEVEL` | `INFO` | SDK log level (`DEBUG`/`INFO`/`WARNING`/`ERROR`) |
 | `MODELSCOPE_NO_DEPRECATION_WARNINGS` | — | Suppress deprecation warnings |
+
+**Kernels:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MS_KERNELS_TRUSTED_PUBLISHERS` | — | Comma-separated kernel publishers trusted in addition to the built-in allowlist (see [Load kernels](#load-kernels-modelscope_hubkernels)) |
 
 > Old variable names (e.g. `API_TIMEOUT`, `DOWNLOAD_RETRY_TIMES`, `UPLOAD_USE_CACHE`) are
 > deprecated and remain temporarily supported. They emit a `FutureWarning` and will be removed
