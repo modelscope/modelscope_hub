@@ -3454,7 +3454,7 @@ class HubApi:
     # Cache
     # ==================================================================
     def get_cache_root(self, *, cache_dir: str | Path | None = None) -> Path:
-        """只读获取当前 client 的总缓存根。"""
+        """Return this client's active cache root without creating directories."""
         return get_cache_root(cache_dir=cache_dir, config=self._config)
 
     def resolve_cached_snapshot(

@@ -97,7 +97,7 @@ def model_file_download(
         except (NotExistError, AuthenticationError, PermissionDeniedError) as exc:
             raise _requests.exceptions.HTTPError(str(exc), response=getattr(exc, "response", None)) from exc
         except Exception:
-            # 保留在线旧版本选择在服务不可用时回退 master 的兼容行为。
+            # Retain legacy fallback to master when online revision selection is unavailable.
             revision = None
     effective_cache, effective_local = _resolve_legacy_paths(
         model_id,
@@ -124,7 +124,7 @@ def model_file_download(
 
 
 def get_file_download_url(model_id: str, file_path: str, revision: str, endpoint: str | None = None) -> str:
-    """构造旧下载 URL；不触发下载或认证初始化。"""
+    """Build a legacy download URL without downloading or initializing authentication."""
     import os
 
     from ..constants import DEFAULT_ENDPOINT

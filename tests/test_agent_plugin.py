@@ -800,6 +800,9 @@ def test_install_agent_refuses_a_result_without_ok(wired, monkeypatch, returned)
 # fetch-only plugins
 # ---------------------------------------------------------------------------
 def test_default_staging_dir_computes_without_creating(tmp_path, monkeypatch):
+    from modelscope_hub import config
+
+    monkeypatch.setattr(config, "_default_config", None)
     monkeypatch.setenv(constants.ENV_CACHE, str(tmp_path / "cache"))
     path = _plugin.default_staging_dir("owner/my-agent")
 
@@ -809,6 +812,18 @@ def test_default_staging_dir_computes_without_creating(tmp_path, monkeypatch):
     # this separates runs, not concurrent calls.
     assert re.fullmatch(r"owner--my-agent-\d{8}_\d{6}", path.name)
     assert not path.exists(), "computing a destination must not create it"
+
+
+def test_default_staging_dir_uses_initialized_config(tmp_path, monkeypatch):
+    from modelscope_hub import HubConfig, config
+
+    active = HubConfig(cache_dir=tmp_path / "active", config_dir=tmp_path / "auth", token="")
+    monkeypatch.setattr(config, "_default_config", active)
+    monkeypatch.setenv(constants.ENV_CACHE, str(tmp_path / "different"))
+    path = _plugin.default_staging_dir("owner/my-agent")
+    assert path.parent == tmp_path / "active/agent/agent-staging"
+    assert not path.exists()
+    assert not active.credentials_dir.exists()
 
 
 #: Mirrors the real 0.2.0 plugin: ``dest`` is keyword-only and required, and

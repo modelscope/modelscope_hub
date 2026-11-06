@@ -180,7 +180,7 @@ def dataset_snapshot_download(
     retry_policy: DownloadRetryPolicy | None = None,
     reuse_legacy_cache: bool = True,
 ) -> str:
-    """数据集入口与模型入口共享全部缓存、报告与离线规则。"""
+    """Share all cache, reporting and offline rules between dataset and model entry points."""
     return snapshot_download(
         repo_id=dataset_id,
         repo_type="dataset",

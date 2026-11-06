@@ -1,4 +1,4 @@
-"""URL 下载的共享传输机制；不从任意 URL 反推 Hub 仓库或注入认证。"""
+"""Share URL transport without inferring Hub repositories or injecting credentials."""
 
 from __future__ import annotations
 
@@ -50,7 +50,7 @@ def transfer_url(
     timeout: float = 60,
     chunk_size: int = 1024 * 1024,
 ) -> str | None:
-    """续传至 target；严格验证 Range/长度，重试后保持旧 API 的 None 哈希契约。"""
+    """Resume into target with range/length validation and retain legacy None hashes after retries."""
     if urlparse(url).scheme not in ("http", "https") or not urlparse(url).hostname:
         raise InvalidParameter("Download URL must be HTTP(S)")
     if file_size is not None and file_size < 0:
@@ -109,8 +109,8 @@ def transfer_url(
                     with control.response(response):
                         response.raise_for_status()
                         content_range = _parse_content_range(response.headers.get("Content-Range"))
-                        # 部分 Hub/OSS 路由以 HTTP 200 返回有效 Content-Range；与核心下载一致，
-                        # 以经过校验的 range 元数据判断是否续传，不仅依赖状态码。
+                        # Some Hub/OSS routes return valid Content-Range with HTTP 200.
+                        # Use validated range metadata, not just status codes, matching the core downloader.
                         if response.status_code == 206 or (response.status_code == 200 and content_range is not None):
                             if content_range is None or content_range[0] != offset:
                                 raise FileIntegrityError("Invalid Content-Range in URL download response")
@@ -158,7 +158,7 @@ def transfer_url(
                     if isinstance(exc, OSError) and not isinstance(exc, requests.RequestException):
                         raise
                     retried = True
-                    # 不把签名 URL 放进异常日志；保留旧 MaxRetryError 的捕获契约。
+                    # Keep signed URLs out of error logs and preserve legacy MaxRetryError handling.
                     retry = retry.increment("GET", "<URL download>", error=exc)
                     retry.sleep()
                     control.check()
@@ -195,7 +195,7 @@ def http_get_model_file(
     timeout: float = 60,
     chunk_size: int = 1024 * 1024,
 ) -> str | None:
-    """旧指定长度 URL 下载入口；文件就在 local_dir/file_name，可恢复部分字节。"""
+    """Download known-length URLs into local_dir/file_name with partial-byte resume."""
     validate_relative(file_name, "file_name")
     root = Path(local_dir).expanduser().absolute()
     target = contained_path(root, root / file_name)
@@ -224,7 +224,7 @@ def http_get_file(
     timeout: float = 60,
     chunk_size: int = 1024 * 1024,
 ) -> None:
-    """旧未知长度入口；成功验证后原子替换目标，避免部分文件被误认为完成。"""
+    """Download unknown-length URLs; validate before atomically replacing the destination."""
     validate_relative(file_name, "file_name")
     root = Path(local_dir).expanduser().absolute()
     target = contained_path(root, root / file_name)

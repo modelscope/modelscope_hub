@@ -1,4 +1,4 @@
-"""旧 SDK 下载异常的捕获契约；不改变核心错误码映射。"""
+"""Preserve legacy SDK download error catches without changing core error-code mappings."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from ..errors import NetworkError
 
 
 class FileDownloadError(CoreFileDownloadError, NetworkError):
-    """保留旧 NetworkError 捕获关系，同时携带整仓下载失败详情。"""
+    """Retain legacy NetworkError catches while carrying aggregated snapshot failure details."""
 
     error_code = NetworkError.error_code
 

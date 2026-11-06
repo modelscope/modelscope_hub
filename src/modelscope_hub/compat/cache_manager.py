@@ -1,4 +1,4 @@
-"""旧 SDK 文件级缓存视图；布局发现与读取由 hub 核心实现。"""
+"""Provide legacy file-level cache views using Hub layout discovery and readers."""
 
 from __future__ import annotations
 
@@ -196,7 +196,7 @@ def _details(location: CacheLocation) -> CachedRepoInfo:
 
 
 def scan_cache_dir(cache_dir: str | Path | None = None) -> ModelScopeCacheInfo:
-    """只读详细扫描，保留旧 frozen 视图、warnings 与缺失目录异常。"""
+    """Scan read-only details, preserving frozen views, warnings and missing-cache exceptions."""
     root = get_cache_root(cache_dir=cache_dir)
     if not root.exists():
         raise CacheNotFound(f"Cache directory not found: {root}", cache_dir=str(root))
@@ -219,7 +219,7 @@ def scan_cache_dir(cache_dir: str | Path | None = None) -> ModelScopeCacheInfo:
 def find_reusable_legacy_repo_dir(
     repo_id: str, repo_type: str = "model", cache_dir: str | Path | None = None
 ) -> str | None:
-    """兼容旧辅助入口；仅返回主 SDK 曾额外探测的历史路径。"""
+    """Find historical paths formerly probed separately by the main SDK's legacy helper."""
     path = find_legacy_repo_dir(repo_id, repo_type, get_cache_root(cache_dir=cache_dir), extra_only=True)
     return str(path) if path is not None else None
 

@@ -158,7 +158,7 @@ def _resolve_verification_root(
 
 
 def _resolve_cache_targets(root: Path, repo_id: str, repo_type: str) -> list[Path]:
-    """兼容旧私有入口；仅返回已经通过整批安全校验的精确目标。"""
+    """Preserve the legacy private entry point, returning only batch-validated exact targets."""
     return [Path(target.path) for target in plan_cache_clear(root, repo_type, repo_id).targets]
 
 

@@ -7,6 +7,7 @@ This document defines repository-level engineering conventions that apply to eve
 ## 1. General Engineering Requirements
 
 - This repository uses a src-layout. Always run code and tests against local sources: `PYTHONPATH=src` (a package installed with `pip install` may be outdated).
+- All new or modified code comments and docstrings must be written in English, including module, class, and function docstrings in source code, tests, and regression scripts. Preserve their technical meaning when translating. Runtime messages, test data, README content, and reports are not code comments and need not be translated solely for this rule.
 - Before committing, run the following gates in order; all must pass:
   1. Targeted unit tests: `PYTHONPATH=src pytest -q <relevant tests>`
   2. Full non-remote test suite: `PYTHONPATH=src pytest -q tests/ -k 'not remote' --ignore=tests/integration`

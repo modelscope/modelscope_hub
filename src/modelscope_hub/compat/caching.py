@@ -1,4 +1,4 @@
-"""旧文件缓存类的兼容实现；正常下载及只读扫描不使用此可写类。"""
+"""Legacy writable cache classes, unused by normal downloads and read-only scans."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class FileSystemCache:
                         validate_relative(entry.get("Path"), "cached file")
                     self.cached_files = entries
             except (CacheError, InvalidParameter, ValueError, TypeError):
-                # 不信任损坏 hint，但不删除用户文件或改名索引。
+                # Ignore corrupt hints without deleting user files or renaming indexes.
                 self.cached_files = []
 
     def _save_cached_files_unlocked(self):
@@ -109,7 +109,7 @@ class FileSystemCache:
 
 
 class ModelFileSystemCache(FileSystemCache):
-    """保留 owner/name、单版本文件、.msc/.mdl/.mv 的旧存储契约。"""
+    """Preserve legacy owner/name paths, single-version files and .msc/.mdl/.mv metadata."""
 
     def __init__(self, cache_root, owner=None, name=None):
         if owner is None or name is None:

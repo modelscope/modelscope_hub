@@ -1513,7 +1513,7 @@ class DownloadManager:
         cache_dir: Path | None,
         local_dir: Path | None,
     ) -> Path:
-        """兼容旧私有入口；复用唯一缓存解析器。"""
+        """Preserve the legacy private entry point using the shared cache resolver."""
         return resolve_cached_snapshot(
             repo_id,
             repo_type,
@@ -1532,7 +1532,7 @@ class DownloadManager:
         cache_dir: Path | None,
         local_dir: Path | None,
     ) -> Path:
-        """兼容旧私有入口；复用唯一缓存解析器。"""
+        """Preserve the legacy private entry point using the shared cache resolver."""
         return resolve_cached_file(
             repo_id,
             file_path,

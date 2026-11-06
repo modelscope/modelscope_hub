@@ -79,7 +79,7 @@ def get_file_size(path_or_fileobj: PathLike | FileObj) -> int:
 
 
 def get_cache_dir() -> Path:
-    """获取并创建生效缓存根；只读查询请用 get_cache_root。"""
+    """Return and create the active cache root; use get_cache_root for read-only lookups."""
     from ..config import get_cache_root
 
     return ensure_dir(get_cache_root())

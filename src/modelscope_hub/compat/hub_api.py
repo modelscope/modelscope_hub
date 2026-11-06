@@ -129,7 +129,7 @@ class LegacyHubApi:
 
     @classmethod
     def from_api(cls, api: HubApi) -> LegacyHubApi:
-        """为已有 facade 添加旧签名，不重建配置、UA 或 HTTP client。"""
+        """Apply legacy signatures to an existing facade without rebuilding config, UA or HTTP clients."""
         instance = cls.__new__(cls)
         instance._endpoint = api._config.endpoint
         instance._api = api

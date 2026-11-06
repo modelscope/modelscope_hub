@@ -250,6 +250,19 @@ config_file = resolve_cached_file("Qwen/Qwen3-0.6B", "config.json", revision="ma
 不是 `snapshot_download` 的实际输出路径。它们的历史返回值不应被静默修改；加载具体模型请使用
 下载返回值或上面的定位接口。旧 frozen 文件级扫描视图可用 `modelscope_hub.compat.cache_manager.scan_cache_dir`。
 
+#### vLLM 的 ModelScope 兼容
+
+沿用 vLLM 原有的 `VLLM_USE_MODELSCOPE=true` 和 `modelscope` SDK 导入方式，无需修改 vLLM 文件或额外调用补丁。
+hub 在该开关启用时，为 vLLM 的路径转换、config 和 processor 加载入口注册延迟的内存适配：
+- 缓存路径使用实际 snapshot，不再从旧 SDK 根拼接；旧 helper 返回值与缓存布局保持不变。
+- 实际 processor 加载通过 SDK 下载非权重文件，传递 revision、cache_dir、token 与自定义 UA；
+  在 vLLM 内部套用 HF 的 `main` 默认值之前选定缓存，显式 revision 原样传递，不替换为其他分支。
+- `HF_HUB_OFFLINE=1` 下只读定位已缓存目录，不查询远端；LRU 缓存入口使用同一适配函数。
+- 未启用开关时不主动导入 vLLM，也不改变其 Hugging Face 行为。开关应与 vLLM 原约定一样在导入前设置。
+
+该集成已用原版 vLLM `0.33.0+cpu` 的实际 config、tokenizer、processor 及图像/视频预处理调用验证；
+它依赖 vLLM 的内部加载入口，升级 vLLM 后应重新执行兼容性回归。此验证不等同于完整模型推理或服务端性能验收。
+
 缓存清理先规划再执行，只删确认属于相应仓库的目录，不删整个 `hub`、owner、类型目录或缓存根。
 
 ```bash

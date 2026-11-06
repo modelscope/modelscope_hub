@@ -161,3 +161,13 @@ __all__ = [
     "PermissionError",
     "ValidationError",
 ]
+
+
+def _register_vllm_compat() -> None:
+    # Allow importing the SDK before setting the vLLM flag without eagerly importing third-party libraries.
+    from ._vllm_compat import install
+
+    install()
+
+
+_register_vllm_compat()

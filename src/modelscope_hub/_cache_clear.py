@@ -1,4 +1,4 @@
-"""基于精确删除计划与文件系统边界的缓存清理。"""
+"""Clear cached repositories using exact deletion plans and filesystem boundaries."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _exact_locations(root: Path, repo_id: str, kind: str) -> list[CacheLocation]
     candidates.extend(legacy_candidates(repo_id, kind, root))
     candidates.extend((path, "temporary") for path in temp_candidates(repo_id, kind, root))
     for path, layout in candidates:
-        # 链接必须在判断是否存在之前校验，悬空/外部链接不能悄悄跳过。
+        # Validate links before existence checks; never silently skip dangling or external links.
         contained_path(root, path)
         if not path.exists() and not path.is_symlink():
             continue
@@ -89,7 +89,7 @@ def _exact_locations(root: Path, repo_id: str, kind: str) -> list[CacheLocation]
 def plan_cache_clear(
     cache_dir: str | Path | None = None, repo_type: str | None = None, repo_id: str | None = None
 ) -> CacheClearPlan:
-    """只读规划清理；任何越界或归属冲突使整批失败，未发生删除。"""
+    """Plan without writes; reject the entire batch on boundary or ownership conflicts."""
     if repo_id is not None:
         validate_repo_id(repo_id)
         if repo_type is None:
@@ -153,7 +153,7 @@ def plan_cache_clear(
 
 
 def _open_directory(path: Path) -> int:
-    """从文件系统根逐级 no-follow 打开目录，拒绝祖先替换为链接。"""
+    """Open directories from the filesystem root without following substituted ancestor symlinks."""
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
     fd = os.open(path.anchor, flags)
     try:
@@ -168,7 +168,7 @@ def _open_directory(path: Path) -> int:
 
 
 def _remove_at(parent_fd: int, name: str, expected: tuple[int, int, int]) -> None:
-    """仅在已固定的目录 fd 下删除，不跟随软链；适用于 Python 3.10+。"""
+    """Delete under pinned directory descriptors without following symlinks (Python 3.10+)."""
     info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
     if (info.st_dev, info.st_ino, info.st_mode) != expected:
         raise CacheError(f"Cache entry changed before deletion: {name}")
@@ -196,7 +196,7 @@ def _remove_at(parent_fd: int, name: str, expected: tuple[int, int, int]) -> Non
 
 
 def execute_cache_clear(plan: CacheClearPlan) -> int:
-    """执行已确认计划；只操作计划中的对象，不扩大到后来发现的缓存。"""
+    """Execute confirmed targets without expanding the scope to newly discovered caches."""
     if not isinstance(plan, CacheClearPlan):
         raise InvalidParameter("Expected a CacheClearPlan")
     current = plan_cache_clear(plan.cache_dir, plan.repo_type, plan.repo_id)
@@ -208,7 +208,7 @@ def execute_cache_clear(plan: CacheClearPlan) -> int:
     required = (os.open, os.stat, os.unlink, os.rmdir)
     if not all(operation in os.supports_dir_fd for operation in required) or not hasattr(os, "O_NOFOLLOW"):
         raise CacheError("This platform does not support safe descriptor-relative cache deletion")
-    # 在首个删除前复核所有目标及其父目录，防止后面的校验失败留下部分删除。
+    # Revalidate all targets and parents before the first deletion to prevent partial effects.
     for target in plan.targets:
         path = Path(target.path)
         _validate_target(root, path)
@@ -235,5 +235,5 @@ def execute_cache_clear(plan: CacheClearPlan) -> int:
 
 
 def clear_cache(cache_dir: str | Path | None = None, repo_type: str | None = None, repo_id: str | None = None) -> int:
-    """兼容的直接清理入口；始终先对整批进行作用域校验。"""
+    """Preserve direct cleanup compatibility with whole-batch scope validation before deletion."""
     return execute_cache_clear(plan_cache_clear(cache_dir, repo_type, repo_id))
