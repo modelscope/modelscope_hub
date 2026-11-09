@@ -806,9 +806,12 @@ snapshot = resolve_cached_snapshot("Qwen/Qwen2.5-VL-3B-Instruct", revision="mast
 不联网，也不证明已下载全部文件。旧 SDK 缓存没有修订维度，继续按既有规则复用。
 SDK `1.40.3` 同时提供 `get_hub_cache_root()` 与 `modelscope.hub.cache_manager` 转导出。
 
-启用 `VLLM_USE_MODELSCOPE=true` 时，Hub 为 vLLM 的路径转换及配置/processor 加载提供
-延迟内存适配，无须修改 vLLM 文件或创建缓存软链。纯路径查询不下载；在线 processor
-加载只下载非权重文件，离线加载只查询本地缓存，显式 revision 不替换成默认修订。
+旧版兼容入口 `modelscope_hub.compat.snapshot_download()`（以及委托它的 `modelscope.snapshot_download()`）
+在线下载模型后，会把旧根路径 `<旧模型根>/<owner>/<name>` 链接到本次返回的目录（快照或被复用的旧缓存）。旧模型根即
+`get_model_cache_root()` 的返回值（`MODELSCOPE_CACHE/models`，未设置时为 `~/.cache/modelscope/hub/models`）。
+仅在该根位于当前缓存根内时创建；只更新自身指向快照的链接，不覆盖已有目录或其他链接；离线解析不创建；系统不支持
+符号链接时跳过。该链接用于兼容仍拼接旧路径的调用方（如启用 `VLLM_USE_MODELSCOPE=true` 的已发布
+vLLM），不表示支持修订选择；缓存扫描与清理把它视为别名。Hub 不导入或修改 vLLM。
 
 缓存清理先校验全部目标，只删除有明确类型的仓库目录。空标识、路径穿越和越界目录
 软链会拒绝整个批次；不会删除缓存根、整个 `hub` 或类型容器。未知类型的 flat 布局

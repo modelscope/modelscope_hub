@@ -1718,12 +1718,14 @@ class DownloadManager:
             return None
         owner, name = parts
         safe_name = name.replace(".", "___")
+        snapshots = base / segment / repo_id.replace("/", "--") / "snapshots"
         candidates = (
             base / segment / owner / safe_name,
             base / "hub" / segment / owner / safe_name,
         )
         for legacy_path in candidates:
-            if not legacy_path.is_dir():
+            # Compatibility links into the standard layout are aliases, not legacy repositories.
+            if not legacy_path.is_dir() or DownloadManager._is_compat_link(legacy_path, snapshots):
                 continue
             try:
                 if any(legacy_path.iterdir()):
@@ -1731,6 +1733,13 @@ class DownloadManager:
             except OSError:
                 continue
         return None
+
+    @staticmethod
+    def _is_compat_link(path: Path, snapshots: Path) -> bool:
+        """Return whether *path* is a symlink that points into *snapshots*."""
+        if not path.is_symlink():
+            return False
+        return Path(os.path.realpath(snapshots)) in Path(os.path.realpath(path)).parents
 
     def _lock_path(
         self,

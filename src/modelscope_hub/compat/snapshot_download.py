@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import requests as _requests
 
-from .._cache_manager import resolve_cached_snapshot
+from .._cache_manager import _link_legacy_model_path, resolve_cached_snapshot
 from ..api import HubApi
 from ..config import get_cache_root
 from ..constants import RepoType
@@ -136,6 +136,9 @@ def snapshot_download(
         )
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
         raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
+    if effective_type == RepoType.MODEL and effective_local is None:
+        # Keep legacy cache-root paths valid for callers that predate the snapshot layout.
+        _link_legacy_model_path(effective_id, Path(result), effective_cache)
     return str(result)
 
 

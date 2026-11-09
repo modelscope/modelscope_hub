@@ -152,7 +152,3 @@ __all__ = [
     "PermissionError",
     "ValidationError",
 ]
-
-from ._vllm_compat import install as _install_vllm_compat
-
-_install_vllm_compat()

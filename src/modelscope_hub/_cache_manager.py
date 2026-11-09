@@ -9,10 +9,11 @@ from __future__ import annotations
 import os
 import re
 import stat
+import uuid
 from pathlib import Path
 
 from .config import get_cache_root, get_default_config
-from .constants import RepoType
+from .constants import DEFAULT_CACHE_DIR_NAME, ENV_CACHE, RepoType
 from .errors import CacheError
 from .types import CachedRepoInfo, CacheInfo, CacheVerification, VerificationMismatch
 from .utils.file_utils import compute_hash
@@ -75,6 +76,50 @@ def resolve_cached_snapshot(
         revision=revision,
         cache_dir=get_cache_root(cache_dir),
     )
+
+
+def _link_legacy_model_path(repo_id: str, directory: Path, cache_dir: str | Path | None = None) -> None:
+    """Point ``<legacy model root>/<repo_id>`` at the *directory* a download returned, best-effort.
+
+    Consumers written for SDKs before 1.38 append a repository ID to the legacy
+    model root (``MODELSCOPE_CACHE`` or ``~/.cache/modelscope/hub``, plus
+    ``models``). The link follows the returned snapshot or reused legacy cache
+    only when both lie inside the active cache root. It replaces only links into
+    the repository's snapshots, never real directories or links of other layouts.
+    """
+    from ._download import DownloadManager
+
+    legacy_cache = os.environ.get(ENV_CACHE)
+    if legacy_cache == "":
+        return
+    try:
+        _validate_cache_scope(RepoType.MODEL, repo_id)
+        root = get_cache_root(cache_dir)
+        legacy_root = Path(legacy_cache or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME / "hub")
+        legacy_root = legacy_root.expanduser().resolve() / "models"
+        snapshots = root / "models" / repo_id.replace("/", "--") / "snapshots"
+        target = Path(directory).resolve()
+        if legacy_root.parent not in (root, root / "hub") or root not in target.parents:
+            return
+        owner, name = repo_id.split("/")
+        link = legacy_root / owner / name
+        if link.parent.is_symlink():
+            return
+        if link.is_symlink():
+            if Path(os.path.realpath(link)) == target or not DownloadManager._is_compat_link(link, snapshots):
+                return
+        elif link.exists():
+            return
+        link.parent.mkdir(parents=True, exist_ok=True)
+        temp = link.with_name(f".{name}.{uuid.uuid4().hex}.link")
+        try:
+            os.symlink(os.path.relpath(target, link.parent.resolve()), temp, target_is_directory=True)
+            os.replace(temp, link)
+        finally:
+            if temp.is_symlink():
+                temp.unlink()
+    except (CacheError, OSError, RuntimeError, ValueError) as exc:
+        logger.debug("Skipped legacy cache link for %s: %s", repo_id, exc)
 
 
 def scan_cache(cache_dir: Path | None = None) -> CacheInfo:
