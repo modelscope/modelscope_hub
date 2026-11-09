@@ -90,8 +90,7 @@ def scan_cache(cache_dir: Path | None = None) -> CacheInfo:
     CacheInfo
         Summary of all cached repositories, total size, etc.
     """
-    config = get_default_config()
-    root = Path(cache_dir) if cache_dir else config.cache_dir
+    root = get_cache_root(cache_dir)
 
     if not root.is_dir():
         return CacheInfo(repos=[], total_size=0, cache_dir=str(root))
@@ -101,48 +100,45 @@ def scan_cache(cache_dir: Path | None = None) -> CacheInfo:
 
     for repo_type in _DEFAULT_SCAN_TYPES:
         segment = f"{repo_type}s"
-        type_dir = root / segment
-        if not type_dir.is_dir():
-            continue
-
-        for repo_dir in type_dir.iterdir():
-            if not repo_dir.is_dir():
+        for type_dir in (root / segment, root / "hub" / segment):
+            if type_dir.is_symlink() or not type_dir.is_dir() or (root / "hub").is_symlink():
                 continue
-
-            # Compute size
-            size = _dir_size(repo_dir)
-            total_size += size
-
-            # Count files
-            nb_files = sum(1 for _ in repo_dir.rglob("*") if _.is_file())
-
-            # Determine revision from snapshot dirs
-            snapshots_dir = repo_dir / "snapshots"
-            revision = None
-            if snapshots_dir.is_dir():
-                revisions = [d.name for d in snapshots_dir.iterdir() if d.is_dir()]
-                revision = revisions[0] if len(revisions) == 1 else ",".join(revisions[:5])
-
-            # Last access time
-            try:
-                last_accessed_ts = repo_dir.stat().st_atime
-            except OSError:
-                last_accessed_ts = 0
-
-            # Decode repo_id from directory name (owner--name → owner/name)
-            repo_id = repo_dir.name.replace("--", "/")
-
-            repos.append(
-                CachedRepoInfo(
-                    repo_id=repo_id,
-                    repo_type=repo_type,
-                    revision=revision,
-                    size_on_disk=size,
-                    nb_files=nb_files,
-                    last_accessed=last_accessed_ts if last_accessed_ts > 0 else None,
-                    local_path=str(repo_dir),
+            candidates: list[tuple[str, Path]] = []
+            for child in sorted(type_dir.iterdir()):
+                if child.is_symlink() or not child.is_dir() or child.name.startswith("."):
+                    continue
+                if "--" in child.name:
+                    candidates.append((child.name.replace("--", "/", 1), child))
+                else:
+                    candidates.extend(
+                        (f"{child.name}/{p.name.replace('___', '.')}", p)
+                        for p in sorted(child.iterdir())
+                        if p.is_dir() and not p.is_symlink() and not p.name.startswith(".")
+                    )
+            for repo_id, repo_dir in candidates:
+                size = _dir_size(repo_dir)
+                total_size += size
+                nb_files = sum(1 for p in repo_dir.rglob("*") if p.is_file() and not p.is_symlink())
+                snapshots_dir = repo_dir / "snapshots"
+                revision = None
+                if snapshots_dir.is_dir():
+                    revisions = [d.name for d in sorted(snapshots_dir.iterdir()) if d.is_dir()]
+                    revision = revisions[0] if len(revisions) == 1 else ",".join(revisions[:5])
+                try:
+                    last_accessed_ts = repo_dir.stat().st_atime
+                except OSError:
+                    last_accessed_ts = 0
+                repos.append(
+                    CachedRepoInfo(
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        revision=revision,
+                        size_on_disk=size,
+                        nb_files=nb_files,
+                        last_accessed=last_accessed_ts if last_accessed_ts > 0 else None,
+                        local_path=str(repo_dir),
+                    )
                 )
-            )
 
     # Scan flat layout (compat): {root}/{owner}/{name}/
     # and legacy layout: {root}/hub/{owner}/{name}/

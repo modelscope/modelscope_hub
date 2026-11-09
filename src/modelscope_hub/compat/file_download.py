@@ -7,13 +7,37 @@ These functions replicate the signature of the old
 from __future__ import annotations
 
 import warnings
+from pathlib import Path
 
 import requests as _requests
 
 from ..api import HubApi
+from ..config import get_cache_root
 from ..constants import RepoType
 from ..errors import AuthenticationError, NotExistError, PermissionDeniedError
 from ..utils import append_user_agent
+
+
+def _offline_file(
+    repo_id: str,
+    repo_type: str,
+    file_path: str,
+    revision: str | None,
+    cache_dir: str | None,
+    local_dir: str | None,
+) -> str:
+    from .._download import DownloadManager
+
+    return str(
+        DownloadManager._resolve_cached_file_at(
+            repo_id,
+            repo_type,
+            file_path,
+            revision=revision,
+            cache_dir=get_cache_root(cache_dir),
+            local_dir=Path(local_dir) if local_dir is not None else None,
+        )
+    )
 
 
 def _resolve_legacy_paths(
@@ -54,6 +78,9 @@ def model_file_download(
             DeprecationWarning,
             stacklevel=2,
         )
+
+    if local_files_only:
+        return _offline_file(model_id, "model", file_path, revision, cache_dir, local_dir)
 
     api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
     if endpoint is None and not local_files_only:
@@ -104,6 +131,9 @@ def dataset_file_download(
             DeprecationWarning,
             stacklevel=2,
         )
+
+    if local_files_only:
+        return _offline_file(dataset_id, "dataset", file_path, revision, cache_dir, local_dir)
 
     api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
     if endpoint is None and not local_files_only:

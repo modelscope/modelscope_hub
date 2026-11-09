@@ -65,8 +65,6 @@ def snapshot_download(
     """
     effective_id = repo_id or model_id
     if not effective_id:
-        from ..errors import InvalidParameter
-
         raise InvalidParameter("Please provide a valid model_id or repo_id")
     effective_type = repo_type or "model"
 
@@ -237,6 +235,7 @@ def _offline_snapshot(
     local_dir: str | None,
 ) -> str:
     """Resolve cached snapshots without constructing transport or credential state."""
+    revision = revision or None
     if local_dir is None:
         return str(resolve_cached_snapshot(repo_id, repo_type, revision=revision, cache_dir=cache_dir))
     from .._download import DownloadManager

@@ -208,3 +208,76 @@ def test_api_uses_its_config_and_preserves_empty_argument(cache, tmp_path):
     assert not path.exists()
     with pytest.raises(CacheError):
         api.clear_cache(cache_dir="", repo_type="model")
+
+
+@pytest.mark.parametrize("repo_type", ["model", "dataset"])
+@pytest.mark.parametrize("revision", [None, "", "master"])
+def test_compat_empty_revision_preserves_default(cache, repo_type, revision):
+    from modelscope_hub.compat.snapshot_download import dataset_snapshot_download, snapshot_download
+
+    path = populate(cache / f"{repo_type}s/org--model/snapshots/master")
+    download = snapshot_download if repo_type == "model" else dataset_snapshot_download
+    with patch.object(HubConfig, "__post_init__", side_effect=AssertionError("不得初始化认证")):
+        assert download("org/model", revision=revision, local_files_only=True) == str(path)
+    with pytest.raises(CacheError):
+        resolve_cached_snapshot("org/model", repo_type, revision="")
+
+
+@pytest.mark.parametrize("repo_type", ["model", "dataset"])
+@pytest.mark.parametrize("local_dir", [False, True])
+@pytest.mark.parametrize("revision", [None, "", "master", "feature/test"])
+def test_offline_file_has_no_transport_or_auth_writes(cache, repo_type, local_dir, revision):
+    from modelscope_hub.compat.file_download import dataset_file_download, model_file_download
+
+    path = populate(cache / f"{repo_type}s/org--model/snapshots" / (revision or "master"))
+    download = model_file_download if repo_type == "model" else dataset_file_download
+    kwargs = {"local_dir": str(path)} if local_dir else {"cache_dir": str(cache)}
+    with (
+        patch.object(HubConfig, "__post_init__", side_effect=AssertionError("不得初始化认证")),
+        patch("requests.Session.send", side_effect=AssertionError("不得联网")),
+    ):
+        assert download("org/model", "config.json", revision=revision, local_files_only=True, **kwargs) == str(
+            path / "config.json"
+        )
+    assert config._default_config is None
+
+
+@pytest.mark.parametrize("prefix", ["models", "hub/models"])
+def test_offline_file_reuses_legacy_cache(cache, prefix):
+    from modelscope_hub.compat.file_download import model_file_download
+
+    path = populate(cache / prefix / "org/model")
+    with patch.object(HubConfig, "__post_init__", side_effect=AssertionError("不得初始化认证")):
+        assert model_file_download("org/model", "config.json", local_files_only=True) == str(path / "config.json")
+
+
+def test_offline_file_missing_revision_is_not_replaced(cache):
+    from modelscope_hub.compat.file_download import model_file_download
+
+    populate(cache / "models/org--model/snapshots/master")
+    with pytest.raises(CacheNotFound):
+        model_file_download("org/model", "config.json", revision="main", local_files_only=True)
+
+
+@pytest.mark.parametrize("repo_type", ["model", "dataset"])
+@pytest.mark.parametrize("kwargs", [{"continue_on_error": True}, {"tracker_path": "x"}, {"retry_failed": True}])
+def test_offline_report_conflicts_use_invalid_parameter(cache, repo_type, kwargs):
+    from modelscope_hub.compat.snapshot_download import dataset_snapshot_download, snapshot_download
+    from modelscope_hub.errors import InvalidParameter
+
+    download = snapshot_download if repo_type == "model" else dataset_snapshot_download
+    with pytest.raises(InvalidParameter):
+        download("org/model", local_files_only=True, **kwargs)
+
+
+@pytest.mark.parametrize("prefix", ["models", "hub/models"])
+def test_scan_detects_masked_legacy_without_counting_alias(cache, prefix):
+    from modelscope_hub._cache_manager import scan_cache
+
+    path = populate(cache / prefix / "org/model___name")
+    path.with_name("model.name").symlink_to(path, target_is_directory=True)
+    with patch.object(HubConfig, "__post_init__", side_effect=AssertionError("不得初始化认证")):
+        info = scan_cache(cache)
+    assert info.total_repos == 1
+    assert info.repos[0].repo_id == "org/model.name"
+    assert info.total_size == 2

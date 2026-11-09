@@ -1584,6 +1584,27 @@ class DownloadManager:
         local_dir: Path | None,
     ) -> Path:
         """Resolve a cached file without touching the network or creating directories."""
+        return self._resolve_cached_file_at(
+            repo_id,
+            repo_type,
+            file_path,
+            revision=revision,
+            cache_dir=cache_dir or self._config.cache_dir,
+            local_dir=local_dir,
+        )
+
+    @classmethod
+    def _resolve_cached_file_at(
+        cls,
+        repo_id: str,
+        repo_type: str,
+        file_path: str,
+        *,
+        revision: str | None,
+        cache_dir: Path,
+        local_dir: Path | None = None,
+    ) -> Path:
+        """Resolve a cached file without constructing transport or credential state."""
         if local_dir is not None:
             target = Path(local_dir) / file_path
             if target.exists():
@@ -1594,21 +1615,21 @@ class DownloadManager:
                 cache_dir=str(target.parent),
             )
 
-        legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+        legacy = cls._find_legacy_repo_dir_at(repo_id, repo_type, cache_dir)
         if legacy is not None:
             target = legacy / file_path
             if target.exists():
                 return target
 
-        root = self._repo_cache_dir_path(repo_id, repo_type, cache_dir)
-        snapshots = root / "snapshots"
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        snapshots = cache_dir / segment / repo_id.replace("/", "--") / "snapshots"
         if revision:
             target = snapshots / revision / file_path
             if target.exists():
                 return target
             raise CacheNotFound(
                 f"Cannot find cached file '{file_path}' for {repo_type} repo '{repo_id}' at revision '{revision}' "
-                f"and outgoing traffic has been disabled. {self._describe_cached_revisions(snapshots)}",
+                f"and outgoing traffic has been disabled. {cls._describe_cached_revisions(snapshots)}",
                 cache_dir=str(target.parent),
             )
 
@@ -1618,7 +1639,7 @@ class DownloadManager:
                 return target
 
         matches = []
-        for snapshot in self._cached_snapshot_dirs(snapshots):
+        for snapshot in cls._cached_snapshot_dirs(snapshots):
             candidate = snapshot / file_path
             if candidate.exists():
                 matches.append(candidate)
@@ -1640,7 +1661,7 @@ class DownloadManager:
             )
         raise CacheNotFound(
             f"Cannot find cached file '{file_path}' for {repo_type} repo '{repo_id}' and outgoing traffic has been "
-            f"disabled. {self._describe_cached_revisions(snapshots)}",
+            f"disabled. {cls._describe_cached_revisions(snapshots)}",
             cache_dir=str(snapshots),
         )
 
