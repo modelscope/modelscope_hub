@@ -1499,9 +1499,28 @@ class DownloadManager:
         local_dir: Path | None,
     ) -> Path:
         """Resolve a cached snapshot without touching the network or creating directories."""
+        return self._resolve_cached_snapshot_at(
+            repo_id,
+            repo_type,
+            revision=revision,
+            cache_dir=cache_dir or self._config.cache_dir,
+            local_dir=local_dir,
+        )
+
+    @classmethod
+    def _resolve_cached_snapshot_at(
+        cls,
+        repo_id: str,
+        repo_type: str,
+        *,
+        revision: str | None,
+        cache_dir: Path,
+        local_dir: Path | None = None,
+    ) -> Path:
+        """Resolve a snapshot using local paths only, without creating a client."""
         if local_dir is not None:
             output_dir = Path(local_dir)
-            if self._dir_has_entries(output_dir):
+            if cls._dir_has_entries(output_dir):
                 return output_dir
             raise CacheNotFound(
                 "Cannot find cached snapshot in the requested local directory and outgoing traffic has been disabled. "
@@ -1509,29 +1528,29 @@ class DownloadManager:
                 cache_dir=str(output_dir),
             )
 
-        legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+        legacy = cls._find_legacy_repo_dir_at(repo_id, repo_type, cache_dir)
         if legacy is not None:
             logger.info("Found legacy cache at %s, reusing.", legacy)
             return legacy
 
-        root = self._repo_cache_dir_path(repo_id, repo_type, cache_dir)
-        snapshots = root / "snapshots"
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        snapshots = cache_dir / segment / repo_id.replace("/", "--") / "snapshots"
         if revision:
             output_dir = snapshots / revision
-            if self._dir_has_entries(output_dir):
+            if cls._dir_has_entries(output_dir):
                 return output_dir
             raise CacheNotFound(
                 f"Cannot find cached snapshot for {repo_type} repo '{repo_id}' at revision '{revision}' and outgoing "
-                f"traffic has been disabled. {self._describe_cached_revisions(snapshots)}",
+                f"traffic has been disabled. {cls._describe_cached_revisions(snapshots)}",
                 cache_dir=str(output_dir),
             )
 
         for default_name in ("master", "main"):
             default_snapshot = snapshots / default_name
-            if self._dir_has_entries(default_snapshot):
+            if cls._dir_has_entries(default_snapshot):
                 return default_snapshot
 
-        candidates = self._cached_snapshot_dirs(snapshots)
+        candidates = cls._cached_snapshot_dirs(snapshots)
         if len(candidates) == 1:
             logger.warning(
                 "Using cached revision %s because no revision was provided and outgoing traffic is disabled.",
@@ -1550,7 +1569,7 @@ class DownloadManager:
             )
         raise CacheNotFound(
             f"Cannot find cached snapshot for {repo_type} repo '{repo_id}' and outgoing traffic has been disabled. "
-            f"{self._describe_cached_revisions(snapshots)}",
+            f"{cls._describe_cached_revisions(snapshots)}",
             cache_dir=str(snapshots),
         )
 
@@ -1667,7 +1686,11 @@ class DownloadManager:
         Returns the first existing, non-empty candidate, or ``None`` when the
         cache is clean (so the caller falls back to the new layout).
         """
-        base = cache_dir or self._config.cache_dir
+        return self._find_legacy_repo_dir_at(repo_id, repo_type, cache_dir or self._config.cache_dir)
+
+    @staticmethod
+    def _find_legacy_repo_dir_at(repo_id: str, repo_type: str, base: Path) -> Path | None:
+        """Find a non-empty legacy cache directory without a manager instance."""
         segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
         parts = repo_id.split("/", 1)
         if len(parts) != 2:

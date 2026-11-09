@@ -114,7 +114,11 @@ class HubConfig:
 
     endpoint: str | None = None  # type: ignore[assignment]  # sentinel; always str after __post_init__
     cache_dir: Path = field(
-        default_factory=lambda: _expand(os.environ.get(ENV_CACHE) or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME)
+        default_factory=lambda: _expand(
+            os.environ.get(ENV_CACHE)
+            or os.environ.get("MS_CACHE_HOME")
+            or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME
+        )
     )
     config_dir: Path = field(default_factory=lambda: _expand(os.environ.get(ENV_HOME) or Path.home() / CONFIG_DIR_NAME))
     token: str | None = None
@@ -126,6 +130,8 @@ class HubConfig:
     # Construction helpers
     # ------------------------------------------------------------------
     def __post_init__(self) -> None:
+        self.cache_dir = _expand(self.cache_dir)
+        self.config_dir = _expand(self.config_dir)
         # Precedence: explicit arg > MODELSCOPE_ENDPOINT > MODELSCOPE_DOMAIN > default
         if self.endpoint is not None:
             self._endpoint_overridden = True
@@ -383,6 +389,17 @@ def get_default_config() -> HubConfig:
     return _default_config
 
 
+def get_cache_root(cache_dir: str | Path | None = None) -> Path:
+    """Return the active cache root without initializing credentials or creating directories."""
+    if cache_dir is not None:
+        return _expand(cache_dir)
+    if _default_config is not None:
+        return _expand(_default_config.cache_dir)
+    return _expand(
+        os.environ.get(ENV_CACHE) or os.environ.get("MS_CACHE_HOME") or Path.home() / ".cache" / DEFAULT_CACHE_DIR_NAME
+    )
+
+
 def set_default_config(config: HubConfig | None) -> None:
     """Override (or clear) the process-wide default configuration."""
     global _default_config
@@ -396,5 +413,6 @@ __all__ = [
     "ENV_TOKEN",
     "HubConfig",
     "get_default_config",
+    "get_cache_root",
     "set_default_config",
 ]

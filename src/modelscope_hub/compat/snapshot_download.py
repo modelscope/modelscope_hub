@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import requests as _requests
 
+from .._cache_manager import resolve_cached_snapshot
 from ..api import HubApi
+from ..config import get_cache_root
 from ..constants import RepoType
 from ..errors import AuthenticationError, InvalidParameter, NotExistError, PermissionDeniedError
 from ..types import DownloadRetryPolicy
@@ -76,6 +79,11 @@ def snapshot_download(
 
     include = _normalize_pattern(allow_patterns) or _normalize_pattern(allow_file_pattern)
     exclude = _normalize_pattern(ignore_patterns) or _normalize_pattern(ignore_file_pattern)
+
+    if local_files_only:
+        if continue_on_error or tracker_path is not None or retry_failed or retry_policy is not None:
+            raise InvalidParameter("Report/recovery options cannot use local_files_only")
+        return _offline_snapshot(effective_id, effective_type, revision, cache_dir, local_dir)
 
     api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
     if endpoint is None and not local_files_only:
@@ -165,6 +173,11 @@ def dataset_snapshot_download(
     include = _normalize_pattern(allow_patterns) or _normalize_pattern(allow_file_pattern)
     exclude = _normalize_pattern(ignore_patterns) or _normalize_pattern(ignore_file_pattern)
 
+    if local_files_only:
+        if continue_on_error or tracker_path is not None or retry_failed or retry_policy is not None:
+            raise InvalidParameter("Report/recovery options cannot use local_files_only")
+        return _offline_snapshot(dataset_id, "dataset", revision, cache_dir, local_dir)
+
     api = HubApi(token=token, endpoint=endpoint, user_agent=append_user_agent("invoked_by/compat", user_agent))
     if endpoint is None and not local_files_only:
         try:
@@ -214,6 +227,29 @@ def dataset_snapshot_download(
     except (NotExistError, AuthenticationError, PermissionDeniedError) as e:
         raise _requests.exceptions.HTTPError(str(e), response=getattr(e, "response", None)) from e
     return str(result)
+
+
+def _offline_snapshot(
+    repo_id: str,
+    repo_type: str,
+    revision: str | None,
+    cache_dir: str | None,
+    local_dir: str | None,
+) -> str:
+    """Resolve cached snapshots without constructing transport or credential state."""
+    if local_dir is None:
+        return str(resolve_cached_snapshot(repo_id, repo_type, revision=revision, cache_dir=cache_dir))
+    from .._download import DownloadManager
+
+    return str(
+        DownloadManager._resolve_cached_snapshot_at(
+            repo_id,
+            repo_type,
+            revision=revision,
+            cache_dir=get_cache_root(cache_dir),
+            local_dir=Path(local_dir),
+        )
+    )
 
 
 def _normalize_pattern(pattern: Sequence[str] | str | None) -> list[str] | None:

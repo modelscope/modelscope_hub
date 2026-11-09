@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 
 from modelscope_hub.cli.cache import _CacheClear, _CacheScan, _CacheVerify
+from modelscope_hub.errors import CacheError
 from modelscope_hub.types import CacheInfo, CacheVerification, VerificationMismatch
 
 from .conftest import run_cli
@@ -253,6 +254,42 @@ class TestCacheClearExecute:
             with pytest.raises(SystemExit) as exc_info:
                 _CacheClear(args).execute()
             assert exc_info.value.code == 2
+
+    def test_empty_legacy_alias_never_clears_all(self, parser, mock_api):
+        args = parser.parse_args(["clear-cache", "--model", "", "--yes"])
+        with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
+            with pytest.raises(CacheError):
+                args._command(args).execute()
+        mock_api.clear_cache.assert_not_called()
+
+    def test_empty_repo_id_never_clears_all(self, parser, mock_api):
+        args = parser.parse_args(["cache", "clear", "--repo-type", "model", "--repo-id", "", "--yes"])
+        with patch("modelscope_hub.cli.cache.make_api", return_value=mock_api):
+            with pytest.raises(CacheError):
+                _CacheClear(args).execute()
+        mock_api.clear_cache.assert_not_called()
+
+    def test_dry_run_lists_exact_paths_without_api(self, parser, tmp_path, capsys):
+        snapshot = tmp_path / "models/org--model/snapshots/master"
+        snapshot.mkdir(parents=True)
+        (snapshot / "config.json").write_text("{}")
+        args = parser.parse_args(
+            [
+                "cache",
+                "clear",
+                "--repo-type",
+                "model",
+                "--repo-id",
+                "org/model",
+                "--cache-dir",
+                str(tmp_path),
+                "--dry-run",
+            ]
+        )
+        with patch("modelscope_hub.cli.cache.make_api", side_effect=AssertionError("预览不得创建客户端")):
+            _CacheClear(args).execute()
+        assert str(tmp_path / "models/org--model") in capsys.readouterr().out
+        assert snapshot.is_dir()
 
     def test_clear_specific_repo(self, parser, mock_api, capsys):
         args = parser.parse_args(

@@ -788,7 +788,32 @@ ms-hub cache verify Qwen/Qwen3-0.6B
 ms-hub cache verify Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
 ms-hub cache clear --repo-type model --yes
 ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
+ms-hub cache clear --repo-type model --dry-run
 ```
+
+快照位置以下载返回值为准；不要将缓存根与 `repo_id` 直接拼接。
+`modelscope.utils.file_utils.get_modelscope_cache_dir()` / `get_model_cache_root()`
+继续表示旧 SDK 路径，不改变已有调用方的返回值契约。
+
+```python
+from modelscope_hub import get_cache_root, resolve_cached_snapshot
+
+root = get_cache_root()  # Active cache root; no directory creation or credential initialization.
+snapshot = resolve_cached_snapshot("Qwen/Qwen2.5-VL-3B-Instruct", revision="master")
+```
+
+`resolve_cached_snapshot` 只读取本地缓存；缺失或修订歧义会抛出 `CacheNotFound`，
+不联网，也不证明已下载全部文件。旧 SDK 缓存没有修订维度，继续按既有规则复用。
+SDK `1.40.3` 同时提供 `get_hub_cache_root()` 与 `modelscope.hub.cache_manager` 转导出。
+
+启用 `VLLM_USE_MODELSCOPE=true` 时，Hub 为 vLLM 的路径转换及配置/processor 加载提供
+延迟内存适配，无须修改 vLLM 文件或创建缓存软链。纯路径查询不下载；在线 processor
+加载只下载非权重文件，离线加载只查询本地缓存，显式 revision 不替换成默认修订。
+
+缓存清理先校验全部目标，只删除有明确类型的仓库目录。空标识、路径穿越和越界目录
+软链会拒绝整个批次；不会删除缓存根、整个 `hub` 或类型容器。未知类型的 flat 布局
+保留，其他类型及 SDK 自有缓存不受按类型清理影响。安全删除需要目录描述符和
+no-follow 支持；缺少这些能力的平台（包括 Windows）会拒绝执行，可使用 `--dry-run` 预览。
 
 <details>
 <summary>Options</summary>
@@ -797,7 +822,7 @@ ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
 |------------|-------------|
 | `scan` | `--cache-dir DIR` |
 | `verify REPO_ID` | `--repo-type`, `--revision`, `--cache-dir`, `--local-dir`, `--fail-on-missing-files`, `--fail-on-extra-files` |
-| `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--yes` |
+| `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--yes`, `--dry-run` |
 
 </details>
 
@@ -1068,7 +1093,7 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 |----------|---------|-------------|
 | `MODELSCOPE_API_TOKEN` | — | API authentication token |
 | `MODELSCOPE_ENDPOINT` | `https://modelscope.cn` | API endpoint URL |
-| `MODELSCOPE_CACHE` | `~/.cache/modelscope` | Local cache directory |
+| `MODELSCOPE_CACHE` | `~/.cache/modelscope` | Local cache directory; takes precedence over the legacy `MS_CACHE_HOME` alias |
 | `MODELSCOPE_HOME` | `~/.modelscope` | SDK config directory |
 | `MODELSCOPE_PREFER_AI_SITE` | `false` | Prefer `modelscope.ai` over `modelscope.cn` |
 

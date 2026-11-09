@@ -3492,7 +3492,7 @@ class HubApi:
         if repo_type is not None:
             rt_value = str(self._normalize_repo_type(repo_type))
         return _clear_cache(
-            cache_dir=Path(cache_dir) if cache_dir else None,
+            cache_dir=cache_dir if cache_dir is not None else self._config.cache_dir,
             repo_type=rt_value,
             repo_id=repo_id,
         )
