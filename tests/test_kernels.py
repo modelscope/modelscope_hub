@@ -1,12 +1,17 @@
 """Network-free tests for the ``modelscope_hub.kernels`` ModelScope-backed shim.
 
-``MsKernelApi`` is exercised with an injected fake ``HubApi``; the patch
-round-trip tests run only when the optional ``kernels`` package (and its
-``huggingface_hub`` dependency) is installed.
+``MsKernelApi`` is exercised with an injected fake ``HubApi``. The optional
+``kernels`` stack (and ``huggingface_hub`` transitively) is installed on demand
+when the environment lacks it, because the shim imports its exception and ref
+types from ``huggingface_hub``; tests whose stack cannot be installed skip
+instead of failing.
 """
 
 from __future__ import annotations
 
+import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +22,86 @@ from modelscope_hub.errors import CacheNotFound, NotExistError
 from modelscope_hub.kernels import get_kernel as kernels_get_kernel
 from modelscope_hub.kernels._hub import MsKernelApi, _ms_repo_type, _ms_revision
 from modelscope_hub.kernels._patch import _ms_api, patch_kernels_hub, patch_scope, unpatch_kernels_hub
+
+#: ``huggingface_hub`` only arrives as a transitive dependency of ``kernels``,
+#: so the default ``pip install -e ".[dev]"`` test environment provides neither.
+_KERNELS_REQUIREMENT = "kernels>=0.17"
+_HF_REQUIREMENT = "huggingface_hub>=0.19"
+_INSTALL_TIMEOUT_SECONDS = 300
+
+_deps_ready: bool | None = None
+_install_error = ""
+
+
+def _importable(module: str) -> bool:
+    try:
+        return importlib.util.find_spec(module) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _pip_install(requirement: str) -> bool:
+    global _install_error
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check", requirement],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=_INSTALL_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        stderr = (getattr(e, "stderr", None) or "").strip()
+        _install_error = stderr.splitlines()[-1] if stderr else str(e)
+        return False
+    return True
+
+
+def _ensure_kernels_stack() -> bool:
+    """Return whether ``huggingface_hub`` can be imported.
+
+    Installs the optional ``kernels`` stack on first use, because the shim's
+    exception and ref types come from its ``huggingface_hub`` dependency, which
+    the package deliberately does not declare. When ``kernels`` cannot be
+    installed (unsupported interpreter, missing wheel), fall back to
+    ``huggingface_hub`` alone; environments that allow neither (offline build
+    sandboxes, externally managed interpreters) get ``False`` and dependent
+    tests skip.
+    """
+    global _deps_ready
+    if _deps_ready is not None:
+        return _deps_ready
+    installed = False
+    if not _importable("kernels"):
+        installed |= _pip_install(_KERNELS_REQUIREMENT)
+    if not _importable("huggingface_hub"):
+        installed |= _pip_install(_HF_REQUIREMENT)
+    if installed:
+        # Drop anything imported before the install so the new distributions load.
+        for name in list(sys.modules):
+            if (
+                name == "kernels"
+                or name.startswith("kernels.")
+                or name == "huggingface_hub"
+                or name.startswith("huggingface_hub.")
+            ):
+                sys.modules.pop(name, None)
+        importlib.invalidate_caches()
+    _deps_ready = _importable("huggingface_hub")
+    return _deps_ready
+
+
+def _require_hf(submodule: str):
+    """Import a ``huggingface_hub`` submodule, skipping when it is unavailable."""
+    if not _ensure_kernels_stack():
+        pytest.skip(f"kernels/huggingface_hub unavailable: {_install_error or 'not installed'}")
+    return pytest.importorskip(submodule)
+
+
+@pytest.fixture(autouse=True)
+def _kernels_test_deps():
+    """Install the optional kernels stack once for this module's tests."""
+    _ensure_kernels_stack()
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +127,7 @@ def test_ms_repo_type_maps_kernel_to_model(repo_type, expected):
 # Downloads
 # ---------------------------------------------------------------------------
 def test_snapshot_download_forwards_to_download_repo():
+    _require_hf("huggingface_hub.errors")
     fake = mock.MagicMock()
     fake.download_repo.return_value = Path("/cache/snapshots/abc")
     api = MsKernelApi(hub_api=fake)
@@ -70,7 +156,7 @@ def test_snapshot_download_forwards_to_download_repo():
 
 
 def test_snapshot_download_cache_miss_raises_local_entry_not_found():
-    hf_errors = pytest.importorskip("huggingface_hub.errors")
+    hf_errors = _require_hf("huggingface_hub.errors")
 
     fake = mock.MagicMock()
     fake.download_repo.side_effect = CacheNotFound("no snapshot")
@@ -81,6 +167,7 @@ def test_snapshot_download_cache_miss_raises_local_entry_not_found():
 
 
 def test_hf_hub_download_forwards_to_download_file():
+    _require_hf("huggingface_hub.errors")
     fake = mock.MagicMock()
     fake.download_file.return_value = Path("/cache/build/torch-cpu/metadata.json")
     api = MsKernelApi(hub_api=fake)
@@ -107,7 +194,7 @@ def test_hf_hub_download_forwards_to_download_file():
 
 
 def test_hf_hub_download_missing_file_raises_entry_not_found():
-    hf_errors = pytest.importorskip("huggingface_hub.errors")
+    hf_errors = _require_hf("huggingface_hub.errors")
 
     fake = mock.MagicMock()
     fake.download_file.side_effect = NotExistError("no such file")
@@ -123,7 +210,7 @@ def test_hf_hub_download_missing_file_raises_entry_not_found():
 
 
 def test_hf_hub_download_cache_miss_raises_local_entry_not_found():
-    hf_errors = pytest.importorskip("huggingface_hub.errors")
+    hf_errors = _require_hf("huggingface_hub.errors")
 
     fake = mock.MagicMock()
     fake.download_file.side_effect = CacheNotFound("no cached file")
@@ -143,7 +230,7 @@ def test_hf_hub_download_cache_miss_raises_local_entry_not_found():
 # Revision listing
 # ---------------------------------------------------------------------------
 def test_list_repo_refs_builds_hf_ref_objects():
-    hf_api = pytest.importorskip("huggingface_hub.hf_api")
+    hf_api = _require_hf("huggingface_hub.hf_api")
 
     fake = mock.MagicMock()
     fake.legacy.list_revisions_detail.return_value = (
@@ -168,7 +255,7 @@ def test_list_repo_refs_builds_hf_ref_objects():
 
 def test_list_repo_refs_synthesizes_v1_when_no_version_refs():
     """A plain ModelScope mirror with only `master` exposes it as kernel version v1."""
-    pytest.importorskip("huggingface_hub.hf_api")
+    _require_hf("huggingface_hub.hf_api")
     import re as _re
 
     fake = mock.MagicMock()
@@ -188,7 +275,7 @@ def test_list_repo_refs_synthesizes_v1_when_no_version_refs():
 # Tree listing
 # ---------------------------------------------------------------------------
 def test_list_repo_tree_derives_direct_folders_from_blob_paths():
-    hf_api = pytest.importorskip("huggingface_hub.hf_api")
+    hf_api = _require_hf("huggingface_hub.hf_api")
 
     fake = mock.MagicMock()
     fake.list_repo_files.return_value = [
@@ -210,7 +297,7 @@ def test_list_repo_tree_derives_direct_folders_from_blob_paths():
 
 
 def test_list_repo_tree_uses_explicit_tree_entries():
-    pytest.importorskip("huggingface_hub.hf_api")
+    _require_hf("huggingface_hub.hf_api")
 
     fake = mock.MagicMock()
     fake.list_repo_files.return_value = [
@@ -491,7 +578,7 @@ def test_load_kernel_wrapper_scopes_the_patch(kernels_modules, monkeypatch, tmp_
 # Lockfile commit-hash hint
 # ---------------------------------------------------------------------------
 def test_hf_hub_download_commit_hash_failure_gets_lockfile_hint():
-    hf_errors = pytest.importorskip("huggingface_hub.errors")
+    hf_errors = _require_hf("huggingface_hub.errors")
     fake = mock.MagicMock()
     fake.download_file.side_effect = NotExistError("no such revision")
     api = MsKernelApi(hub_api=fake)
@@ -510,6 +597,7 @@ def test_hf_hub_download_commit_hash_failure_gets_lockfile_hint():
 
 
 def test_snapshot_download_commit_hash_failure_propagates_with_hint():
+    _require_hf("huggingface_hub.errors")
     fake = mock.MagicMock()
     fake.download_repo.side_effect = NotExistError("no such revision")
     api = MsKernelApi(hub_api=fake)
@@ -524,7 +612,7 @@ def test_snapshot_download_commit_hash_failure_propagates_with_hint():
 
 
 def test_hf_hub_download_branch_failure_gets_no_lockfile_hint():
-    hf_errors = pytest.importorskip("huggingface_hub.errors")
+    hf_errors = _require_hf("huggingface_hub.errors")
     fake = mock.MagicMock()
     fake.download_file.side_effect = NotExistError("no such file")
     api = MsKernelApi(hub_api=fake)
@@ -539,6 +627,7 @@ def test_hf_hub_download_branch_failure_gets_no_lockfile_hint():
 # Synthetic OIDs (kernels 0.18 validates target_commit as a git object id)
 # ---------------------------------------------------------------------------
 def test_list_repo_refs_returns_hex_target_commits():
+    _require_hf("huggingface_hub.hf_api")
     import re as _re
 
     fake = mock.MagicMock()
@@ -559,6 +648,7 @@ def test_list_repo_refs_returns_hex_target_commits():
 
 
 def test_synthetic_oid_resolved_back_to_branch_on_downloads():
+    _require_hf("huggingface_hub.hf_api")
     fake = mock.MagicMock()
     fake.legacy.list_revisions_detail.return_value = ([{"Revision": "master"}], [])
     api = MsKernelApi(hub_api=fake)
@@ -584,6 +674,7 @@ def test_synthetic_oid_resolved_back_to_branch_on_downloads():
 
 def test_plain_revision_not_mapped():
     """A normal branch/tag revision passes through untouched."""
+    _require_hf("huggingface_hub.errors")
     fake = mock.MagicMock()
     api = MsKernelApi(hub_api=fake)
 

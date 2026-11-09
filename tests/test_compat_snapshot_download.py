@@ -30,7 +30,7 @@ class TestSnapshotDownloadProgressCallbacks:
             result = snapshot_download(
                 "owner/repo",
                 progress_callbacks=[_DummyCallback],
-                local_files_only=True,
+                endpoint="https://modelscope.cn",
             )
 
         assert str(result) == "/tmp/snapshot"
@@ -39,38 +39,23 @@ class TestSnapshotDownloadProgressCallbacks:
 
     def test_progress_callbacks_default_none(self):
         with mock.patch.object(DownloadManager, "download_repo", return_value="/tmp/snapshot") as m:
-            snapshot_download("owner/repo", local_files_only=True)
+            snapshot_download("owner/repo", endpoint="https://modelscope.cn")
 
         _, kwargs = m.call_args
         assert kwargs["progress_callbacks"] is None
 
-    def test_snapshot_local_files_only_does_not_probe_endpoint(self):
-        with (
-            mock.patch.object(
-                DownloadManager,
-                "download_repo",
-                return_value="/tmp/snapshot",
-            ),
-            mock.patch.object(
-                _snapshot_download_mod.HubApi,
-                "resolve_endpoint_for_read",
-                side_effect=AssertionError("network should not be used"),
-            ),
-        ):
-            assert snapshot_download("owner/repo", local_files_only=True) == "/tmp/snapshot"
+    def test_snapshot_local_files_only_does_not_create_client(self, tmp_path):
+        snapshot = tmp_path / "models/owner--repo/snapshots/master"
+        snapshot.mkdir(parents=True)
+        (snapshot / "config.json").write_text("{}")
+        with mock.patch.object(_snapshot_download_mod, "HubApi", side_effect=AssertionError("no offline client")):
+            assert snapshot_download("owner/repo", cache_dir=tmp_path, local_files_only=True) == str(snapshot)
 
-    def test_file_local_files_only_does_not_probe_endpoint(self):
-        with (
-            mock.patch.object(
-                DownloadManager,
-                "download_file",
-                return_value="/tmp/snapshot/config.json",
-            ),
-            mock.patch.object(
-                _file_download_mod.HubApi,
-                "resolve_endpoint_for_read",
-                side_effect=AssertionError("network should not be used"),
-            ),
-        ):
-            result = model_file_download("owner/repo", "config.json", local_files_only=True)
-            assert result == "/tmp/snapshot/config.json"
+    def test_file_local_files_only_does_not_probe_endpoint(self, tmp_path):
+        snapshot = tmp_path / "models/owner--repo/snapshots/master"
+        snapshot.mkdir(parents=True)
+        target = snapshot / "config.json"
+        target.write_text("{}")
+        with mock.patch.object(_file_download_mod, "HubApi", side_effect=AssertionError("no offline client")):
+            result = model_file_download("owner/repo", "config.json", cache_dir=tmp_path, local_files_only=True)
+            assert result == str(target)

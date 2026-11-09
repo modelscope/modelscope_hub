@@ -9,6 +9,7 @@ exported alongside it provide structured return types for type-checked code.
 
 from __future__ import annotations
 
+from ._cache_manager import resolve_cached_snapshot
 from ._download import ProgressCallback, TqdmCallback
 from .agent_idp import (
     generate_agent_key_pair,
@@ -18,7 +19,7 @@ from .agent_idp import (
     write_private_jwk,
 )
 from .api import HubApi
-from .config import HubConfig, get_default_config, set_default_config
+from .config import HubConfig, get_cache_root, get_default_config, set_default_config
 from .constants import (
     AigcModelType,
     DatasetCategory,
@@ -85,6 +86,8 @@ __all__ = [
     "HubConfig",
     "get_default_config",
     "set_default_config",
+    "get_cache_root",
+    "resolve_cached_snapshot",
     # Enums
     "AigcModelType",
     "DatasetCategory",

@@ -788,7 +788,9 @@ ms-hub cache verify Qwen/Qwen3-0.6B
 ms-hub cache verify Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
 ms-hub cache clear --repo-type model --yes
 ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
+ms-hub cache clear --repo-type model --dry-run
 ```
+
 
 <details>
 <summary>Options</summary>
@@ -797,7 +799,7 @@ ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
 |------------|-------------|
 | `scan` | `--cache-dir DIR` |
 | `verify REPO_ID` | `--repo-type`, `--revision`, `--cache-dir`, `--local-dir`, `--fail-on-missing-files`, `--fail-on-extra-files` |
-| `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--yes` |
+| `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--yes`, `--dry-run` |
 
 </details>
 
@@ -1068,7 +1070,7 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 |----------|---------|-------------|
 | `MODELSCOPE_API_TOKEN` | — | API authentication token |
 | `MODELSCOPE_ENDPOINT` | `https://modelscope.cn` | API endpoint URL |
-| `MODELSCOPE_CACHE` | `~/.cache/modelscope` | Local cache directory |
+| `MODELSCOPE_CACHE` | `~/.cache/modelscope` | Local cache directory; takes precedence over the legacy `MS_CACHE_HOME` alias |
 | `MODELSCOPE_HOME` | `~/.modelscope` | SDK config directory |
 | `MODELSCOPE_PREFER_AI_SITE` | `false` | Prefer `modelscope.ai` over `modelscope.cn` |
 

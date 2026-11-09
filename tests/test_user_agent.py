@@ -323,7 +323,7 @@ def test_compat_download_user_agent_applies_to_all_transports(download, monkeypa
 
     monkeypatch.setattr(HubApi, "download_file", fake_download)
     monkeypatch.setattr(HubApi, "download_repo", fake_download)
-    kwargs = {"local_files_only": True, "user_agent": {"application": "example"}}
+    kwargs = {"endpoint": "https://modelscope.cn", "user_agent": {"application": "example"}}
     if download in (model_file_download, dataset_file_download):
         assert download("alice/m", "x", **kwargs) == "local-path"
     else:
