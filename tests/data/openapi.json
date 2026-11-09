@@ -4471,12 +4471,12 @@
           },
           "oauth_enabled": {
             "type": "boolean",
-            "description": "是否为创空间启用 OAuth",
+            "description": "是否为创空间启用 OAuth；static 类型不支持（返回 400：无服务端运行时可消费 OAuth 凭据）",
             "default": false
           },
           "oauth_scope": {
             "type": "string",
-            "description": "OAuth 授权范围，空格分隔多个 scope；oauth_enabled=true 时必填。可选值：openid（魔搭用户身份）、profile（用户公开信息）、manage-mcp-deployment（管理MCP部署）、list-operational-mcp（获取部署MCP列表）、read-repos（读取个人仓库）、api-inference（调用 API Inference）",
+            "description": "OAuth 授权范围，空格分隔多个 scope；oauth_enabled=true 时必填且必须包含 openid。可选值：openid（魔搭用户身份）、profile（用户公开信息）、manage-mcp-deployment（管理MCP部署）、list-operational-mcp（获取部署MCP列表）、read-repos（读取个人仓库）、api-inference（调用 API Inference）",
             "examples": [
               "openid profile"
             ]
@@ -4498,7 +4498,7 @@
             "items": {
               "type": "string"
             },
-            "description": "OAuth 回调 URL 列表，oauth_enabled=true 时必填；每项需含 scheme 和 host",
+            "description": "OAuth 回调 URL 列表；每项需含 scheme 和 host；不传时默认使用创空间子域名",
             "examples": [
               "https://example.org/oauth/callback"
             ]
@@ -4810,11 +4810,11 @@
           },
           "oauth_enabled": {
             "type": "boolean",
-            "description": "是否为创空间启用 OAuth。整组 oauth_* 字段仅在本字段显式传入时生效；不传时其他 oauth_* 字段被忽略"
+            "description": "是否为创空间启用 OAuth。整组 oauth_* 字段仅在本字段显式传入时生效；不传本字段而单独传入其他 oauth_* 字段会被拒绝（400）"
           },
           "oauth_scope": {
             "type": "string",
-            "description": "OAuth 授权范围，空格分隔多个 scope。可选值：openid（魔搭用户身份）、profile（用户公开信息）、manage-mcp-deployment（管理MCP部署）、list-operational-mcp（获取部署MCP列表）、read-repos（读取个人仓库）、api-inference（调用 API Inference）"
+            "description": "OAuth 授权范围，空格分隔多个 scope；仅在传入 oauth_enabled 时生效且必须包含 openid。可选值：openid（魔搭用户身份）、profile（用户公开信息）、manage-mcp-deployment（管理MCP部署）、list-operational-mcp（获取部署MCP列表）、read-repos（读取个人仓库）、api-inference（调用 API Inference）"
           },
           "oauth_token_expire_time": {
             "type": "integer",

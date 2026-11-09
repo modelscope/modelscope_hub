@@ -55,7 +55,7 @@ def _add_oauth_arguments(p) -> None:
         dest="oauth_enabled",
         action="store_true",
         default=None,
-        help="Enable the Studio's OAuth app configuration.",
+        help="Enable the Studio's OAuth app configuration (not supported for static studios).",
     )
     enabled.add_argument(
         "--no-oauth-enabled",
@@ -67,9 +67,9 @@ def _add_oauth_arguments(p) -> None:
         "--oauth-scope",
         dest="oauth_scope",
         default=None,
-        help="Space-separated OAuth scopes (required when enabled). Valid scopes: "
-        "openid, profile, manage-mcp-deployment, list-operational-mcp, read-repos, "
-        "api-inference.",
+        help="Space-separated OAuth scopes (required when enabled, must include openid). "
+        "Valid scopes: openid, profile, manage-mcp-deployment, list-operational-mcp, "
+        "read-repos, api-inference.",
     )
     p.add_argument(
         "--oauth-token-expire-time",
@@ -85,7 +85,8 @@ def _add_oauth_arguments(p) -> None:
         action="append",
         default=None,
         metavar="URL",
-        help="OAuth callback URL; repeat the flag for multiple entries (required when enabled).",
+        help="OAuth callback URL; repeat the flag for multiple entries "
+        "(optional; defaults to the studio subdomain when omitted).",
     )
     p.add_argument(
         "--oauth-homepage-url",
@@ -329,7 +330,8 @@ class _StudioSettings(CLICommand):
         if "oauth_enabled" not in settings and _OAUTH_EXTRA_FIELDS.intersection(settings):
             raise ValueError(
                 "The oauth_* settings only take effect together with an explicit "
-                "--oauth-enabled or --no-oauth-enabled flag."
+                "--oauth-enabled or --no-oauth-enabled flag (the server rejects "
+                "such payloads with HTTP 400)."
             )
         api = make_api(self.args)
         data = api.update_repo_settings(self.args.studio_id, RepoType.STUDIO, **settings)

@@ -310,8 +310,8 @@ class TestStudioExecute:
         mock_api.update_repo_settings.assert_called_once_with("org/demo", RepoType.STUDIO, oauth_enabled=False)
 
     def test_settings_oauth_extras_require_enabled_flag(self, mock_api):
-        # The server applies the oauth_* group only when oauth_enabled is
-        # explicitly present; a lone --oauth-scope would be silently dropped.
+        # The server rejects lone oauth_* sub-fields with HTTP 400; the CLI
+        # mirrors that contract by failing fast before the request goes out.
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
             code, out, err = run_cli(["studio", "settings", "org/demo", "--oauth-scope", "openid"])
         assert code == 2
