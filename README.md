@@ -791,32 +791,6 @@ ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
 ms-hub cache clear --repo-type model --dry-run
 ```
 
-快照位置以下载返回值为准；不要将缓存根与 `repo_id` 直接拼接。
-`modelscope.utils.file_utils.get_modelscope_cache_dir()` / `get_model_cache_root()`
-继续表示旧 SDK 路径，不改变已有调用方的返回值契约。
-
-```python
-from modelscope_hub import get_cache_root, resolve_cached_snapshot
-
-root = get_cache_root()  # Active cache root; no directory creation or credential initialization.
-snapshot = resolve_cached_snapshot("Qwen/Qwen2.5-VL-3B-Instruct", revision="master")
-```
-
-`resolve_cached_snapshot` 只读取本地缓存；缺失或修订歧义会抛出 `CacheNotFound`，
-不联网，也不证明已下载全部文件。旧 SDK 缓存没有修订维度，继续按既有规则复用。
-SDK `1.40.3` 同时提供 `get_hub_cache_root()` 与 `modelscope.hub.cache_manager` 转导出。
-
-旧版兼容入口 `modelscope_hub.compat.snapshot_download()`（以及委托它的 `modelscope.snapshot_download()`）
-在线下载模型后，会把旧根路径 `<旧模型根>/<owner>/<name>` 链接到本次返回的目录（快照或被复用的旧缓存）。旧模型根即
-`get_model_cache_root()` 的返回值（`MODELSCOPE_CACHE/models`，未设置时为 `~/.cache/modelscope/hub/models`）。
-仅在该根位于当前缓存根内时创建；只更新自身指向快照的链接，不覆盖已有目录或其他链接；离线解析不创建；系统不支持
-符号链接时跳过。该链接用于兼容仍拼接旧路径的调用方（如启用 `VLLM_USE_MODELSCOPE=true` 的已发布
-vLLM），不表示支持修订选择；缓存扫描与清理把它视为别名。Hub 不导入或修改 vLLM。
-
-缓存清理先校验全部目标，只删除有明确类型的仓库目录。空标识、路径穿越和越界目录
-软链会拒绝整个批次；不会删除缓存根、整个 `hub` 或类型容器。未知类型的 flat 布局
-保留，其他类型及 SDK 自有缓存不受按类型清理影响。安全删除需要目录描述符和
-no-follow 支持；缺少这些能力的平台（包括 Windows）会拒绝执行，可使用 `--dry-run` 预览。
 
 <details>
 <summary>Options</summary>
