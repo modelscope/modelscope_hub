@@ -22,6 +22,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import pytest
+import requests
 
 from modelscope_hub import _download
 from modelscope_hub.api import HubApi
@@ -787,6 +788,53 @@ class TestListingOptimisation:
             assert list(pool.map(lambda _: api.downloader._detect_region(), range(16))) == ["cn-test"] * 16
         assert calls == [1]
 
+    def test_region_probe_uses_the_configured_timeout(self, api, monkeypatch):
+        seen = []
+
+        class _Recorder:
+            def get(self, url, **kwargs):
+                seen.append(kwargs["timeout"])
+                raise requests.exceptions.ConnectTimeout("probe")
+
+        monkeypatch.setattr(_download, "DOWNLOAD_REGION_PROBE_TIMEOUT_SECONDS", 2)
+        monkeypatch.setattr(api.downloader._client, "_read_session", _Recorder())
+
+        assert api.downloader._detect_region_uncached() is None
+        assert seen == [2]
+
+    def test_unreachable_endpoint_is_not_cached_as_no_region(self, api, monkeypatch):
+        results = iter([None, "cn-test"])
+        monkeypatch.setattr(api.downloader, "_detect_region_uncached", lambda: next(results))
+
+        assert api.downloader._detect_region() == ""
+        assert api.downloader._detect_region() == "cn-test"
+        assert api.downloader._detect_region() == "cn-test"
+
+    def test_region_probe_failures_stop_after_the_attempt_budget(self, api, monkeypatch):
+        calls = []
+
+        def probe():
+            calls.append(1)
+            return None
+
+        monkeypatch.setattr(api.downloader, "_detect_region_uncached", probe)
+
+        for _ in range(5):
+            assert api.downloader._detect_region() == ""
+        assert len(calls) == api.downloader._REGION_PROBE_MAX_ATTEMPTS
+
+    def test_confirmed_no_region_is_cached_at_once(self, api, monkeypatch):
+        calls = []
+
+        def probe():
+            calls.append(1)
+            return ""
+
+        monkeypatch.setattr(api.downloader, "_detect_region_uncached", probe)
+
+        assert [api.downloader._detect_region() for _ in range(3)] == [""] * 3
+        assert len(calls) == 1
+
 
 class TestDownloadConfiguration:
     def test_defaults_exports_registry_and_readme_are_aligned(self):
@@ -800,6 +848,7 @@ class TestDownloadConfiguration:
             "DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS": 600,
             "REPO_TREE_PAGE_TIMEOUT_SECONDS": 15,
             "REPO_TREE_LIST_TIMEOUT_SECONDS": 3600,
+            "DOWNLOAD_REGION_PROBE_TIMEOUT_SECONDS": 1,
         }
         registry = {entry.name: entry.default for entry in constants.ENV_REGISTRY}
         readme = (Path(__file__).parents[1] / "README.md").read_text()
