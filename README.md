@@ -219,63 +219,6 @@ path = api.download_file("Qwen/Qwen3-0.6B", "model", "config.json", local_files_
 
 Downloads validate available size and SHA-256 metadata before replacing files, with safe resume, bounded retries, timeouts, and cancellation. Incomplete snapshots raise `FileDownloadError` (CLI exit code `1`), preserving completed files for subsequent retries.
 
-### 缓存目录与只读定位
-
-`MODELSCOPE_CACHE`（默认 `~/.cache/modelscope`）是 **总缓存根**，模型目录不应通过
-`cache_root / repo_id` 拼接。新下载使用 `{root}/{type}s/{owner}--{name}/snapshots/{revision}`；
-`cache_dir` 同样表示总根，`local_dir` 则直接接收仓库文件。
-
-```python
-from modelscope_hub import get_cache_root, resolve_cached_snapshot, resolve_cached_file
-
-root = get_cache_root()  # 不创建目录、加载凭据或联网
-snapshot = resolve_cached_snapshot("Qwen/Qwen3-0.6B", revision="master")
-config_file = resolve_cached_file("Qwen/Qwen3-0.6B", "config.json", revision="master")
-```
-
-- 定位接口和 `local_files_only=True` 共享解析器；没有缓存或修订歧义时抛 `CacheNotFound`。
-- 未指定 revision 时优先 master/main，否则仅在存在唯一修订时选择；显式 revision 支持分支名中的 `/`。
-- 已有旧 SDK 的 typed（含默认 `hub/models`）、flat 和未转义目录继续按历史优先级复用，
-  不自动移动文件、重建软链或强制重新下载。旧目录不隔离 revision；显式指定 revision 时会提示。
-  可用 `reuse_legacy_cache=False` 禁用旧缓存复用，调用方需要同时传递期望的 revision。
-- `resolve_cached_snapshot` / `resolve_cached_file` 只定位本地文件，不证明整仓完整或远端哈希一致；
-  抽样下载后的 `verify_cache` 会正确报告未下载的文件缺失，只有 `DownloadReport.complete` 才表示相应任务完整。
-- 自定义 client 使用 `api.get_cache_root()` / `api.resolve_cached_snapshot(...)`，以该 client 的配置为准。
-  `utils.get_cache_dir()` 仍会创建缓存根；只读场景请使用 `get_cache_root()`。
-- 每个标准仓库的 `.ms_repo.json` 只记录身份与修订路径，不代表完成状态；既有 `.download_state` 单 JSON
-  仍是任务恢复提示和最近摘要的唯一持久文件。旧 pickle 缓存索引仅受限读取，不执行对象或重命名损坏索引。
-
-`modelscope.utils.file_utils.get_modelscope_cache_dir/get_model_cache_root/get_model_cache_dir`
-以及旧 `modelscope.hub.utils.utils.get_cache_dir` 描述 **旧 SDK/SDK 自有缓存**，默认仍含 `/hub`，
-不是 `snapshot_download` 的实际输出路径。它们的历史返回值不应被静默修改；加载具体模型请使用
-下载返回值或上面的定位接口。旧 frozen 文件级扫描视图可用 `modelscope_hub.compat.cache_manager.scan_cache_dir`。
-
-#### vLLM 的 ModelScope 兼容
-
-沿用 vLLM 原有的 `VLLM_USE_MODELSCOPE=true` 和 `modelscope` SDK 导入方式，无需修改 vLLM 文件或额外调用补丁。
-hub 在该开关启用时，为 vLLM 的路径转换、config 和 processor 加载入口注册延迟的内存适配：
-- 缓存路径使用实际 snapshot，不再从旧 SDK 根拼接；旧 helper 返回值与缓存布局保持不变。
-- 实际 processor 加载通过 SDK 下载非权重文件，传递 revision、cache_dir、token 与自定义 UA；
-  在 vLLM 内部套用 HF 的 `main` 默认值之前选定缓存，显式 revision 原样传递，不替换为其他分支。
-- `HF_HUB_OFFLINE=1` 下只读定位已缓存目录，不查询远端；LRU 缓存入口使用同一适配函数。
-- 未启用开关时不主动导入 vLLM，也不改变其 Hugging Face 行为。开关应与 vLLM 原约定一样在导入前设置。
-
-该集成已用原版 vLLM `0.33.0+cpu` 的实际 config、tokenizer、processor 及图像/视频预处理调用验证；
-它依赖 vLLM 的内部加载入口，升级 vLLM 后应重新执行兼容性回归。此验证不等同于完整模型推理或服务端性能验收。
-
-缓存清理先规划再执行，只删确认属于相应仓库的目录，不删整个 `hub`、owner、类型目录或缓存根。
-
-```bash
-ms-hub cache clear --repo-type model --repo-id Qwen/Qwen3-0.6B --dry-run
-# 检查列出的实际路径后，去掉 --dry-run 并确认；--yes 不会跳过安全检查。
-```
-
-`plan_cache_clear(...)` 返回可检查的内存计划；`execute_cache_clear(plan)` 执行前复核计划，
-缓存身份或目标改变时要求重新规划。未知身份/类型的 flat 目录不能凭默认 model 猜测后删除。
-支持安全 fd/no-follow 删除的 POSIX 平台会拒绝路径穿越和越界链接，Windows 等缺少等价安全能力的平台
-拒绝执行删除（只读规划仍可使用）。SDK 自有的 AST、plugins、MsDataset downloads、agent staging、上传状态、
-`.lock` 和 `.download_state` 不会随仓库清理被整体删除。
-
 ### Load kernels (`modelscope_hub.kernels`)
 
 `modelscope_hub.kernels` is a drop-in wrapper around the [`kernels`](https://github.com/huggingface/kernels) library that downloads optimized compute kernels from ModelScope instead of the Hugging Face Hub. A kernel repository is an ordinary ModelScope model repository mirroring the HF kernel layout (`build/<variant>/...` plus `v1`-style version branches or tags):
@@ -845,7 +788,9 @@ ms-hub cache verify Qwen/Qwen3-0.6B
 ms-hub cache verify Qwen/Qwen3-0.6B --local-dir ./Qwen3-0.6B
 ms-hub cache clear --repo-type model --yes
 ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
+ms-hub cache clear --repo-type model --dry-run
 ```
+
 
 <details>
 <summary>Options</summary>
@@ -854,7 +799,7 @@ ms-hub cache clear --repo-id my-org/old-model --repo-type model --yes
 |------------|-------------|
 | `scan` | `--cache-dir DIR` |
 | `verify REPO_ID` | `--repo-type`, `--revision`, `--cache-dir`, `--local-dir`, `--fail-on-missing-files`, `--fail-on-extra-files` |
-| `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--dry-run`, `--yes` |
+| `clear` | `--repo-type`, `--repo-id`, `--cache-dir`, `--yes`, `--dry-run` |
 
 </details>
 
@@ -1125,8 +1070,8 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 |----------|---------|-------------|
 | `MODELSCOPE_API_TOKEN` | — | API authentication token |
 | `MODELSCOPE_ENDPOINT` | `https://modelscope.cn` | API endpoint URL |
-| `MODELSCOPE_CACHE` | `~/.cache/modelscope` | 总缓存根；兼容弃用别名 `MS_CACHE_HOME` |
-| `MODELSCOPE_HOME` | `~/.modelscope` | SDK 配置目录；弃用的 `MODELSCOPE_CREDENTIALS_PATH` 指向 credentials 目录或文件时使用其父目录 |
+| `MODELSCOPE_CACHE` | `~/.cache/modelscope` | Local cache directory; takes precedence over the legacy `MS_CACHE_HOME` alias |
+| `MODELSCOPE_HOME` | `~/.modelscope` | SDK config directory |
 | `MODELSCOPE_PREFER_AI_SITE` | `false` | Prefer `modelscope.ai` over `modelscope.cn` |
 
 **Network:**

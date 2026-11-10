@@ -32,11 +32,6 @@ from urllib.parse import urlparse
 
 from requests.cookies import RequestsCookieJar
 
-from ._cache_clear import execute_cache_clear
-from ._cache_clear import plan_cache_clear as _plan_cache_clear
-from ._cache_layout import resolve_cached_file as _resolve_cached_file
-from ._cache_layout import resolve_cached_snapshot as _resolve_cached_snapshot
-from ._cache_layout import validate_relative, validate_repo_id
 from ._cache_manager import _resolve_verification_root
 from ._cache_manager import clear_cache as _clear_cache
 from ._cache_manager import scan_cache as _scan_cache
@@ -46,7 +41,7 @@ from ._legacy_api import LegacyClient
 from ._openapi import OpenAPIClient
 from ._upload import UploadManager
 from .agent_idp import sign_agent_token_request
-from .config import HubConfig, get_cache_root, get_default_config
+from .config import HubConfig, get_default_config
 from .constants import (
     DEFAULT_ENDPOINT,
     OPENAPI_CREATE_DATASET_FIELDS,
@@ -81,7 +76,6 @@ from .types import (
     AgentJWK,
     AgentToken,
     AgentTokenRecord,
-    CacheClearPlan,
     CacheInfo,
     CacheVerification,
     DownloadReport,
@@ -2292,8 +2286,6 @@ class HubApi:
         local_files_only: bool = False,
         user_agent: dict | str | None = None,
         file_size: int | None = None,
-        progress_callbacks: list[type[ProgressCallback]] | None = None,
-        reuse_legacy_cache: bool = True,
     ) -> Path:
         """Download a single file from a repository.
 
@@ -2360,36 +2352,18 @@ class HubApi:
                 "Studios are application containers without a file listing API. "
                 f"To access studio source code, use: git clone https://modelscope.cn/studios/{repo_id}.git"
             )
-        validate_repo_id(repo_id)
-        if revision is not None:
-            validate_relative(revision, "revision")
-        if local_dir is not None and not str(local_dir):
-            raise InvalidParameter("local_dir must not be empty")
-        root = self.get_cache_root(cache_dir=cache_dir)
-        if local_files_only:
-            return _resolve_cached_file(
-                repo_id,
-                file_path,
-                str(rt),
-                revision=revision,
-                cache_dir=root,
-                local_dir=local_dir,
-                reuse_legacy_cache=reuse_legacy_cache,
-            )
         return self.downloader.download_file(
             repo_id=repo_id,
             repo_type=str(rt),
             file_path=file_path,
             revision=revision,
-            cache_dir=self.get_cache_root(cache_dir=cache_dir),
-            local_dir=Path(local_dir).expanduser().absolute() if local_dir is not None else None,
+            cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
             force=force,
             expected_sha256=expected_sha256,
             local_files_only=local_files_only,
             user_agent=user_agent,
             file_size=file_size,
-            progress_callbacks=progress_callbacks,
-            reuse_legacy_cache=reuse_legacy_cache,
         )
 
     def download_repo_report(
@@ -2409,7 +2383,6 @@ class HubApi:
         retry_policy: DownloadRetryPolicy | None = None,
         user_agent: dict | str | None = None,
         progress_callbacks: list[type[ProgressCallback]] | None = None,
-        reuse_legacy_cache: bool = True,
     ) -> DownloadReport:
         """Download known files despite ordinary failures; never label partial data complete.
 
@@ -2432,20 +2405,12 @@ class HubApi:
         iter_files streams temporary results owned by the live report; call
         report.close() after consumption. Persisted hints cannot prove success.
         """
-        validate_repo_id(repo_id)
-        if revision is not None:
-            validate_relative(revision, "revision")
-        if local_dir is not None and not str(local_dir):
-            raise InvalidParameter("local_dir must not be empty")
-        if tracker_path is not None and not str(tracker_path):
-            raise InvalidParameter("tracker_path must not be empty")
-        self.get_cache_root(cache_dir=cache_dir)
         return self.downloader.download_repo_report(
             repo_id,
             str(self._normalize_repo_type(repo_type)),
             revision=revision,
-            cache_dir=self.get_cache_root(cache_dir=cache_dir),
-            local_dir=Path(local_dir).expanduser().absolute() if local_dir is not None else None,
+            cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,
@@ -2455,7 +2420,6 @@ class HubApi:
             retry_policy=retry_policy,
             user_agent=user_agent,
             progress_callbacks=progress_callbacks,
-            reuse_legacy_cache=reuse_legacy_cache,
         )
 
     def download_repo(
@@ -2473,7 +2437,6 @@ class HubApi:
         user_agent: dict | str | None = None,
         progress_callbacks: list[type[ProgressCallback]] | None = None,
         file_list: list[dict] | None = None,
-        reuse_legacy_cache: bool = True,
     ) -> Path:
         """Download an entire repository snapshot.
 
@@ -2542,27 +2505,12 @@ class HubApi:
                 "Studios are application containers without a file listing API. "
                 f"To access studio source code, use: git clone https://modelscope.cn/studios/{repo_id}.git"
             )
-        validate_repo_id(repo_id)
-        if revision is not None:
-            validate_relative(revision, "revision")
-        if local_dir is not None and not str(local_dir):
-            raise InvalidParameter("local_dir must not be empty")
-        root = self.get_cache_root(cache_dir=cache_dir)
-        if local_files_only:
-            return _resolve_cached_snapshot(
-                repo_id,
-                str(rt),
-                revision=revision,
-                cache_dir=root,
-                local_dir=local_dir,
-                reuse_legacy_cache=reuse_legacy_cache,
-            )
         return self.downloader.download_repo(
             repo_id=repo_id,
             repo_type=str(rt),
             revision=revision,
-            cache_dir=self.get_cache_root(cache_dir=cache_dir),
-            local_dir=Path(local_dir).expanduser().absolute() if local_dir is not None else None,
+            cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
             allow_patterns=allow_patterns,
             ignore_patterns=ignore_patterns,
             max_workers=max_workers,
@@ -2570,7 +2518,6 @@ class HubApi:
             user_agent=user_agent,
             progress_callbacks=progress_callbacks,
             file_list=file_list,
-            reuse_legacy_cache=reuse_legacy_cache,
         )
 
     def list_repo_files(
@@ -3453,63 +3400,6 @@ class HubApi:
     # ==================================================================
     # Cache
     # ==================================================================
-    def get_cache_root(self, *, cache_dir: str | Path | None = None) -> Path:
-        """Return this client's active cache root without creating directories."""
-        return get_cache_root(cache_dir=cache_dir, config=self._config)
-
-    def resolve_cached_snapshot(
-        self,
-        repo_id: str,
-        repo_type: RepoTypeLike = "model",
-        *,
-        revision: str | None = None,
-        cache_dir: str | Path | None = None,
-        local_dir: str | Path | None = None,
-        reuse_legacy_cache: bool = True,
-    ) -> Path:
-        return _resolve_cached_snapshot(
-            repo_id,
-            str(self._normalize_repo_type(repo_type)),
-            revision=revision,
-            cache_dir=self.get_cache_root(cache_dir=cache_dir),
-            local_dir=local_dir,
-            reuse_legacy_cache=reuse_legacy_cache,
-        )
-
-    def resolve_cached_file(
-        self,
-        repo_id: str,
-        file_path: str,
-        repo_type: RepoTypeLike = "model",
-        *,
-        revision: str | None = None,
-        cache_dir: str | Path | None = None,
-        local_dir: str | Path | None = None,
-        reuse_legacy_cache: bool = True,
-    ) -> Path:
-        return _resolve_cached_file(
-            repo_id,
-            file_path,
-            str(self._normalize_repo_type(repo_type)),
-            revision=revision,
-            cache_dir=self.get_cache_root(cache_dir=cache_dir),
-            local_dir=local_dir,
-            reuse_legacy_cache=reuse_legacy_cache,
-        )
-
-    def plan_cache_clear(
-        self,
-        *,
-        cache_dir: str | Path | None = None,
-        repo_type: RepoTypeLike | None = None,
-        repo_id: str | None = None,
-    ) -> CacheClearPlan:
-        return _plan_cache_clear(
-            self.get_cache_root(cache_dir=cache_dir),
-            str(self._normalize_repo_type(repo_type)) if repo_type is not None else None,
-            repo_id,
-        )
-
     def verify_cache(
         self,
         repo_id: str,
@@ -3527,7 +3417,7 @@ class HubApi:
             repo_id,
             str(rt),
             revision=revision,
-            cache_dir=self.get_cache_root(cache_dir=cache_dir),
+            cache_dir=cache_dir,
             local_dir=local_dir,
         )
         files = self.list_repo_files(repo_id, rt, revision=resolved_revision, recursive=True)
@@ -3537,8 +3427,8 @@ class HubApi:
             str(rt),
             expected,
             revision=resolved_revision,
-            cache_dir=self.get_cache_root(cache_dir=cache_dir),
-            local_dir=Path(local_dir).expanduser().absolute() if local_dir is not None else None,
+            cache_dir=Path(cache_dir) if cache_dir else None,
+            local_dir=Path(local_dir) if local_dir else None,
         )
 
     def scan_cache(self, cache_dir: str | Path | None = None) -> CacheInfo:
@@ -3562,7 +3452,7 @@ class HubApi:
         >>> [r.repo_id for r in info.repos][:3]
         ['alice/llama-7b', 'bob/imagenet', 'carol/whisper-base']
         """
-        return _scan_cache(self.get_cache_root(cache_dir=cache_dir))
+        return _scan_cache(Path(cache_dir) if cache_dir else None)
 
     def clear_cache(
         self,
@@ -3570,7 +3460,6 @@ class HubApi:
         cache_dir: str | Path | None = None,
         repo_type: RepoTypeLike | None = None,
         repo_id: str | None = None,
-        plan: CacheClearPlan | None = None,
     ) -> int:
         """Remove cached data and return the number of bytes freed.
 
@@ -3602,9 +3491,8 @@ class HubApi:
         rt_value: str | None = None
         if repo_type is not None:
             rt_value = str(self._normalize_repo_type(repo_type))
-        root = self.get_cache_root(cache_dir=cache_dir)
-        if plan is not None:
-            if (plan.cache_dir, plan.repo_type, plan.repo_id) != (str(root.resolve()), rt_value, repo_id):
-                raise InvalidParameter("Deletion plan does not match the authorized cache scope")
-            return execute_cache_clear(plan)
-        return _clear_cache(cache_dir=root, repo_type=rt_value, repo_id=repo_id)
+        return _clear_cache(
+            cache_dir=cache_dir if cache_dir is not None else self._config.cache_dir,
+            repo_type=rt_value,
+            repo_id=repo_id,
+        )

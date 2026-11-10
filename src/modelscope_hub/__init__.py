@@ -9,8 +9,7 @@ exported alongside it provide structured return types for type-checked code.
 
 from __future__ import annotations
 
-from ._cache_clear import execute_cache_clear, plan_cache_clear
-from ._cache_layout import identify_cached_repo, resolve_cached_file, resolve_cached_snapshot
+from ._cache_manager import resolve_cached_snapshot
 from ._download import ProgressCallback, TqdmCallback
 from .agent_idp import (
     generate_agent_key_pair,
@@ -64,8 +63,6 @@ from .types import (
     AgentJWK,
     AgentToken,
     AgentTokenRecord,
-    CacheClearPlan,
-    CacheClearTarget,
     CachedRepoInfo,
     CacheInfo,
     CacheVerification,
@@ -91,12 +88,6 @@ __all__ = [
     "set_default_config",
     "get_cache_root",
     "resolve_cached_snapshot",
-    "resolve_cached_file",
-    "identify_cached_repo",
-    "plan_cache_clear",
-    "execute_cache_clear",
-    "CacheClearPlan",
-    "CacheClearTarget",
     # Enums
     "AigcModelType",
     "DatasetCategory",
@@ -161,13 +152,3 @@ __all__ = [
     "PermissionError",
     "ValidationError",
 ]
-
-
-def _register_vllm_compat() -> None:
-    # Allow importing the SDK before setting the vLLM flag without eagerly importing third-party libraries.
-    from ._vllm_compat import install
-
-    install()
-
-
-_register_vllm_compat()

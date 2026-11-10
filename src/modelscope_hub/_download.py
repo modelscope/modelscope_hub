@@ -38,17 +38,6 @@ from tqdm.auto import tqdm
 from urllib3.exceptions import MaxRetryError
 from urllib3.util.retry import Retry
 
-from ._cache_layout import (
-    _warn_legacy_revision,
-    contained_path,
-    download_output,
-    find_legacy_repo_dir,
-    record_identity,
-    repo_cache_path,
-    resolve_cached_file,
-    resolve_cached_snapshot,
-    validate_relative,
-)
 from ._download_control import (
     _DownloadCancelledError,
     _DownloadControl,
@@ -57,7 +46,6 @@ from ._download_control import (
     _ReadHTTPAdapter,
     _RecoveryBudget,
 )
-from .config import get_cache_root
 from .constants import (
     DOWNLOAD_CHUNK_SIZE,
     DOWNLOAD_FILE_LOCK_TIMEOUT_SECONDS,
@@ -79,6 +67,7 @@ from .constants import (
 from .errors import (
     APIError,
     AuthenticationError,
+    CacheNotFound,
     FileDownloadError,
     FileIntegrityError,
     FileSizeMismatchError,
@@ -895,7 +884,6 @@ class DownloadManager:
         progress_callbacks: list[type[ProgressCallback]] | None = None,
         _cancel_event: threading.Event | None = None,
         _recovery: _RecoveryBudget | None = None,
-        reuse_legacy_cache: bool = True,
     ) -> Path:
         """Download one file with cache-first lookup and a shared budget for locks, probes, and retries."""
         with _DownloadControl(
@@ -925,7 +913,6 @@ class DownloadManager:
                     user_agent,
                     progress_callbacks,
                     _control=control,
-                    reuse_legacy_cache=reuse_legacy_cache,
                 )
 
     def _download_file(
@@ -944,7 +931,6 @@ class DownloadManager:
         progress_callbacks: list[type[ProgressCallback]] | None = None,
         *,
         _control: _DownloadControl,
-        reuse_legacy_cache: bool = True,
     ) -> Path:
         """Download a single file from a repository.
 
@@ -999,27 +985,30 @@ class DownloadManager:
             When the content keeps failing the *expected_sha256* check. A
             rejected download never remains at the target path.
         """
-        root = get_cache_root(cache_dir=cache_dir, config=self._config)
-        validate_relative(file_path, "file_path")
         if local_files_only:
-            return resolve_cached_file(
+            return self._resolve_cached_file(
                 repo_id,
-                file_path,
                 repo_type,
+                file_path,
                 revision=revision,
-                cache_dir=root,
+                cache_dir=cache_dir,
                 local_dir=local_dir,
-                reuse_legacy_cache=reuse_legacy_cache,
             )
+
         effective_revision = revision or "master"
-        output, standard = download_output(repo_id, repo_type, root, effective_revision, local_dir, reuse_legacy_cache)
-        target = contained_path(output.resolve(), output / file_path)
-        if local_dir is None and not standard:
-            _warn_legacy_revision(output, revision)
+        if local_dir is not None:
+            target = Path(local_dir) / file_path
+        else:
+            # Fallback: reuse old SDK (<=1.37) cache if it exists
+            legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+            if legacy is not None:
+                target = legacy / file_path
+            else:
+                root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+                target = root / "snapshots" / effective_revision / file_path
+
         if not force and self._cache_hit(target, expected_sha256, file_size, control=_control):
             return target
-        if standard:
-            record_identity(repo_id, repo_type, root, effective_revision)
 
         use_lock = _file_lock_enabled()
         lock_path = self._lock_path(repo_id, repo_type, cache_dir=cache_dir, file_path=file_path) if use_lock else None
@@ -1109,7 +1098,6 @@ class DownloadManager:
         retry_policy: DownloadRetryPolicy | None = None,
         user_agent: dict | str | None = None,
         progress_callbacks: list[type[ProgressCallback]] | None = None,
-        reuse_legacy_cache: bool = True,
     ) -> DownloadReport:
         """Continue after isolated file failures and return a durable completion report."""
         from ._resilient_download import download_repo_report
@@ -1130,7 +1118,6 @@ class DownloadManager:
             retry_policy=retry_policy,
             user_agent=user_agent,
             progress_callbacks=progress_callbacks,
-            reuse_legacy_cache=reuse_legacy_cache,
         )
 
     def download_repo(
@@ -1147,7 +1134,6 @@ class DownloadManager:
         user_agent: dict | str | None = None,
         progress_callbacks: list[type[ProgressCallback]] | None = None,
         file_list: list[dict] | None = None,
-        reuse_legacy_cache: bool = True,
     ) -> Path:
         """Download an entire repository (snapshot download).
 
@@ -1188,30 +1174,31 @@ class DownloadManager:
             files stay in place; ``failed_files`` maps each failed path to its
             error.
         """
-        root = get_cache_root(cache_dir=cache_dir, config=self._config)
         if local_files_only:
-            return resolve_cached_snapshot(
+            return self._resolve_cached_snapshot(
                 repo_id,
                 repo_type,
                 revision=revision,
-                cache_dir=root,
+                cache_dir=cache_dir,
                 local_dir=local_dir,
-                reuse_legacy_cache=reuse_legacy_cache,
             )
-        if max_workers < 1:
-            from .errors import InvalidParameter
 
-            raise InvalidParameter("max_workers must be positive")
         effective_revision = revision or "master"
-        output_dir, standard = download_output(
-            repo_id, repo_type, root, effective_revision, local_dir, reuse_legacy_cache
-        )
-        ensure_dir(output_dir)
-        if local_dir is None and not standard:
-            _warn_legacy_revision(output_dir, revision)
-        if standard:
-            record_identity(repo_id, repo_type, root, effective_revision)
-        local_dir = output_dir
+        if local_dir is not None:
+            output_dir = ensure_dir(Path(local_dir))
+        else:
+            # Fallback: reuse old SDK (<=1.37) cache if it exists
+            legacy = self._find_legacy_repo_dir(repo_id, repo_type, cache_dir)
+            if legacy is not None:
+                logger.info(
+                    "Found legacy cache at %s, reusing.",
+                    legacy,
+                )
+                output_dir = legacy
+                local_dir = legacy
+            else:
+                root = self._repo_cache_dir(repo_id, repo_type, cache_dir)
+                output_dir = ensure_dir(root / "snapshots" / effective_revision)
 
         if repo_type in ("skill", "skills"):
             return self._download_archive(
@@ -1275,8 +1262,6 @@ class DownloadManager:
             sha256 = f.get("Sha256") or f.get("sha256") or None
             raw_size = f.get("Size", f.get("size"))
             size = int(raw_size) if raw_size is not None else None
-            validate_relative(path, "file_path")
-            contained_path(output_dir.resolve(), output_dir / path)
             download_items.append((path, sha256, size))
 
         if not download_items:
@@ -1436,7 +1421,7 @@ class DownloadManager:
         control: _DownloadControl | None = None,
     ) -> bool:
         """Return True if *target* exists and passes the optional size and hash checks."""
-        if not target.is_file():
+        if not target.exists():
             return False
         if expected_size is not None and target.stat().st_size != expected_size:
             logger.debug("Cache stale (size mismatch): %s", target)
@@ -1513,13 +1498,79 @@ class DownloadManager:
         cache_dir: Path | None,
         local_dir: Path | None,
     ) -> Path:
-        """Preserve the legacy private entry point using the shared cache resolver."""
-        return resolve_cached_snapshot(
+        """Resolve a cached snapshot without touching the network or creating directories."""
+        return self._resolve_cached_snapshot_at(
             repo_id,
             repo_type,
             revision=revision,
-            cache_dir=get_cache_root(cache_dir=cache_dir, config=self._config),
+            cache_dir=cache_dir or self._config.cache_dir,
             local_dir=local_dir,
+        )
+
+    @classmethod
+    def _resolve_cached_snapshot_at(
+        cls,
+        repo_id: str,
+        repo_type: str,
+        *,
+        revision: str | None,
+        cache_dir: Path,
+        local_dir: Path | None = None,
+    ) -> Path:
+        """Resolve a snapshot using local paths only, without creating a client."""
+        if local_dir is not None:
+            output_dir = Path(local_dir)
+            if cls._dir_has_entries(output_dir):
+                return output_dir
+            raise CacheNotFound(
+                "Cannot find cached snapshot in the requested local directory and outgoing traffic has been disabled. "
+                f"Local directory: {output_dir}",
+                cache_dir=str(output_dir),
+            )
+
+        legacy = cls._find_legacy_repo_dir_at(repo_id, repo_type, cache_dir)
+        if legacy is not None:
+            logger.info("Found legacy cache at %s, reusing.", legacy)
+            return legacy
+
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        snapshots = cache_dir / segment / repo_id.replace("/", "--") / "snapshots"
+        if revision:
+            output_dir = snapshots / revision
+            if cls._dir_has_entries(output_dir):
+                return output_dir
+            raise CacheNotFound(
+                f"Cannot find cached snapshot for {repo_type} repo '{repo_id}' at revision '{revision}' and outgoing "
+                f"traffic has been disabled. {cls._describe_cached_revisions(snapshots)}",
+                cache_dir=str(output_dir),
+            )
+
+        for default_name in ("master", "main"):
+            default_snapshot = snapshots / default_name
+            if cls._dir_has_entries(default_snapshot):
+                return default_snapshot
+
+        candidates = cls._cached_snapshot_dirs(snapshots)
+        if len(candidates) == 1:
+            logger.warning(
+                "Using cached revision %s because no revision was provided and outgoing traffic is disabled.",
+                candidates[0].name,
+            )
+            return candidates[0]
+        if candidates:
+            revisions = ", ".join(path.name for path in candidates[:10])
+            if len(candidates) > 10:
+                revisions += f", ... {len(candidates) - 10} more"
+            raise CacheNotFound(
+                f"Cannot determine which cached snapshot to use for {repo_type} repo '{repo_id}' because no revision "
+                f"was provided and outgoing traffic has been disabled. Available cached revisions: {revisions}. "
+                "Pass 'revision' to select one.",
+                cache_dir=str(snapshots),
+            )
+        raise CacheNotFound(
+            f"Cannot find cached snapshot for {repo_type} repo '{repo_id}' and outgoing traffic has been disabled. "
+            f"{cls._describe_cached_revisions(snapshots)}",
+            cache_dir=str(snapshots),
         )
 
     def _resolve_cached_file(
@@ -1532,14 +1583,86 @@ class DownloadManager:
         cache_dir: Path | None,
         local_dir: Path | None,
     ) -> Path:
-        """Preserve the legacy private entry point using the shared cache resolver."""
-        return resolve_cached_file(
+        """Resolve a cached file without touching the network or creating directories."""
+        return self._resolve_cached_file_at(
             repo_id,
-            file_path,
             repo_type,
+            file_path,
             revision=revision,
-            cache_dir=get_cache_root(cache_dir=cache_dir, config=self._config),
+            cache_dir=cache_dir or self._config.cache_dir,
             local_dir=local_dir,
+        )
+
+    @classmethod
+    def _resolve_cached_file_at(
+        cls,
+        repo_id: str,
+        repo_type: str,
+        file_path: str,
+        *,
+        revision: str | None,
+        cache_dir: Path,
+        local_dir: Path | None = None,
+    ) -> Path:
+        """Resolve a cached file without constructing transport or credential state."""
+        if local_dir is not None:
+            target = Path(local_dir) / file_path
+            if target.exists():
+                return target
+            raise CacheNotFound(
+                f"Cannot find cached file '{file_path}' in the requested local directory and outgoing traffic has "
+                f"been disabled. Local directory: {Path(local_dir)}",
+                cache_dir=str(target.parent),
+            )
+
+        legacy = cls._find_legacy_repo_dir_at(repo_id, repo_type, cache_dir)
+        if legacy is not None:
+            target = legacy / file_path
+            if target.exists():
+                return target
+
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        snapshots = cache_dir / segment / repo_id.replace("/", "--") / "snapshots"
+        if revision:
+            target = snapshots / revision / file_path
+            if target.exists():
+                return target
+            raise CacheNotFound(
+                f"Cannot find cached file '{file_path}' for {repo_type} repo '{repo_id}' at revision '{revision}' "
+                f"and outgoing traffic has been disabled. {cls._describe_cached_revisions(snapshots)}",
+                cache_dir=str(target.parent),
+            )
+
+        for default_name in ("master", "main"):
+            target = snapshots / default_name / file_path
+            if target.exists():
+                return target
+
+        matches = []
+        for snapshot in cls._cached_snapshot_dirs(snapshots):
+            candidate = snapshot / file_path
+            if candidate.exists():
+                matches.append(candidate)
+        if len(matches) == 1:
+            logger.warning(
+                "Using cached file from revision %s because no revision was provided and outgoing traffic is disabled.",
+                matches[0].relative_to(snapshots).parts[0],
+            )
+            return matches[0]
+        if matches:
+            revisions = ", ".join(path.relative_to(snapshots).parts[0] for path in matches[:10])
+            if len(matches) > 10:
+                revisions += f", ... {len(matches) - 10} more"
+            raise CacheNotFound(
+                f"Cannot determine which cached file to use for {repo_type} repo '{repo_id}' because no revision was "
+                f"provided and outgoing traffic has been disabled. File '{file_path}' exists in cached revisions: "
+                f"{revisions}. Pass 'revision' to select one.",
+                cache_dir=str(snapshots),
+            )
+        raise CacheNotFound(
+            f"Cannot find cached file '{file_path}' for {repo_type} repo '{repo_id}' and outgoing traffic has been "
+            f"disabled. {cls._describe_cached_revisions(snapshots)}",
+            cache_dir=str(snapshots),
         )
 
     def _repo_cache_dir_path(
@@ -1549,7 +1672,10 @@ class DownloadManager:
         cache_dir: Path | None = None,
     ) -> Path:
         """Compute the repo cache directory path without creating it."""
-        return repo_cache_path(repo_id, repo_type, get_cache_root(cache_dir=cache_dir, config=self._config))
+        base = cache_dir or self._config.cache_dir
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        safe_id = repo_id.replace("/", "--")
+        return base / segment / safe_id
 
     def _repo_cache_dir(
         self,
@@ -1581,7 +1707,39 @@ class DownloadManager:
         Returns the first existing, non-empty candidate, or ``None`` when the
         cache is clean (so the caller falls back to the new layout).
         """
-        return find_legacy_repo_dir(repo_id, repo_type, get_cache_root(cache_dir=cache_dir, config=self._config))
+        return self._find_legacy_repo_dir_at(repo_id, repo_type, cache_dir or self._config.cache_dir)
+
+    @staticmethod
+    def _find_legacy_repo_dir_at(repo_id: str, repo_type: str, base: Path) -> Path | None:
+        """Find a non-empty legacy cache directory without a manager instance."""
+        segment = f"{repo_type}s" if not repo_type.endswith("s") else repo_type
+        parts = repo_id.split("/", 1)
+        if len(parts) != 2:
+            return None
+        owner, name = parts
+        safe_name = name.replace(".", "___")
+        snapshots = base / segment / repo_id.replace("/", "--") / "snapshots"
+        candidates = (
+            base / segment / owner / safe_name,
+            base / "hub" / segment / owner / safe_name,
+        )
+        for legacy_path in candidates:
+            # Compatibility links into the standard layout are aliases, not legacy repositories.
+            if not legacy_path.is_dir() or DownloadManager._is_compat_link(legacy_path, snapshots):
+                continue
+            try:
+                if any(legacy_path.iterdir()):
+                    return legacy_path
+            except OSError:
+                continue
+        return None
+
+    @staticmethod
+    def _is_compat_link(path: Path, snapshots: Path) -> bool:
+        """Return whether *path* is a symlink that points into *snapshots*."""
+        if not path.is_symlink():
+            return False
+        return Path(os.path.realpath(snapshots)) in Path(os.path.realpath(path)).parents
 
     def _lock_path(
         self,

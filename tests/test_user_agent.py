@@ -310,10 +310,7 @@ def test_compat_default_and_override_clients_have_channel():
 @pytest.mark.parametrize(
     "download", [model_file_download, dataset_file_download, snapshot_download, dataset_snapshot_download]
 )
-@responses.activate
 def test_compat_download_user_agent_applies_to_all_transports(download, monkeypatch):
-    responses.add(responses.GET, f"{CN}/openapi/v1/ua", json={"success": True, "data": {}})
-    responses.add(responses.GET, f"{CN}/api/v1/ua", json={"Success": True, "Data": {}})
     seen = []
 
     def fake_download(self, *args, **kwargs):
@@ -321,23 +318,17 @@ def test_compat_download_user_agent_applies_to_all_transports(download, monkeypa
         assert "invoked_by/compat" in _assert_sdk(ua) and "application/example" in ua
         assert self.legacy._user_agent == ua
         assert self.downloader._build_user_agent(kwargs["user_agent"]) == ua
-        self.openapi.request("GET", "/ua", require_token=False)
-        self.legacy._request("GET", "ua")
         seen.append(ua)
         return "local-path"
 
     monkeypatch.setattr(HubApi, "download_file", fake_download)
     monkeypatch.setattr(HubApi, "download_repo", fake_download)
-    kwargs = {"endpoint": CN, "token": "", "user_agent": {"application": "example"}}
+    kwargs = {"endpoint": "https://modelscope.cn", "user_agent": {"application": "example"}}
     if download in (model_file_download, dataset_file_download):
         assert download("alice/m", "x", **kwargs) == "local-path"
     else:
         assert download("alice/m", **kwargs) == "local-path"
     assert len(seen) == 1
-    assert len(responses.calls) == 2
-    for call in responses.calls:
-        assert isinstance(call.request, requests.PreparedRequest)
-        assert call.request.headers["User-Agent"] == seen[0]
 
 
 @pytest.mark.parametrize("switch", [True, False])

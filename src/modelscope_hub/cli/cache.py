@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from .._cache_manager import _cache_clear_targets, _validate_cache_scope
 from ..constants import RepoType
 from ..utils.format import format_size
 from .base import CLICommand, SubParsers, error, info, make_api, render_table, success, warn
@@ -83,40 +84,37 @@ class _CacheClear(CLICommand):
         )
         p.add_argument("--repo-id", dest="repo_id", default=None)
         p.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt.")
-        p.add_argument("--dry-run", action="store_true", help="Preview exact targets without deleting.")
+        p.add_argument("--dry-run", action="store_true", help="List safe targets without deleting them.")
         p.set_defaults(_command=CacheCommand, _cache_leaf=_CacheClear)
 
     def execute(self) -> None:
         # Reject ambiguous "--repo-id without --repo-type" early so we never
         # accidentally fall through to the "clear everything" branch.
-        if self.args.repo_id and not self.args.repo_type:
+        if self.args.repo_id is not None and self.args.repo_type is None:
             print(
                 "Error: --repo-type is required when using --repo-id",
                 file=sys.stderr,
             )
             raise SystemExit(2)
 
-        scope = self.args.repo_id or self.args.repo_type or "identified repository caches"
-        api = make_api(self.args)
-        plan = api.plan_cache_clear(
-            cache_dir=self.args.cache_dir, repo_type=self.args.repo_type, repo_id=self.args.repo_id
-        )
-        info(f"cache_dir: {plan.cache_dir}; scope: {scope}")
-        for target in plan.targets:
-            info(f"  {target.path} ({_human_size(target.size)})")
+        _validate_cache_scope(self.args.repo_type, self.args.repo_id)
         if getattr(self.args, "dry_run", False):
-            info("Dry run: nothing deleted.")
+            root, targets = _cache_clear_targets(self.args.cache_dir, self.args.repo_type, self.args.repo_id)
+            info(f"cache_dir: {root}")
+            for target in targets:
+                info(str(target))
             return
+        scope = self.args.repo_id or self.args.repo_type or "all recognized repositories"
         if not self.args.yes:
-            answer = input(f"Clear the listed cache paths for {scope}? [y/N] ").strip().lower()
+            answer = input(f"Clear {scope}? [y/N] ").strip().lower()
             if answer not in ("y", "yes"):
                 info("Aborted.")
                 return
+        api = make_api(self.args)
         freed = api.clear_cache(
             cache_dir=self.args.cache_dir,
             repo_type=self.args.repo_type,
             repo_id=self.args.repo_id,
-            plan=plan,
         )
         success(f"Freed {_human_size(freed)} from cache.")
 

@@ -246,7 +246,7 @@ def _register_clear_cache_alias(subparsers) -> None:
     group.add_argument("--dataset", type=str, default=None, help=SUPPRESS)
     p.add_argument("--cache-dir", dest="cache_dir", default=None, help="Override cache directory.")
     p.add_argument("--yes", "-y", action="store_true", help="Skip confirmation.")
-    p.add_argument("--dry-run", action="store_true", help="Preview exact targets without deleting.")
+    p.add_argument("--dry-run", action="store_true", help="List safe targets without deleting them.")
     p.set_defaults(_command=_ClearCacheAlias)
 
 
