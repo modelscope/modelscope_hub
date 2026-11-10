@@ -1124,6 +1124,23 @@ Token is persisted locally after `ms-hub login` and auto-loaded in subsequent se
 | `MODELSCOPE_UPLOAD_COMMIT_MAX_ATTEMPTS` | `5` | Maximum attempts for one transient commit failure |
 | `MODELSCOPE_UPLOAD_BLOB_CONNECT_TIMEOUT_SECONDS` | `30` | Blob upload connect timeout (seconds) |
 | `MODELSCOPE_UPLOAD_BLOB_READ_TIMEOUT_SECONDS` | `3600` | Blob upload read timeout (seconds) |
+| `MODELSCOPE_UPLOAD_MULTIPART_MODE` | `off` | Resumable multipart mode: `off`, `auto`, or `required` |
+| `MODELSCOPE_UPLOAD_MULTIPART_THRESHOLD` | `64MiB` | Minimum eligible LFS source size for multipart upload |
+| `MODELSCOPE_UPLOAD_MULTIPART_PART_SIZE` | `0` | Requested part size; `0` uses the server plan |
+| `MODELSCOPE_UPLOAD_MULTIPART_TRUSTED_ORIGINS` | — | Comma-separated additional exact HTTPS Mirror origins |
+| `MODELSCOPE_UPLOAD_MULTIPART_MAX_CONCURRENT_REQUESTS` | `8` | Total multipart and ordinary blob request slots per enabled call |
+| `MODELSCOPE_UPLOAD_MULTIPART_PART_WORKERS` | `4` | Maximum concurrent part requests per blob |
+| `MODELSCOPE_UPLOAD_MULTIPART_HASH_WORKERS` | `2` | Maximum concurrent multipart source scanners |
+| `MODELSCOPE_UPLOAD_MULTIPART_IO_CHUNK_SIZE` | `1MiB` | Multipart source reader and scanner buffer size |
+| `MODELSCOPE_UPLOAD_MULTIPART_MAX_RESPONSE_BYTES` | `4MiB` | Maximum buffered multipart JSON response size |
+| `MODELSCOPE_UPLOAD_MULTIPART_LOCK_TIMEOUT_SECONDS` | `600` | Maximum local multipart state-lock wait (seconds) |
+| `MODELSCOPE_UPLOAD_MULTIPART_MAX_RECOVERY_ROUNDS` | `3` | Maximum repair rounds per blob |
+| `MODELSCOPE_UPLOAD_MULTIPART_MAX_RECOVERY_ACTIONS` | `8` | Maximum recovery actions per blob |
+| `MODELSCOPE_UPLOAD_MULTIPART_MAX_REINITIALIZATIONS` | `1` | Maximum new sessions after the initial init |
+| `MODELSCOPE_UPLOAD_MULTIPART_MAX_TOKEN_REFRESHES` | `2` | Maximum authenticated token refreshes per blob |
+| `MODELSCOPE_UPLOAD_MULTIPART_MAX_RETRY_AFTER_SECONDS` | `60` | Longest multipart Retry-After delay honored (seconds) |
+
+Resumable multipart is pre-release and disabled by default. It applies only to eligible model/dataset LFS sources and preserves the existing commit pipeline. SHA256 prefix state is implemented in pure Python without native extensions or additional dependencies. Service interoperability, correctness regression, and throughput/RSS validation remain release gates; `auto` and `required` currently stop on an unverified fallback contract rather than issuing an unsafe ordinary PUT.
 
 Capacity thresholds are advisory and emit warnings without blocking upload. Structural errors (invalid paths, missing inputs, changed files) still fail immediately, while the server's per-commit action ceiling is always enforced by splitting. A manual rerun retries every file not marked committed, including files whose previous run ended with a non-retryable error.
 
