@@ -54,6 +54,7 @@ from .constants import (
     DOWNLOAD_PARALLEL_THRESHOLD,
     DOWNLOAD_PARALLELS,
     DOWNLOAD_PART_SIZE,
+    DOWNLOAD_REGION_PROBE_TIMEOUT_SECONDS,
     DOWNLOAD_RETRY_MAX_DELAY_SECONDS,
     DOWNLOAD_RETRY_TIMES,
     DOWNLOAD_TIMEOUT,
@@ -653,6 +654,7 @@ class DownloadManager:
         # None defers to MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT; 0 or less means no limit.
         self._total_timeout = total_timeout
         self._cached_region: str | None = None
+        self._region_probe_failures = 0
         self._region_lock = threading.Lock()
         # Cache only confirmed OSS-internal resolutions. A repository can contain
         # Git metadata and LFS objects behind different download routes, so cache
@@ -672,17 +674,34 @@ class DownloadManager:
 
         return append_user_agent(self._user_agent, user_agent)
 
-    def _detect_region(self) -> str:
-        """Probe the region only once per DownloadManager instance."""
-        with self._region_lock:
-            if self._cached_region is None:
-                self._cached_region = ""
-                self._cached_region = self._detect_region_uncached()
-            return self._cached_region
+    # A probe that never reached the endpoint says nothing about the machine's
+    # location, so the result is not cached and a later call probes again. The
+    # budget keeps a broken route from costing a probe timeout on every file.
+    _REGION_PROBE_MAX_ATTEMPTS = 2
 
-    def _detect_region_uncached(self) -> str:
+    def _detect_region(self) -> str:
+        """Probe the region once per DownloadManager instance.
+
+        An inconclusive probe (the endpoint never answered) is retried on a
+        later call rather than cached: caching it would silently drop
+        intra-cloud acceleration for every remaining download of this instance.
+        """
+        with self._region_lock:
+            if self._cached_region is not None:
+                return self._cached_region
+            region = self._detect_region_uncached()
+            if region is not None:
+                self._cached_region = region
+                return region
+            self._region_probe_failures += 1
+            if self._region_probe_failures >= self._REGION_PROBE_MAX_ATTEMPTS:
+                self._cached_region = ""
+            return ""
+
+    def _detect_region_uncached(self) -> str | None:
         endpoint = self._client.endpoint
         internal_url = f"{endpoint}/api/v1/repos/internalAccelerationInfo"
+        timeout = DOWNLOAD_REGION_PROBE_TIMEOUT_SECONDS
 
         def _get(url: str, timeout: float):
             try:
@@ -699,18 +718,20 @@ class DownloadManager:
                 return None
 
         region_id = ""
-        resp = _get(internal_url, 0.2)
-        if resp is not None:
-            data = resp.json()
-            query_addr = ""
-            if "Data" in data:
-                query_addr = data["Data"].get("InternalRegionQueryAddress", "")
-            if query_addr:
-                domain_resp = _get(query_addr, 0.2)
-                if domain_resp is not None:
-                    region_id = domain_resp.text.strip()
+        resp = _get(internal_url, timeout)
+        if resp is None:
+            # Unreachable endpoint: no conclusion about this machine may be
+            # cached, so the caller can probe again on a later call.
+            return None
+        data = resp.json()
+        query_addr = ""
+        if "Data" in data:
+            query_addr = data["Data"].get("InternalRegionQueryAddress", "")
+        if query_addr:
+            domain_resp = _get(query_addr, timeout)
+            if domain_resp is not None:
+                region_id = domain_resp.text.strip()
 
-        self._cached_region = region_id
         return region_id
 
     # OSS internal endpoint hostname pattern:
