@@ -25,6 +25,7 @@ from .base import (
     success,
 )
 from .compat import add_subcmd_token_endpoint
+from .studio import _add_oauth_arguments
 
 
 def _format_visibility(value: object) -> str:
@@ -100,6 +101,7 @@ class CreateCommand(CLICommand):
         p.add_argument("--base-image", dest="base_image", default=None, help="Studio base image.")
         p.add_argument("--cover-image", dest="cover_image", default=None, help="Studio cover image URL.")
         p.add_argument("--hardware", dest="hardware", default=None, help="Studio hardware spec.")
+        _add_oauth_arguments(p)
         p.add_argument(
             "--category",
             dest="category",
@@ -124,7 +126,19 @@ class CreateCommand(CLICommand):
         # forwarded verbatim into ``create_repo``'s keyword parameters, whose
         # types vary per repo kind.
         extra: dict[str, Any] = {}
-        for key in ("sdk_type", "sdk_version", "base_image", "cover_image", "hardware", "category"):
+        for key in (
+            "sdk_type",
+            "sdk_version",
+            "base_image",
+            "cover_image",
+            "hardware",
+            "category",
+            "oauth_enabled",
+            "oauth_scope",
+            "oauth_token_expire_time",
+            "oauth_callback_urls",
+            "oauth_homepage_url",
+        ):
             value = getattr(self.args, key, None)
             if value is not None:
                 extra[key] = value

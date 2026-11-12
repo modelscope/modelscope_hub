@@ -2984,6 +2984,7 @@ class HubApi:
         key: str,
         value: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
+        description: str | None = None,
     ) -> dict:
         """Add a new secret to a Studio.
 
@@ -2995,7 +2996,7 @@ class HubApi:
         if rt is not RepoType.STUDIO:
             raise NotSupportedError("Only studio secrets are supported.")
         owner, name = self._parse_repo_id(repo_id)
-        return self.openapi.add_studio_secret(owner, name, key, value)
+        return self.openapi.add_studio_secret(owner, name, key, value, description=description)
 
     def update_secret(
         self,
@@ -3003,8 +3004,12 @@ class HubApi:
         key: str,
         value: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
+        description: str | None = None,
     ) -> dict:
         """Update an existing secret value.
+
+        *description* is tri-state: ``None`` keeps the stored description, an
+        empty string clears it.
 
         Examples
         --------
@@ -3014,7 +3019,7 @@ class HubApi:
         if rt is not RepoType.STUDIO:
             raise NotSupportedError("Only studio secrets are supported.")
         owner, name = self._parse_repo_id(repo_id)
-        return self.openapi.update_studio_secret(owner, name, key, value)
+        return self.openapi.update_studio_secret(owner, name, key, value, description=description)
 
     def delete_secret(
         self,
@@ -3064,6 +3069,7 @@ class HubApi:
         key: str,
         value: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
+        description: str | None = None,
     ) -> dict:
         """Add a plaintext environment variable to a Studio.
 
@@ -3078,7 +3084,7 @@ class HubApi:
         if rt is not RepoType.STUDIO:
             raise NotSupportedError("Only studio variables are supported.")
         owner, name = self._parse_repo_id(repo_id)
-        return self.openapi.add_studio_variable(owner, name, key, value)
+        return self.openapi.add_studio_variable(owner, name, key, value, description=description)
 
     def update_variable(
         self,
@@ -3086,8 +3092,12 @@ class HubApi:
         key: str,
         value: str,
         repo_type: RepoTypeLike = RepoType.STUDIO,
+        description: str | None = None,
     ) -> dict:
         """Update an existing plaintext variable's value.
+
+        *description* is tri-state: ``None`` keeps the stored description, an
+        empty string clears it.
 
         Examples
         --------
@@ -3097,7 +3107,7 @@ class HubApi:
         if rt is not RepoType.STUDIO:
             raise NotSupportedError("Only studio variables are supported.")
         owner, name = self._parse_repo_id(repo_id)
-        return self.openapi.update_studio_variable(owner, name, key, value)
+        return self.openapi.update_studio_variable(owner, name, key, value, description=description)
 
     def delete_variable(
         self,

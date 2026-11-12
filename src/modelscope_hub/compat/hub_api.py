@@ -722,12 +722,12 @@ class LegacyHubApi:
         return self._api_for(control).list_secrets(studio_id, RepoType.STUDIO)
 
     def add_studio_secret(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
-        control, _ = _split_control_kwargs(kwargs)
-        self._api_for(control).add_secret(studio_id, key, value, RepoType.STUDIO)
+        control, passthrough = _split_control_kwargs(kwargs)
+        self._api_for(control).add_secret(studio_id, key, value, RepoType.STUDIO, **passthrough)
 
     def update_studio_secret(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
-        control, _ = _split_control_kwargs(kwargs)
-        self._api_for(control).update_secret(studio_id, key, value, RepoType.STUDIO)
+        control, passthrough = _split_control_kwargs(kwargs)
+        self._api_for(control).update_secret(studio_id, key, value, RepoType.STUDIO, **passthrough)
 
     def delete_studio_secret(self, studio_id: str, key: str, **kwargs: Any) -> None:
         control, _ = _split_control_kwargs(kwargs)
@@ -744,12 +744,12 @@ class LegacyHubApi:
         return self._api_for(control).list_variables(studio_id, RepoType.STUDIO)
 
     def add_studio_variable(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
-        control, _ = _split_control_kwargs(kwargs)
-        self._api_for(control).add_variable(studio_id, key, value, RepoType.STUDIO)
+        control, passthrough = _split_control_kwargs(kwargs)
+        self._api_for(control).add_variable(studio_id, key, value, RepoType.STUDIO, **passthrough)
 
     def update_studio_variable(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
-        control, _ = _split_control_kwargs(kwargs)
-        self._api_for(control).update_variable(studio_id, key, value, RepoType.STUDIO)
+        control, passthrough = _split_control_kwargs(kwargs)
+        self._api_for(control).update_variable(studio_id, key, value, RepoType.STUDIO, **passthrough)
 
     def delete_studio_variable(self, studio_id: str, key: str, **kwargs: Any) -> None:
         control, _ = _split_control_kwargs(kwargs)
