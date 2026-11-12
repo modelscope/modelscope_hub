@@ -51,6 +51,7 @@ from .constants import (
 )
 from .errors import (
     APIError,
+    AuthenticationError,
     InvalidParameter,
     NetworkError,
     PermissionDeniedError,
@@ -1065,6 +1066,8 @@ class LegacyClient:
         repo_id: str,
         repo_type: str,
         objects: list[dict[str, Any]],
+        *,
+        strict: bool = False,
     ) -> dict[str, str | None]:
         """Check which blobs need uploading via the LFS batch API.
 
@@ -1079,17 +1082,100 @@ class LegacyClient:
             f"repos/{segment}/{repo_id}/info/lfs/objects/batch",
             json_body=payload,
         )
-        data = self._json_data(resp)
+        if strict:
+            from ._multipart_protocol import MultipartError
+
+            try:
+                body = resp.json()
+            except ValueError:
+                raise MultipartError("LFS batch did not return valid JSON.") from None
+            if not isinstance(body, dict) or body.get("Success") is not True or body.get("Code") not in (200, "200"):
+                raise MultipartError("LFS batch did not confirm a successful response.")
+            data = body.get("Data")
+            if not isinstance(data, dict) or not isinstance(data.get("objects"), list):
+                raise MultipartError("LFS batch did not return an objects array.")
+        else:
+            data = self._json_data(resp)
 
         result: dict[str, str | None] = {}
         resp_objects = data.get("objects", []) if isinstance(data, dict) else []
+        expected = {item["oid"] for item in objects} if strict else set()
+        expected_sizes = {item["oid"]: item["size"] for item in objects} if strict else {}
+        multipart = {item["oid"] for item in objects if item.get("upload_type") == "http"} if strict else set()
         for obj in resp_objects:
+            if strict and (
+                not isinstance(obj, dict)
+                or not isinstance(obj.get("oid"), str)
+                or obj.get("oid") not in expected
+                or obj.get("error")
+            ):
+                raise MultipartError("LFS batch returned an invalid or failed object.")
             oid = obj.get("oid", "")
+            if strict and obj.get("size") != expected_sizes[oid]:
+                raise MultipartError("LFS batch changed an object's size.")
             actions = obj.get("actions", {})
+            if strict and (oid in result or not isinstance(actions, dict)):
+                raise MultipartError("LFS batch returned duplicate or invalid actions.")
             upload_action = actions.get("upload", {})
+            if strict and (
+                not isinstance(upload_action, dict)
+                or (oid in multipart and (upload_action.get("header") or upload_action.get("headers")))
+            ):
+                raise MultipartError("Multipart upload-action headers require a verified service contract.")
             href = upload_action.get("href")
+            if strict and "upload" in actions and (not isinstance(href, str) or not href):
+                raise MultipartError("LFS batch upload action is missing its URL.")
             result[oid] = href  # None means already exists
+        if strict and set(result) != expected:
+            raise MultipartError("LFS batch omitted one or more requested objects.")
         return result
+
+    def _multipart_session(self) -> requests.Session:
+        session = requests.Session()
+        session.headers["User-Agent"] = self._user_agent
+        retry = Retry(total=0, connect=0, read=0, status=0, redirect=0, other=0)
+        adapter = HTTPAdapter(max_retries=retry, pool_connections=1, pool_maxsize=1)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+        return session
+
+    def _multipart_request(
+        self,
+        session: requests.Session,
+        url: str,
+        *,
+        headers: dict[str, str],
+        data: Any,
+        timeout: tuple[int, int],
+        max_response_bytes: int,
+    ) -> requests.Response:
+        from ._multipart_protocol import MultipartError
+
+        if not self._token:
+            raise AuthenticationError("Multipart upload requires a valid login identity.")
+        merged = self._headers(headers)
+        merged["Cookie"] = f"m_session_id={self._token}"
+        if "Content-Type" not in headers:
+            merged.pop("Content-Type", None)
+        try:
+            response = session.put(url, data=data, headers=merged, timeout=timeout, allow_redirects=False, stream=True)
+            try:
+                content = bytearray()
+                for chunk in response.iter_content(chunk_size=65536):
+                    if len(content) + len(chunk) > max_response_bytes:
+                        raise MultipartError("Multipart response exceeds its configured size limit.")
+                    content.extend(chunk)
+                response._content = bytes(content)
+                response._content_consumed = True
+                return response
+            finally:
+                response.close()
+        except requests.Timeout:
+            raise RequestTimeoutError("Multipart request timed out; its outcome may be unknown.") from None
+        except requests.ConnectionError:
+            raise NetworkError("Multipart connection failed; its outcome may be unknown.") from None
+        except requests.RequestException:
+            raise NetworkError("Multipart transport failed; its outcome may be unknown.") from None
 
     def upload_blob(
         self,

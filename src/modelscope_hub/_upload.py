@@ -24,12 +24,17 @@ import posixpath
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
-from typing import IO, TYPE_CHECKING, Any, BinaryIO
+from typing import IO, TYPE_CHECKING, Any, BinaryIO, cast
 
 from tqdm.auto import tqdm
 
+from ._multipart_config import MultipartSettings
+from ._multipart_control import UploadExecution
+from ._multipart_upload import MultipartUploader
 from .constants import (
     API_CONNECTION_POOL_MAXSIZE,
     COMMIT_MAX_ACTIONS_PER_REQUEST,
@@ -470,6 +475,8 @@ def _is_retryable_commit_error(error: Exception) -> bool:
 
 def classify_error(error: Exception, *, commit_context: bool = False) -> str:
     """Classify an exception for retry strategy using the SDK error hierarchy."""
+    if getattr(error, "recovery_handled", False):
+        return _ErrorCategory.PERMANENT
     if commit_context and _is_retryable_commit_error(error):
         return _ErrorCategory.TRANSIENT_SERVER
     if isinstance(error, HubError):
@@ -797,8 +804,15 @@ class BatchTracker:
             if self._is_batch_complete(idx):
                 self._batch_events[idx].set()
 
-    def wait_for_batch(self, batch_idx: int) -> tuple[list[dict], list[tuple]]:
-        self._batch_events[batch_idx].wait()
+    def wait_for_batch(self, batch_idx: int, check: Callable[[], None] | None = None) -> tuple[list[dict], list[tuple]]:
+        event = self._batch_events[batch_idx]
+        if check is None:
+            event.wait()
+        else:
+            # Cancelled futures never report, so a cancellable wait must poll.
+            while not event.wait(0.1):
+                check()
+            check()
         with self._lock:
             return (
                 list(self._batch_results[batch_idx]),
@@ -858,6 +872,21 @@ class _CommitRateGovernor:
 # ====================================================================
 
 
+def _execution_kwargs(execution: UploadExecution | None) -> dict[str, Any]:
+    return {"execution": execution} if execution is not None else {}
+
+
+@contextmanager
+def _stop_on_error(execution: UploadExecution | None) -> Iterator[None]:
+    """Cancel queued multipart work before an enclosing executor drains it."""
+    try:
+        yield
+    except BaseException:
+        if execution is not None:
+            execution.stop()
+        raise
+
+
 class UploadManager:
     """Internal file upload implementation with production-grade retry and resume."""
 
@@ -896,6 +925,38 @@ class UploadManager:
         buffer_size_mb: int = 16,
         disable_tqdm: bool = False,
     ) -> dict:
+        """Upload one file, using multipart only for an eligible LFS source."""
+        settings = MultipartSettings.load(self._client.endpoint)
+        arguments: dict[str, Any] = dict(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            path_or_fileobj=path_or_fileobj,
+            path_in_repo=path_in_repo,
+            commit_message=commit_message,
+            commit_description=commit_description,
+            revision=revision,
+            buffer_size_mb=buffer_size_mb,
+            disable_tqdm=disable_tqdm,
+        )
+        if settings.mode == "off":
+            return self._upload_file(**arguments)
+        with UploadExecution(settings, self._client, None, UPLOAD_CACHE_ENABLED) as execution:
+            return self._upload_file(**arguments, execution=execution)
+
+    def _upload_file(
+        self,
+        repo_id: str,
+        repo_type: str,
+        path_or_fileobj: PathOrFileObj,
+        path_in_repo: str,
+        *,
+        commit_message: str = "Upload file",
+        commit_description: str | None = None,
+        revision: str = "master",
+        buffer_size_mb: int = 16,
+        disable_tqdm: bool = False,
+        execution: UploadExecution | None = None,
+    ) -> dict:
         """Upload a single file to a repository."""
         if path_or_fileobj is None:
             raise InvalidParameter("Path or file object cannot be None!")
@@ -928,6 +989,10 @@ class UploadManager:
             self._create_repo_fn(repo_id, repo_type)
 
         upload_mode = _upload_mode(path_in_repo, file_size, repo_type)
+        if execution is not None and (
+            upload_mode != "lfs" or not execution.settings.candidate(repo_type, file_size, path_or_fileobj)
+        ):
+            execution = None
         if upload_mode == "lfs":
             upload_res = self._upload_blob(
                 repo_id=repo_id,
@@ -938,6 +1003,7 @@ class UploadManager:
                 disable_tqdm=disable_tqdm,
                 tqdm_desc=f"[Uploading] {path_in_repo}",
                 buffer_size_mb=buffer_size_mb,
+                **_execution_kwargs(execution),
             )
         else:
             upload_res = {
@@ -1055,6 +1121,52 @@ class UploadManager:
         tracker_path: str | Path | None = None,
         progress_callback: Any = None,
     ) -> dict | list[dict] | None:
+        """Upload a folder, preserving the existing commit and recovery pipeline."""
+        settings = MultipartSettings.load(self._client.endpoint)
+        arguments: dict[str, Any] = dict(
+            repo_id=repo_id,
+            repo_type=repo_type,
+            folder_path=folder_path,
+            path_in_repo=path_in_repo,
+            commit_message=commit_message,
+            commit_description=commit_description,
+            revision=revision,
+            allow_patterns=allow_patterns,
+            ignore_patterns=ignore_patterns,
+            max_workers=max_workers,
+            use_cache=use_cache,
+            disable_tqdm=disable_tqdm,
+            sync_remote_repo=sync_remote_repo,
+            tracker_path=tracker_path,
+            progress_callback=progress_callback,
+        )
+        if settings.mode == "off":
+            return self._upload_folder(**arguments)
+        workers = max_workers if max_workers is not None else UPLOAD_MAX_CONCURRENT_WORKERS
+        cache = use_cache if use_cache is not None else UPLOAD_CACHE_ENABLED
+        with UploadExecution(settings, self._client, workers, cache) as execution:
+            return self._upload_folder(**arguments, execution=execution)
+
+    def _upload_folder(
+        self,
+        repo_id: str,
+        repo_type: str,
+        folder_path: str | Path,
+        *,
+        path_in_repo: str = "",
+        commit_message: str | None = None,
+        commit_description: str | None = None,
+        revision: str = "master",
+        allow_patterns: list[str] | None = None,
+        ignore_patterns: list[str] | None = None,
+        max_workers: int | None = None,
+        use_cache: bool | None = None,
+        disable_tqdm: bool = False,
+        sync_remote_repo: bool = False,
+        tracker_path: str | Path | None = None,
+        progress_callback: Any = None,
+        execution: UploadExecution | None = None,
+    ) -> dict | list[dict] | None:
         """Upload a folder with resumable support, adaptive batching, and retry."""
         start_time = time.time()
 
@@ -1155,6 +1267,12 @@ class UploadManager:
                 )
             pending_files.append((file_path_in_repo, file_path))
         tracker.save()
+        if execution is not None and not any(
+            _upload_mode(path, file_sizes.get(local, 0), repo_type) == "lfs"
+            and execution.settings.candidate(repo_type, file_sizes.get(local, 0), local)
+            for path, local in pending_files
+        ):
+            execution = None
 
         max_operations = (
             _calculate_adaptive_batch_size(len(pending_files), UPLOAD_COMMIT_BATCH_MAX_OPERATIONS)
@@ -1211,7 +1329,8 @@ class UploadManager:
             except OSError:
                 continue
             cached = tracker.get_hash(file_path_in_repo, st.st_mtime, st.st_size)
-            if cached is None:
+            fresh_required = execution is not None and execution.settings.candidate(repo_type, size, file_path)
+            if cached is None or fresh_required:
                 continue
             if _upload_mode(file_path_in_repo, cached["file_size"], repo_type) == "lfs":
                 lfs_hash_info_map[file_idx] = cached
@@ -1226,7 +1345,13 @@ class UploadManager:
             lfs_hash_info_map.update(self._hash_files_parallel(uncached_lfs, tracker, max_workers))
 
         if lfs_hash_info_map:
-            objects = [{"oid": info["file_hash"], "size": info["file_size"]} for info in lfs_hash_info_map.values()]
+            objects = []
+            for file_idx, info in lfs_hash_info_map.items():
+                _path_in_repo, local_path = files_to_upload[file_idx][1]
+                obj = {"oid": info["file_hash"], "size": info["file_size"]}
+                if execution is not None and execution.settings.candidate(repo_type, info["file_size"], local_path):
+                    obj["upload_type"] = "http"
+                objects.append(obj)
             # Identical content shares one oid, so the request set is keyed by
             # digest rather than by file.
             unique_objects = list({obj["oid"]: obj for obj in objects}.values())
@@ -1235,6 +1360,7 @@ class UploadManager:
                 repo_type=repo_type,
                 objects=unique_objects,
                 max_workers=max_workers,
+                **({"strict": True} if execution is not None else {}),
             )
             pre_validated_map = validated
             reused = sum(1 for v in validated.values() if v is None)
@@ -1262,14 +1388,15 @@ class UploadManager:
         # of a worker pool deadlocking on itself.
         blob_owner: dict[str, int] = {}
         blob_ready: dict[str, bool] = {}
+        blob_errors: dict[str, Exception] = {}
         blob_state_lock = threading.Lock()
         deduped_files = 0
         deduped_bytes = 0
         for file_idx, _file_info in files_to_upload:
-            info = lfs_hash_info_map.get(file_idx)
-            if info is None:
+            hash_info = lfs_hash_info_map.get(file_idx)
+            if hash_info is None:
                 continue
-            oid = info["file_hash"]
+            oid = hash_info["file_hash"]
             if pre_validated_map.get(oid, "") is None:
                 # Already stored server-side; nobody needs to transfer it.
                 blob_ready[oid] = True
@@ -1278,7 +1405,7 @@ class UploadManager:
                 blob_owner[oid] = file_idx
             else:
                 deduped_files += 1
-                deduped_bytes += info["file_size"]
+                deduped_bytes += hash_info["file_size"]
         if deduped_files:
             logger.info(
                 "Deduplicated %d file(s) sharing content with an earlier file: %d byte(s) that "
@@ -1311,6 +1438,8 @@ class UploadManager:
             if info is not None and blob_owner.get(info["file_hash"]) == file_idx:
                 owned_oid = info["file_hash"]
             try:
+                if execution is not None:
+                    execution.check()
                 logger.debug("Uploading: %s ...", path_in_repo_w)
                 result = self._upload_single_file(
                     path_in_repo_w,
@@ -1321,6 +1450,7 @@ class UploadManager:
                     pre_validated=pre_validated,
                     hash_info=lfs_hash_info_map.get(file_idx),
                     disable_tqdm=disable_tqdm,
+                    **_execution_kwargs(execution),
                 )
                 logger.debug("Uploaded: %s", path_in_repo_w)
                 # Publish the blob outcome before the batch is marked complete:
@@ -1335,6 +1465,9 @@ class UploadManager:
                 if owned_oid is not None:
                     with blob_state_lock:
                         blob_ready[owned_oid] = False
+                        # Replicas inherit only a multipart terminal; other failures stay per-file retryable.
+                        if getattr(e, "recovery_handled", False):
+                            blob_errors[owned_oid] = e
                 batch_tracker.record_failure(file_idx, file_info, e)
 
         # Pipeline: consume batches in order
@@ -1413,7 +1546,10 @@ class UploadManager:
             """
             if progress_callback is None:
                 return
-            moved = result["file_size_on_disk"] if result.get("is_blob_uploaded") else 0
+            moved = result.get(
+                "logical_uploaded_bytes",
+                result["file_size_on_disk"] if result.get("is_blob_uploaded") else 0,
+            )
             now = time.monotonic()
             with wire_lock:
                 wire_state["bytes"] += moved
@@ -1470,7 +1606,7 @@ class UploadManager:
             )
 
         try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor, _stop_on_error(execution):
                 for file_idx, file_info in files_to_upload:
                     pv: str | bool | _DuplicateBlob | None = None
                     if file_idx in lfs_hash_info_map:
@@ -1489,7 +1625,9 @@ class UploadManager:
                                 pv = url
                             else:
                                 pv = DUPLICATE_BLOB
-                    executor.submit(_upload_worker, file_idx, file_info, pv)
+                    future = executor.submit(_upload_worker, file_idx, file_info, pv)
+                    if execution is not None:
+                        execution.register(future)
 
                 consecutive_failures = 0
                 for batch_idx in tqdm(
@@ -1498,7 +1636,11 @@ class UploadManager:
                     total=num_batches,
                     disable=disable_tqdm,
                 ):
-                    results, failures = batch_tracker.wait_for_batch(batch_idx)
+                    results, failures = (
+                        batch_tracker.wait_for_batch(batch_idx)
+                        if execution is None
+                        else batch_tracker.wait_for_batch(batch_idx, check=execution.check)
+                    )
                     # Every file of this batch has finished its transfer by now,
                     # so publish the bytes the throttle may still be holding
                     # before the commit event reports the batch as done.
@@ -1518,6 +1660,7 @@ class UploadManager:
                     if blob_owner:
                         with blob_state_lock:
                             ready_snapshot = dict(blob_ready)
+                            error_snapshot = dict(blob_errors)
                         committable = []
                         for item_r in results:
                             oid_r = item_r["file_hash_info"]["file_hash"]
@@ -1540,7 +1683,10 @@ class UploadManager:
                             retry_failed_files.extend(
                                 (
                                     (item_r["file_path_in_repo"], item_r["file_path"]),
-                                    StorageError("shared blob upload failed"),
+                                    error_snapshot.get(
+                                        item_r["file_hash_info"]["file_hash"],
+                                        StorageError("shared blob upload failed"),
+                                    ),
                                 )
                                 for item_r in orphaned
                             )
@@ -1696,6 +1842,7 @@ class UploadManager:
                 disable_tqdm=disable_tqdm,
                 on_uploaded=_report_wire,
                 on_committed=_report_recovery,
+                **_execution_kwargs(execution),
             )
             commit_infos.extend(react_commits)
             all_results.extend(react_results)
@@ -1713,6 +1860,7 @@ class UploadManager:
                 disable_tqdm=disable_tqdm,
                 on_uploaded=_report_wire,
                 on_committed=_report_recovery,
+                **_execution_kwargs(execution),
             )
 
         tracker.save()
@@ -1755,6 +1903,7 @@ class UploadManager:
         failed_count = len(all_failures)
         lfs_reused_count = sum(1 for r in all_results if r.get("upload_mode") == "lfs" and r.get("is_reused"))
         lfs_uploaded_count = sum(1 for r in all_results if r.get("is_blob_uploaded"))
+        part_request_count = sum(r.get("part_request_count", 0) for r in all_results)
         normal_count = sum(1 for r in all_results if r.get("upload_mode") == "normal")
         committed_count = len(all_results)
 
@@ -1765,7 +1914,8 @@ class UploadManager:
         print(f"  Skipped (cached)  : {skipped_count}")
         print(f"  Normal committed  : {normal_count}")
         print(f"  LFS existed       : {lfs_reused_count}")
-        print(f"  LFS uploaded PUT  : {lfs_uploaded_count}")
+        print(f"  LFS blobs sent    : {lfs_uploaded_count}")
+        print(f"  Multipart PUTs    : {part_request_count}")
         print(f"  Failed            : {failed_count}")
         print(f"  Committed         : {committed_count}")
         print(f"  Deleted (sync)    : {deleted_count}")
@@ -1868,12 +2018,22 @@ class UploadManager:
         pre_validated: Any = None,
         hash_info: dict | None = None,
         disable_tqdm: bool = False,
+        execution: UploadExecution | None = None,
     ) -> dict:
         if tracker is None:
             tracker = NullTracker()
         hash_info_d = None
         file_stat = None
         is_real_path = isinstance(file_path, (str, os.PathLike))
+        fresh_required = False
+        if execution is not None and is_real_path:
+            try:
+                size = os.path.getsize(file_path)
+                fresh_required = _upload_mode(
+                    file_path_in_repo, size, repo_type
+                ) == "lfs" and execution.settings.candidate(repo_type, size, file_path)
+            except OSError:
+                pass
 
         if hash_info is not None:
             # Already computed during batch pre-validation; re-reading the file
@@ -1884,7 +2044,11 @@ class UploadManager:
         if hash_info_d is None and is_real_path:
             try:
                 file_stat = os.stat(file_path)
-                cached = tracker.get_hash(file_path_in_repo, file_stat.st_mtime, file_stat.st_size)
+                cached = (
+                    None
+                    if fresh_required
+                    else tracker.get_hash(file_path_in_repo, file_stat.st_mtime, file_stat.st_size)
+                )
                 if cached is not None:
                     hash_info_d = cached
                     hash_info_d["file_path_or_obj"] = file_path
@@ -1939,9 +2103,12 @@ class UploadManager:
                         disable_tqdm=(disable_tqdm or file_size <= UPLOAD_BLOB_PROGRESS_THRESHOLD_BYTES),
                         tqdm_desc=f"[Uploading {file_path_in_repo}]",
                         pre_validated=pre_validated,
+                        **_execution_kwargs(execution),
                     )
                     break
                 except (HubError, ConnectionError, TimeoutError) as e:
+                    if getattr(e, "recovery_handled", False):
+                        raise
                     if isinstance(e, HubError) and not e.retryable:
                         raise
                     last_error = e
@@ -1989,6 +2156,9 @@ class UploadManager:
             "is_uploaded": upload_res["is_uploaded"],
             "is_reused": upload_res.get("is_reused", False),
             "is_blob_uploaded": upload_res.get("is_blob_uploaded", False),
+            "logical_uploaded_bytes": upload_res.get("logical_uploaded_bytes", 0),
+            "bytes_read_for_transport": upload_res.get("bytes_read_for_transport", 0),
+            "part_request_count": upload_res.get("part_request_count", 0),
             "upload_mode": upload_mode,
             "file_hash_info": hash_info_d,
         }
@@ -2008,13 +2178,38 @@ class UploadManager:
         tqdm_desc: str = "[Uploading]",
         buffer_size_mb: int = 16,
         pre_validated: Any = None,
+        execution: UploadExecution | None = None,
     ) -> dict:
+        if execution is not None:
+            execution.check()
         res_d: dict = {
             "url": None,
             "is_uploaded": False,
             "is_reused": False,
             "is_blob_uploaded": False,
         }
+
+        candidate = execution is not None and execution.settings.candidate(repo_type, size, data)
+        if pre_validated is True and candidate:
+            assert execution is not None
+            result = MultipartUploader(
+                execution,
+                home=self._config.config_dir,
+                repo_id=repo_id,
+                repo_type=repo_type,
+                sha256=sha256,
+                size=size,
+                data=cast(str | Path | bytes, data),
+            ).run(None)
+            res_d.update(
+                is_uploaded=result.ready,
+                is_reused=result.reused,
+                is_blob_uploaded=result.bytes_read > 0,
+                logical_uploaded_bytes=result.uploaded_bytes,
+                bytes_read_for_transport=result.bytes_read,
+                part_request_count=result.part_requests,
+            )
+            return res_d
 
         if pre_validated is True:
             logger.info("Blob %s already exists globally, reuse.", sha256[:8])
@@ -2034,18 +2229,54 @@ class UploadManager:
         if isinstance(pre_validated, str):
             upload_url: str = pre_validated
         else:
+            obj = {"oid": sha256, "size": size}
+            if candidate:
+                obj["upload_type"] = "http"
             validated = self._client.validate_blobs(
                 repo_id=repo_id,
                 repo_type=repo_type,
-                objects=[{"oid": sha256, "size": size}],
+                objects=[obj],
+                **({"strict": True} if candidate else {}),
             )
             maybe_url = validated.get(sha256)
             if maybe_url is None:
+                if candidate:
+                    return self._upload_blob(
+                        repo_id=repo_id,
+                        repo_type=repo_type,
+                        sha256=sha256,
+                        size=size,
+                        data=data,
+                        pre_validated=True,
+                        execution=execution,
+                    )
                 logger.info("Blob %s already exists globally, reuse.", sha256[:8])
                 res_d["is_uploaded"] = True
                 res_d["is_reused"] = True
                 return res_d
             upload_url = maybe_url
+
+        if candidate:
+            assert execution is not None
+            result = MultipartUploader(
+                execution,
+                home=self._config.config_dir,
+                repo_id=repo_id,
+                repo_type=repo_type,
+                sha256=sha256,
+                size=size,
+                data=cast(str | Path | bytes, data),
+            ).run(upload_url)
+            res_d.update(
+                url=upload_url,
+                is_uploaded=result.ready,
+                is_reused=result.reused,
+                is_blob_uploaded=result.bytes_read > 0,
+                logical_uploaded_bytes=result.uploaded_bytes,
+                bytes_read_for_transport=result.bytes_read,
+                part_request_count=result.part_requests,
+            )
+            return res_d
 
         chunk_size = buffer_size_mb * 1024 * 1024
 
@@ -2059,20 +2290,34 @@ class UploadManager:
             if isinstance(data, (str, Path)):
                 with open(data, "rb") as f:
                     stream = _CountedReadStream(f, size, pbar, chunk_size)
-                    self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
+                    if execution is None:
+                        self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
+                    else:
+                        with execution.request_slot():
+                            self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
                 stream.verify_complete()
             elif isinstance(data, bytes):
                 stream = _CountedReadStream(io.BytesIO(data), size, pbar, chunk_size)
-                self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
+                if execution is None:
+                    self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
+                else:
+                    with execution.request_slot():
+                        self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
                 stream.verify_complete()
             else:
                 stream = _CountedReadStream(data, size, pbar, chunk_size)
-                self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
+                if execution is None:
+                    self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
+                else:
+                    with execution.request_slot():
+                        self._client.upload_blob(upload_url=upload_url, data=stream, size=size)
                 stream.verify_complete()
 
         res_d["url"] = upload_url
         res_d["is_uploaded"] = True
         res_d["is_blob_uploaded"] = True
+        res_d["logical_uploaded_bytes"] = size
+        res_d["bytes_read_for_transport"] = stream.bytes_read
         return res_d
 
     # ------------------------------------------------------------------
@@ -2118,6 +2363,7 @@ class UploadManager:
         repo_type: str,
         objects: list[dict],
         max_workers: int = 1,
+        strict: bool = False,
     ) -> dict[str, str | None]:
         """Pre-sign every object, in parallel groups, tolerating group failures.
 
@@ -2147,6 +2393,7 @@ class UploadManager:
                     repo_id=repo_id,
                     repo_type=repo_type,
                     objects=chunk,
+                    **({"strict": True} if strict else {}),
                 )
             except Exception as error:  # noqa: BLE001 - degrades to per-file negotiation
                 logger.warning(
@@ -2503,6 +2750,7 @@ class UploadManager:
         disable_tqdm: bool = False,
         on_uploaded: Any = None,
         on_committed: Any = None,
+        execution: UploadExecution | None = None,
     ) -> tuple[list[tuple], list[dict], list[dict]]:
         commit_infos: list[dict] = []
         all_successes: list[dict] = []
@@ -2583,6 +2831,7 @@ class UploadManager:
                             repo_type=repo_type,
                             tracker=tracker,
                             disable_tqdm=disable_tqdm,
+                            **_execution_kwargs(execution),
                         )
                         future_map[future] = (path_in_repo_r, file_path_r)
                     for future in as_completed(future_map):
@@ -2617,6 +2866,7 @@ class UploadManager:
                             repo_type=repo_type,
                             tracker=tracker,
                             disable_tqdm=disable_tqdm,
+                            **_execution_kwargs(execution),
                         )
                         round_successes.append(result)
                         if on_uploaded is not None:
@@ -2749,9 +2999,28 @@ class UploadManager:
         disable_tqdm: bool = False,
         on_uploaded: Any = None,
         on_committed: Any = None,
+        execution: UploadExecution | None = None,
     ) -> list[tuple]:
-        total_failed_files = list(failed_files)
+        total_failed_files = [item for item in failed_files if not getattr(item[1], "recovery_handled", False)]
         terminal_failures: list[tuple] = []
+
+        def record_terminal(item: tuple) -> None:
+            terminal_failures.append(item)
+            (path_in_repo_r, file_path_r), error = item
+            try:
+                st = os.stat(file_path_r) if isinstance(file_path_r, (str, os.PathLike)) else None
+            except OSError:
+                st = None
+            tracker.mark_failed(
+                path_in_repo_r,
+                st.st_mtime if st else 0,
+                st.st_size if st else 0,
+                error_type=classify_error(error),
+            )
+
+        for item in failed_files:
+            if getattr(item[1], "recovery_handled", False):
+                record_terminal(item)
         for retry_round in range(UPLOAD_FAILED_FILE_MAX_RETRY_ROUNDS):
             if not total_failed_files:
                 break
@@ -2772,13 +3041,18 @@ class UploadManager:
                         repo_type=repo_type,
                         tracker=tracker,
                         disable_tqdm=disable_tqdm,
+                        **_execution_kwargs(execution),
                     )
                     retry_successes.append(result)
                     if on_uploaded is not None:
                         on_uploaded(result)
                 except Exception as e:
                     logger.error("  Retry failed: %s - %s", path_in_repo_r, e)
-                    retry_failures.append(((path_in_repo_r, file_path_r), e))
+                    item = ((path_in_repo_r, file_path_r), e)
+                    if getattr(e, "recovery_handled", False):
+                        record_terminal(item)
+                    else:
+                        retry_failures.append(item)
             if retry_successes:
                 self._track_uploaded_batch(tracker, retry_successes)
                 for batch in self._plan_result_batches(retry_successes, repo_type):
