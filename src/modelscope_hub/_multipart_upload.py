@@ -57,7 +57,8 @@ class MultipartUploader:
         self.repo_type = repo_type
         self.sha256 = sha256
         self.size = size
-        self.source = UploadSource(data, size, sha256, self.settings.chunk_size)
+        self._data = data
+        self.source: UploadSource
         self.store = StateStore(
             home,
             execution.client.endpoint,
@@ -221,7 +222,8 @@ class MultipartUploader:
         self.state.part_size = plan.part_size
         self.state.last_action = "init" if explicit_init else "status"
         self.state.ready = False
-        self.manifest = None if old_part_size != plan.part_size or explicit_init else self.manifest
+        if explicit_init or (self.manifest is not None and not self.manifest.matches(self.source, plan)):
+            self.manifest = None
         self._plan = plan
         if changed or explicit_init:
             self.store.save(self.state)
@@ -258,6 +260,13 @@ class MultipartUploader:
             raise MultipartError("Server returned an invalid dirty part number.")
         self.state.dirty = sorted(dirty)
         self.store.save(self.state)
+
+    def _clear_dirty(self, numbers: set[int]) -> None:
+        # Only an acknowledged overwrite repairs a part; status presence never does.
+        remaining = [number for number in self.state.dirty if number not in numbers]
+        if len(remaining) != len(self.state.dirty):
+            self.state.dirty = remaining
+            self.store.save(self.state)
 
     def _upload_part(self, number: int, manifest: HashManifest, token: str) -> None:
         key = (self.state.generation, number)
@@ -299,6 +308,7 @@ class MultipartUploader:
         generation = self.state.generation
         remaining = iter(sorted(work))
         futures: dict[Future[Any], int] = {}
+        acknowledged: set[int] = set()
         first_error: BaseException | None = None
 
         def fill() -> None:
@@ -319,6 +329,7 @@ class MultipartUploader:
                 future.result()
                 if generation == self.state.generation and token == self._plan.token:
                     self._confirm(plan, number)
+                    acknowledged.add(number)
             except BaseException as error:
                 if first_error is None:
                     first_error = error
@@ -344,7 +355,10 @@ class MultipartUploader:
                 for future, number in list(futures.items()):
                     futures.pop(future)
                     collect(future, number)
+        self._clear_dirty(acknowledged)
         if first_error is not None:
+            # Cancelled parts report CancelledError; surface the cancellation reason instead.
+            self.execution.check()
             raise first_error
 
     def _recovery_budget(self) -> None:
@@ -375,7 +389,8 @@ class MultipartUploader:
             if type(fault.part_number) is not int:
                 raise MultipartError("Part integrity failure did not identify a part to overwrite.") from fault
             self._save_dirty({fault.part_number})
-            return "plan"
+            # Refresh the plan so parts acknowledged in the failed round are not resent.
+            return "status"
         if name == "HASH_CONTEXT_MISMATCH":
             number = fault.part_number
             if type(number) is int and 1 <= number <= self._plan.total_parts:
@@ -383,7 +398,7 @@ class MultipartUploader:
             else:
                 dirty = set(range(1, self._plan.total_parts + 1))
             self._save_dirty(dirty)
-            return "plan"
+            return "status"
         if name in {"FILE_SHA256_MISMATCH", "UPLOAD_SESSION_GONE", "COMPLETION_UNVERIFIED"}:
             if not self._allow_init:
                 raise MultipartError("A completion-only resume cannot initialize a replacement upload.") from fault
@@ -408,10 +423,34 @@ class MultipartUploader:
         )
 
     def run(self, upload_url: str | None) -> BlobTransferResult:
+        """Upload or finish one blob; expected failures leave only as private terminals."""
+        try:
+            return self._run(upload_url)
+        except MultipartError:
+            raise
+        except (HubError, OSError) as error:
+            # Local I/O must not reach outer recovery, which would reset this blob's budgets.
+            raise terminal(error) from error
+
+    def _manifest_for(self, work: set[int]) -> HashManifest:
+        self.source.verify()
+        previous = self.manifest
+        required = set(work)
+        if previous is not None and previous.matches(self.source, self._plan):
+            if previous.covers(work):
+                return previous
+            required.update(previous.coverage)
+        # Publish only a fully verified replacement; failed scans never expose partial coverage.
+        replacement = HashManifest(self.source, self._plan, self.execution, required_parts=required)
+        self.manifest = replacement
+        return replacement
+
+    def _run(self, upload_url: str | None) -> BlobTransferResult:
         self._allow_init = upload_url is not None
         pending = self.store.pending() if upload_url is None else None
         if upload_url is None and pending is None:
             return BlobTransferResult(True, True, 0, 0, 0, True)
+        self.source = UploadSource(self._data, self.size, self.sha256, self.settings.chunk_size)
         target = upload_url or (pending.url if pending is not None else "")
         self.settings.validate_target(target, self.repo_id, self.repo_type, self.sha256, self.size)
         with self.store.lease(target, self.execution.check) as saved:
@@ -420,48 +459,41 @@ class MultipartUploader:
             self.state = saved or UploadState(target)
             self.state.url = target
             stage = "status"
-            try:
-                while True:
-                    self.execution.check()
-                    try:
-                        if stage == "status":
-                            plan = self._query(self.state.token)
-                            if plan is None:
-                                return self._ready(via_status=True)
-                            stage = "plan"
-                        elif stage == "refresh":
-                            plan = self._query("")
-                            if plan is None:
-                                return self._ready(via_status=True)
-                            stage = "plan"
-                        elif stage == "init":
-                            self._initialize()
-                            stage = "plan"
-                        elif stage == "complete":
-                            self.source.verify()
-                            self.state.last_action = "complete"
-                            self.store.save(self.state)
-                            if self._control("complete", self.state.token) is None:
-                                return self._ready(via_status=False)
-                            raise MultipartError("Multipart complete returned an unexpected upload plan.")
-                        else:
-                            missing = set(range(1, self._plan.total_parts + 1)) - set(self._plan.uploaded)
-                            work = missing | set(self.state.dirty)
-                            if not work:
-                                stage = "complete"
-                                continue
-                            self.source.verify()
-                            if self.manifest is None:
-                                self.manifest = HashManifest(self.source, self._plan, self.execution)
-                            stage = "part"
-                            self._upload_parts(work, self.manifest)
-                            stage = "status"
-                    except MultipartFaultError as fault:
-                        stage = self._recover(fault)
-                    except (NetworkError, RequestTimeoutError):
-                        self._recovery_budget()
-                        stage = "refresh" if stage == "init" else "status"
-            except MultipartError:
-                raise
-            except HubError as error:
-                raise terminal(error) from error
+            while True:
+                self.execution.check()
+                try:
+                    if stage == "status":
+                        plan = self._query(self.state.token)
+                        if plan is None:
+                            return self._ready(via_status=True)
+                        stage = "plan"
+                    elif stage == "refresh":
+                        plan = self._query("")
+                        if plan is None:
+                            return self._ready(via_status=True)
+                        stage = "plan"
+                    elif stage == "init":
+                        self._initialize()
+                        stage = "plan"
+                    elif stage == "complete":
+                        self.source.verify()
+                        self.state.last_action = "complete"
+                        self.store.save(self.state)
+                        if self._control("complete", self.state.token) is None:
+                            return self._ready(via_status=False)
+                        raise MultipartError("Multipart complete returned an unexpected upload plan.")
+                    else:
+                        missing = set(range(1, self._plan.total_parts + 1)) - set(self._plan.uploaded)
+                        work = missing | set(self.state.dirty)
+                        if not work:
+                            stage = "complete"
+                            continue
+                        manifest = self._manifest_for(work)
+                        stage = "part"
+                        self._upload_parts(work, manifest)
+                        stage = "status"
+                except MultipartFaultError as fault:
+                    stage = self._recover(fault)
+                except (NetworkError, RequestTimeoutError):
+                    self._recovery_budget()
+                    stage = "refresh" if stage == "init" else "status"

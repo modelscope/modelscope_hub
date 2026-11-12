@@ -24,7 +24,9 @@ import posixpath
 import tempfile
 import threading
 import time
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, Any, BinaryIO, cast
 
@@ -802,8 +804,15 @@ class BatchTracker:
             if self._is_batch_complete(idx):
                 self._batch_events[idx].set()
 
-    def wait_for_batch(self, batch_idx: int) -> tuple[list[dict], list[tuple]]:
-        self._batch_events[batch_idx].wait()
+    def wait_for_batch(self, batch_idx: int, check: Callable[[], None] | None = None) -> tuple[list[dict], list[tuple]]:
+        event = self._batch_events[batch_idx]
+        if check is None:
+            event.wait()
+        else:
+            # Cancelled futures never report, so a cancellable wait must poll.
+            while not event.wait(0.1):
+                check()
+            check()
         with self._lock:
             return (
                 list(self._batch_results[batch_idx]),
@@ -865,6 +874,17 @@ class _CommitRateGovernor:
 
 def _execution_kwargs(execution: UploadExecution | None) -> dict[str, Any]:
     return {"execution": execution} if execution is not None else {}
+
+
+@contextmanager
+def _stop_on_error(execution: UploadExecution | None) -> Iterator[None]:
+    """Cancel queued multipart work before an enclosing executor drains it."""
+    try:
+        yield
+    except BaseException:
+        if execution is not None:
+            execution.stop()
+        raise
 
 
 class UploadManager:
@@ -1445,7 +1465,9 @@ class UploadManager:
                 if owned_oid is not None:
                     with blob_state_lock:
                         blob_ready[owned_oid] = False
-                        blob_errors[owned_oid] = e
+                        # Replicas inherit only a multipart terminal; other failures stay per-file retryable.
+                        if getattr(e, "recovery_handled", False):
+                            blob_errors[owned_oid] = e
                 batch_tracker.record_failure(file_idx, file_info, e)
 
         # Pipeline: consume batches in order
@@ -1584,7 +1606,7 @@ class UploadManager:
             )
 
         try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor, _stop_on_error(execution):
                 for file_idx, file_info in files_to_upload:
                     pv: str | bool | _DuplicateBlob | None = None
                     if file_idx in lfs_hash_info_map:
@@ -1614,7 +1636,11 @@ class UploadManager:
                     total=num_batches,
                     disable=disable_tqdm,
                 ):
-                    results, failures = batch_tracker.wait_for_batch(batch_idx)
+                    results, failures = (
+                        batch_tracker.wait_for_batch(batch_idx)
+                        if execution is None
+                        else batch_tracker.wait_for_batch(batch_idx, check=execution.check)
+                    )
                     # Every file of this batch has finished its transfer by now,
                     # so publish the bytes the throttle may still be holding
                     # before the commit event reports the batch as done.
@@ -1657,7 +1683,10 @@ class UploadManager:
                             retry_failed_files.extend(
                                 (
                                     (item_r["file_path_in_repo"], item_r["file_path"]),
-                                    error_snapshot.get(oid_r, StorageError("shared blob upload failed")),
+                                    error_snapshot.get(
+                                        item_r["file_hash_info"]["file_hash"],
+                                        StorageError("shared blob upload failed"),
+                                    ),
                                 )
                                 for item_r in orphaned
                             )
@@ -1746,16 +1775,10 @@ class UploadManager:
                         consecutive_failures += 1
 
                         if consecutive_failures >= UPLOAD_COMMIT_MAX_CONSECUTIVE_FAILED_BATCHES:
-                            if execution is not None:
-                                execution.stop()
                             raise RuntimeError(
                                 f"Upload aborted: {consecutive_failures} consecutive batch commits failed. "
                                 f"Last error: {e}"
                             )
-        except BaseException:
-            if execution is not None:
-                execution.stop()
-            raise
         finally:
             tracker.save()
 
