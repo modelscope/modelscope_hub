@@ -25,7 +25,33 @@ from .base import (
     success,
 )
 from .compat import add_subcmd_token_endpoint
-from .studio import _add_oauth_arguments
+from .studio import _OAUTH_EXTRA_FIELDS, _add_oauth_arguments
+
+
+def _reject_misused_oauth_flags(args: argparse.Namespace) -> None:
+    """Reject create-time OAuth flag combinations the server would drop.
+
+    The create contract decodes ``oauth_enabled`` as a plain bool, so detail
+    fields sent without an explicit flag are an ignored group: the request
+    succeeds, the OAuth app is never created, and the studio deploys without
+    its login runtime variables. Fail fast instead, mirroring the server-side
+    400 gate the settings endpoint applies.
+    """
+    has_enabled = getattr(args, "oauth_enabled", None) is not None
+    has_details = any(getattr(args, field, None) is not None for field in _OAUTH_EXTRA_FIELDS)
+    if not has_enabled and not has_details:
+        return
+    repo_type = getattr(args, "repo_type", None)
+    if repo_type != "studio":
+        raise ValueError(
+            f"The --oauth-* flags only apply to studio repositories (got --repo-type {repo_type})."
+        )
+    if has_details and not has_enabled:
+        raise ValueError(
+            "The --oauth-* flags only take effect together with an explicit "
+            "--oauth-enabled (the server ignores OAuth details when "
+            "oauth_enabled is absent on create)."
+        )
 
 
 def _format_visibility(value: object) -> str:
@@ -121,6 +147,7 @@ class CreateCommand(CLICommand):
         add_subcmd_token_endpoint(p)
 
     def execute(self) -> None:
+        _reject_misused_oauth_flags(self.args)
         api = make_api(self.args)
         # ``Any`` rather than ``object``: these come from argparse and are
         # forwarded verbatim into ``create_repo``'s keyword parameters, whose

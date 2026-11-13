@@ -722,12 +722,17 @@ class LegacyHubApi:
         return self._api_for(control).list_secrets(studio_id, RepoType.STUDIO)
 
     def add_studio_secret(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
+        # Only description is forwarded; unknown kwargs keep the legacy
+        # silent-ignore behaviour, so callers passing e.g. revision= don't
+        # hit a TypeError from the fixed-signature modern API.
         control, passthrough = _split_control_kwargs(kwargs)
-        self._api_for(control).add_secret(studio_id, key, value, RepoType.STUDIO, **passthrough)
+        description = passthrough.pop("description", None)
+        self._api_for(control).add_secret(studio_id, key, value, RepoType.STUDIO, description=description)
 
     def update_studio_secret(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
         control, passthrough = _split_control_kwargs(kwargs)
-        self._api_for(control).update_secret(studio_id, key, value, RepoType.STUDIO, **passthrough)
+        description = passthrough.pop("description", None)
+        self._api_for(control).update_secret(studio_id, key, value, RepoType.STUDIO, description=description)
 
     def delete_studio_secret(self, studio_id: str, key: str, **kwargs: Any) -> None:
         control, _ = _split_control_kwargs(kwargs)
@@ -745,11 +750,13 @@ class LegacyHubApi:
 
     def add_studio_variable(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
         control, passthrough = _split_control_kwargs(kwargs)
-        self._api_for(control).add_variable(studio_id, key, value, RepoType.STUDIO, **passthrough)
+        description = passthrough.pop("description", None)
+        self._api_for(control).add_variable(studio_id, key, value, RepoType.STUDIO, description=description)
 
     def update_studio_variable(self, studio_id: str, key: str, value: str, **kwargs: Any) -> None:
         control, passthrough = _split_control_kwargs(kwargs)
-        self._api_for(control).update_variable(studio_id, key, value, RepoType.STUDIO, **passthrough)
+        description = passthrough.pop("description", None)
+        self._api_for(control).update_variable(studio_id, key, value, RepoType.STUDIO, description=description)
 
     def delete_studio_variable(self, studio_id: str, key: str, **kwargs: Any) -> None:
         control, _ = _split_control_kwargs(kwargs)

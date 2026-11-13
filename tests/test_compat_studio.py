@@ -216,6 +216,66 @@ class TestStudioDelegation:
 
 
 # ---------------------------------------------------------------------------
+# Secret / variable description forwarding on the compat surface
+# ---------------------------------------------------------------------------
+class TestStudioEnvDescriptionForwarding:
+    """Only ``description`` crosses the compat boundary; unknown kwargs keep
+    the legacy silent-ignore behaviour instead of raising a TypeError from the
+    fixed-signature modern API.
+    """
+
+    @pytest.mark.parametrize(
+        ("method", "target"),
+        [
+            ("add_studio_secret", "add_studio_secret"),
+            ("update_studio_secret", "update_studio_secret"),
+            ("add_studio_variable", "add_studio_variable"),
+            ("update_studio_variable", "update_studio_variable"),
+        ],
+    )
+    def test_description_kwarg_reaches_the_endpoint(self, method, target):
+        legacy, openapi = _compat()
+        getattr(legacy, method)("owner/demo", "K", "V", description="used by app", token="ms-ambient-token")
+        assert getattr(openapi, target).call_args.kwargs["description"] == "used by app"
+
+    @pytest.mark.parametrize(
+        ("method", "target"),
+        [
+            ("add_studio_secret", "add_studio_secret"),
+            ("update_studio_secret", "update_studio_secret"),
+            ("add_studio_variable", "add_studio_variable"),
+            ("update_studio_variable", "update_studio_variable"),
+        ],
+    )
+    def test_omitted_description_is_forwarded_as_none(self, method, target):
+        legacy, openapi = _compat()
+        getattr(legacy, method)("owner/demo", "K", "V", token="ms-ambient-token")
+        assert getattr(openapi, target).call_args.kwargs["description"] is None
+
+    @pytest.mark.parametrize(
+        ("method", "target"),
+        [
+            ("update_studio_secret", "update_studio_secret"),
+            ("update_studio_variable", "update_studio_variable"),
+        ],
+    )
+    def test_empty_string_description_is_forwarded_verbatim(self, method, target):
+        legacy, openapi = _compat()
+        getattr(legacy, method)("owner/demo", "K", "V", description="", token="ms-ambient-token")
+        assert getattr(openapi, target).call_args.kwargs["description"] == ""
+
+    @pytest.mark.parametrize(
+        "method",
+        ["add_studio_secret", "update_studio_secret", "add_studio_variable", "update_studio_variable"],
+    )
+    def test_unknown_kwargs_are_ignored_without_type_error(self, method):
+        legacy, openapi = _compat()
+        # Legacy callers appended arbitrary kwargs; they must not surface as a
+        # TypeError from the modern fixed-signature API.
+        getattr(legacy, method)("owner/demo", "K", "V", revision="master", token="ms-ambient-token")
+
+
+# ---------------------------------------------------------------------------
 # Newly delegated Studio operations
 # ---------------------------------------------------------------------------
 class TestNewStudioDelegation:

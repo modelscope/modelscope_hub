@@ -85,8 +85,9 @@ def _add_oauth_arguments(p) -> None:
         action="append",
         default=None,
         metavar="URL",
-        help="OAuth callback URL; repeat the flag for multiple entries "
-        "(optional; defaults to the studio subdomain when omitted).",
+        help="OAuth callback URL; repeat the flag for multiple entries. When "
+        "omitted, creating a new OAuth app defaults to the studio subdomain "
+        "while updating a bound app keeps its existing callbacks.",
     )
     p.add_argument(
         "--oauth-homepage-url",
@@ -388,7 +389,9 @@ class _StudioSecret(CLICommand):
                 else (str(item), "-")
                 for item in secrets
             ]
-            info(render_table(rows, headers=["key", "description"]))
+            # Keys are legal up to 128 bytes and must stay copyable; only the
+            # description column is capped.
+            info(render_table(rows, headers=["key", "description"], max_widths=(None, 80)))
             return
         if action == "add":
             api.add_secret(
@@ -482,7 +485,9 @@ class _StudioVariable(CLICommand):
                 )
                 for item in variables
             ]
-            info(render_table(rows, headers=["key", "value", "description"]))
+            # Keys and values stay intact (both are copyable identifiers of the
+            # stored variable); only the description column is capped.
+            info(render_table(rows, headers=["key", "value", "description"], max_widths=(None, None, 80)))
             return
         if action == "add":
             api.add_variable(

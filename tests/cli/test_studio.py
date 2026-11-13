@@ -368,6 +368,24 @@ class TestStudioExecute:
         assert "API_KEY" in out
         assert "used by app" in out
 
+    def test_secret_list_keeps_full_long_keys(self, mock_api):
+        # Server-legal keys run to 128 bytes; the renderer must not truncate
+        # the key column or the value can no longer be copied for update/delete.
+        long_key = "K" * 128
+        mock_api.list_secrets.return_value = [{"key": long_key, "description": "d"}]
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "secret", "list", "org/demo"])
+        assert code == 0
+        assert long_key in out
+        assert "…" not in out.split(long_key)[0]
+
+    def test_secret_list_truncates_long_descriptions(self, mock_api):
+        mock_api.list_secrets.return_value = [{"key": "API_KEY", "description": "D" * 200}]
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "secret", "list", "org/demo"])
+        assert code == 0
+        assert "…" in out
+
     def test_secret_delete(self, mock_api):
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
             code, out, err = run_cli(["studio", "secret", "delete", "org/demo", "API_KEY"])
@@ -500,6 +518,14 @@ class TestStudioExecute:
             code, out, err = run_cli(["studio", "variable", "list", "org/demo"])
         assert code == 0
         assert "model id" in out
+
+    def test_variable_list_keeps_full_long_keys(self, mock_api):
+        long_key = "V" * 128
+        mock_api.list_variables.return_value = [{"key": long_key, "value": "Qwen", "description": "d"}]
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "variable", "list", "org/demo"])
+        assert code == 0
+        assert long_key in out
 
     def test_variable_delete_with_yes(self, mock_api):
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):

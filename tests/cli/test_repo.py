@@ -415,6 +415,22 @@ class TestCreateExecute:
         assert "oauth_enabled" not in call_kwargs.kwargs
         assert "oauth_scope" not in call_kwargs.kwargs
 
+    def test_create_studio_oauth_details_require_enabled_flag(self, parser, mock_api, capsys):
+        # The server decodes create-time oauth_enabled as a plain bool, so
+        # detail fields without the flag are silently dropped; reject instead.
+        args = parser.parse_args(["create", "owner/demo", "--repo-type", "studio", "--oauth-scope", "openid"])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            with pytest.raises(ValueError, match="--oauth-enabled"):
+                CreateCommand(args).execute()
+        mock_api.create_repo.assert_not_called()
+
+    def test_create_rejects_oauth_flags_for_non_studio_repos(self, parser, mock_api, capsys):
+        args = parser.parse_args(["create", "owner/demo", "--repo-type", "model", "--oauth-enabled"])
+        with patch("modelscope_hub.cli.repo.make_api", return_value=mock_api):
+            with pytest.raises(ValueError, match="studio repositories"):
+                CreateCommand(args).execute()
+        mock_api.create_repo.assert_not_called()
+
     def test_exist_ok_swallows_exist_error(self, parser, mock_api, capsys):
         mock_api.create_repo.side_effect = Exception("Repository already exists")
         args = parser.parse_args(

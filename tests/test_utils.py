@@ -89,6 +89,18 @@ class TestTabulate:
         assert "\u2026" in lines[2]
         assert len(lines[2].strip()) <= 10
 
+    def test_per_column_max_widths_override(self):
+        rows = [["K" * 128, "d" * 200]]
+        result = tabulate(rows, headers=["key", "description"], max_widths=(None, 10))
+        lines = result.split("\n")
+        data = lines[2]
+        assert "K" * 128 in data  # untruncated column survives verbatim
+        assert "\u2026" in data  # capped column still truncates
+
+    def test_max_widths_length_mismatch_raises(self):
+        with pytest.raises(ValueError):
+            tabulate([["a", "b"]], headers=["A", "B"], max_widths=(10,))
+
     def test_empty_rows(self):
         result = tabulate([], headers=["X", "Y"])
         lines = result.split("\n")
