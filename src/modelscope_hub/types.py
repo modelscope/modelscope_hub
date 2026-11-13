@@ -663,6 +663,11 @@ class CreateStudioPayload(TypedDict, total=False):
     sdk_version: str
     base_image: str
     hardware: str
+    oauth_enabled: bool
+    oauth_scope: str
+    oauth_token_expire_time: int
+    oauth_callback_urls: list[str]
+    oauth_homepage_url: str
 
 
 class UpdateStudioSettingsPayload(TypedDict, total=False):
@@ -678,6 +683,14 @@ class UpdateStudioSettingsPayload(TypedDict, total=False):
     sdk_version: str
     base_image: str
     hardware: str
+    # The server treats ``oauth_enabled`` as the gate for the whole oauth_*
+    # group: present (True or False) applies the group, absent keeps the
+    # stored configuration. A lone oauth_* field without the gate is a 400.
+    oauth_enabled: bool
+    oauth_scope: str
+    oauth_token_expire_time: int
+    oauth_callback_urls: list[str]
+    oauth_homepage_url: str
 
 
 class DeployMcpServerPayload(TypedDict, total=False):
