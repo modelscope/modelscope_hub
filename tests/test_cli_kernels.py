@@ -45,7 +45,9 @@ def test_lock_execute_assembles_the_call(tmp_path, monkeypatch, capsys):
     # Import the real kernels package *before* stubbing its locking module:
     # kernels/__init__ pulls in kernels.install, which imports
     # kernels.locking, and that must resolve against the real module.
-    import kernels  # noqa: F401
+    # importorskip: without the kernels extra installed the CLI reports a
+    # friendly error, and these tests skip instead of erroring.
+    pytest.importorskip("kernels")
 
     # Simulate kernels>=0.18 (the locking module exists) so the CLI's version
     # gate passes even on a 0.17 install.
@@ -75,7 +77,7 @@ def test_lock_execute_honours_explicit_lockfile(tmp_path, monkeypatch):
         tmp_path,
         '[tool.kernels.dependencies]\n"kernels-community/activation" = 1\n',
     )
-    import kernels  # noqa: F401  (load before the locking stub, see above)
+    pytest.importorskip("kernels")  # load before the locking stub, see above
 
     monkeypatch.setitem(sys.modules, "kernels.locking", types.ModuleType("kernels.locking"))
 
@@ -103,7 +105,7 @@ def test_lock_execute_honours_explicit_lockfile(tmp_path, monkeypatch):
 
 def test_lock_execute_rejects_non_table_dependencies(tmp_path, monkeypatch):
     project = _write_pyproject(tmp_path, "[tool.kernels]\ndependencies = 'not-a-table'\n")
-    import kernels  # noqa: F401  (load before the locking stub, see above)
+    pytest.importorskip("kernels")  # load before the locking stub, see above
 
     monkeypatch.setitem(sys.modules, "kernels.locking", types.ModuleType("kernels.locking"))
 

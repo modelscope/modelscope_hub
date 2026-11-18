@@ -53,7 +53,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package with dev dependencies
-        run: pip install -e ".[dev]"
+        run: pip install -e ".[dev,kernels]"
 
       - name: Run unit tests (mock mode)
         run: pytest tests/ --ignore=tests/integration -q
