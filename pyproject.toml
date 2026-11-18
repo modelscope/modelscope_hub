@@ -105,5 +105,5 @@ strict = false
 warn_return_any = false
 
 [[tool.mypy.overrides]]
-module = ["tqdm.*", "modelscope.*", "kernels.*", "huggingface_hub.*"]
+module = ["tqdm.*", "modelscope.*", "kernels.*", "huggingface_hub.*", "tomllib", "tomli"]
 ignore_missing_imports = true

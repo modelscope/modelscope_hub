@@ -22,6 +22,7 @@ __all__ = [
     "install_kernel_all_variants",
     "get_locked_kernel",
     "load_kernel",
+    "lock_kernels",
 ]
 
 
@@ -330,3 +331,68 @@ def load_kernel(
             lockfile=lockfile,
             backend=backend,
         )
+
+
+def lock_kernels(
+    dependencies: dict[str, int | str],
+    *,
+    lockfile: Path | str | None = None,
+) -> Path:
+    """Resolve a kernel dependency tree against ModelScope and write a lockfile.
+
+    This is the in-process equivalent of the ``kernels lock`` CLI command:
+    every entry in ``dependencies`` (and, recursively, each kernel's own
+    dependencies — for *every* build variant) is resolved against the
+    ModelScope Hub and the resulting commits are written to a
+    ``kernels.lock`` JSON file that :func:`get_locked_kernel` /
+    :func:`load_kernel` (and ``kernels`` itself) can consume.
+
+    Requires ``kernels>=0.18``: the lockfile machinery (``kernels.locking``)
+    does not exist in older releases.
+
+    Args:
+        dependencies (`dict[str, int | str]`):
+            Kernel repositories to lock, mapping repo id to a version — an
+            ``int`` (or numeric string) selects the ``v<N>`` generation, any
+            other string is used as the revision (branch, tag, or commit).
+        lockfile (`Path | str`, *optional*):
+            Where to write the lockfile. Defaults to ``kernels.lock`` in the
+            current working directory.
+
+    Returns:
+        `Path`: The lockfile that was written. Commit it to your project so
+        other machines load exactly the same kernels.
+
+    Example:
+        ```python
+        from modelscope_hub.kernels import lock_kernels, get_locked_kernel
+
+        lock_kernels({"kernels-community/flash-attn2": 3})
+        kernel = get_locked_kernel("kernels-community/flash-attn2")
+        ```
+    """
+    _require_kernels()
+    try:
+        from kernels._rust import KernelDependency, KernelVersion
+        from kernels.locking import extract_dependency_locks
+    except ImportError as e:
+        raise ImportError(
+            "Kernel lockfiles require `kernels>=0.18`, which is not installed. Upgrade with: pip install -U kernels"
+        ) from e
+
+    def _version_of(value: int | str) -> object:
+        as_str = str(value)
+        return KernelVersion.Version(int(as_str)) if as_str.isdigit() else KernelVersion.Revision(as_str)
+
+    depends = [
+        KernelDependency(repo_id=repo_id, version=_version_of(version)) for repo_id, version in dependencies.items()
+    ]
+    with patch_scope():
+        # Imported inside the scope: _get_hf_api is rebound to the ModelScope
+        # factory while the patch is in effect, so `api` is our shim.
+        from kernels.hf_hub import _get_hf_api
+
+        locks = extract_dependency_locks(depends, api=_get_hf_api())
+    path = Path(lockfile) if lockfile is not None else Path("kernels.lock")
+    path.write_text(locks.to_json(), encoding="utf-8")
+    return path
