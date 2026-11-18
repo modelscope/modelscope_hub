@@ -38,6 +38,7 @@ from modelscope_hub.kernels._load import (
     install_kernel,
     install_kernel_all_variants,
     load_kernel,
+    lock_kernels,
 )
 from modelscope_hub.kernels._patch import patch_kernels_hub, patch_scope, unpatch_kernels_hub
 
@@ -50,6 +51,7 @@ __all__ = [
     "install_kernel_all_variants",
     "get_locked_kernel",
     "load_kernel",
+    "lock_kernels",
     "patch_kernels_hub",
     "patch_scope",
     "unpatch_kernels_hub",

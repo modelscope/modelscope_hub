@@ -733,3 +733,66 @@ def test_ref_target_commit_falls_back_to_synthetic_oid():
     oid = _ref_target_commit("r", {"Revision": "v1", "Commit": "not-a-hash"})
     assert oid == _ref_target_commit("r", {"Revision": "v1"})
     assert oid in _synthetic_oids
+
+
+# ---------------------------------------------------------------------------
+# lock_kernels: writing a ModelScope-resolved lockfile
+# ---------------------------------------------------------------------------
+def test_lock_kernels_writes_lockfile_and_uses_ms_api(tmp_path, monkeypatch):
+    """lock_kernels resolves via the shim and writes the serialized locks."""
+    import types
+
+    captured = {}
+    stub = types.ModuleType("kernels.locking")
+
+    def extract_dependency_locks(depends, *, api):
+        captured["depends"], captured["api"] = depends, api
+        return types.SimpleNamespace(to_json=lambda: '{"repo": "stub"}')
+
+    stub.extract_dependency_locks = extract_dependency_locks
+    # 0.17 kernels has no locking module; 0.18+ has one. Either way the stub
+    # wins for this test and monkeypatch restores the real module afterwards.
+    monkeypatch.setitem(sys.modules, "kernels.locking", stub)
+
+    from modelscope_hub.kernels import lock_kernels
+    from modelscope_hub.kernels._hub import MsKernelApi
+
+    path = lock_kernels(
+        {"kernels-community/flash-attn2": 3, "kernels-community/activation": "master"},
+        lockfile=tmp_path / "kernels.lock",
+    )
+    assert path == tmp_path / "kernels.lock"
+    assert path.read_text() == '{"repo": "stub"}'
+    # The api the kernels library was handed is our ModelScope shim.
+    assert isinstance(captured["api"], MsKernelApi)
+    versions = {d.repo_id: d.version for d in captured["depends"]}
+    assert "version=3" in repr(versions["kernels-community/flash-attn2"])
+    assert 'revision="master"' in repr(versions["kernels-community/activation"])
+
+
+def test_lock_kernels_default_lockfile_in_cwd(tmp_path, monkeypatch):
+    """Without `lockfile` the locks land in ./kernels.lock."""
+    import types
+
+    stub = types.ModuleType("kernels.locking")
+    stub.extract_dependency_locks = lambda depends, *, api: types.SimpleNamespace(to_json=lambda: "{}")
+    monkeypatch.setitem(sys.modules, "kernels.locking", stub)
+    monkeypatch.chdir(tmp_path)
+
+    from modelscope_hub.kernels import lock_kernels
+
+    path = lock_kernels({"kernels-community/flash-attn2": 3})
+    assert path.name == "kernels.lock"  # relative path, resolved against cwd
+    assert path.read_text() == "{}"
+
+
+def test_lock_kernels_requires_kernels_018(monkeypatch):
+    """A kernels install without the lockfile machinery gets an upgrade hint."""
+    # None in sys.modules makes `from kernels.locking import ...` fail on any
+    # kernels version, simulating kernels<0.18.
+    monkeypatch.setitem(sys.modules, "kernels.locking", None)
+
+    from modelscope_hub.kernels import lock_kernels
+
+    with pytest.raises(ImportError, match="kernels>=0.18"):
+        lock_kernels({"kernels-community/flash-attn2": 3})
