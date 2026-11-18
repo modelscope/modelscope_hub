@@ -683,3 +683,53 @@ def test_plain_revision_not_mapped():
 
     api.snapshot_download("kernels-community/activation", repo_type="kernel", revision=None)
     assert fake.download_repo.call_args.kwargs["revision"] == "master"
+
+
+# ---------------------------------------------------------------------------
+# Real commit hashes when the platform exposes them (lockfile snapshot pins)
+# ---------------------------------------------------------------------------
+def test_list_repo_refs_uses_real_commit_when_exposed():
+    """A real hash in the revisions entry becomes target_commit verbatim."""
+    fake = mock.MagicMock()
+    real = "b" * 40
+    fake.legacy.list_revisions_detail.return_value = (
+        [{"Revision": "master", "Commit": real}],
+        [],
+    )
+    api = MsKernelApi(hub_api=fake)
+
+    refs = api.list_repo_refs("kernels-community/activation")
+    master = refs.branches[0]
+    assert master.target_commit == real
+    # A real hash is NOT registered in the synthetic table: downloads by hash
+    # pass through unchanged (relies on the platform accepting hash revisions).
+    api.snapshot_download("kernels-community/activation", repo_type="kernel", revision=real)
+    assert fake.download_repo.call_args.kwargs["revision"] == real
+
+
+def test_list_repo_refs_synthetic_v1_inherits_master_commit():
+    """The synthesized v1 pins whatever master points at."""
+    fake = mock.MagicMock()
+    real = "c" * 40
+    fake.legacy.list_revisions_detail.return_value = (
+        [{"Revision": "master", "Commit": real}],
+        [],
+    )
+    api = MsKernelApi(hub_api=fake)
+
+    refs = api.list_repo_refs("kernels-community/activation")
+    v1 = next(r for r in refs.branches if r.name == "v1")
+    assert v1.target_commit == real
+
+
+def test_ref_target_commit_falls_back_to_synthetic_oid():
+    """Non-hash or missing Commit values keep the synthetic-OID behaviour."""
+    from modelscope_hub.kernels._hub import _ref_target_commit, _synthetic_oids
+
+    _synthetic_oids.clear()
+    # 64-hex (SHA-256 style) counts as a real commit hash.
+    assert _ref_target_commit("r", {"Revision": "v1", "Commit": "d" * 64}) == "d" * 64
+    # Non-hex garbage in the Commit field is ignored.
+    oid = _ref_target_commit("r", {"Revision": "v1", "Commit": "not-a-hash"})
+    assert oid == _ref_target_commit("r", {"Revision": "v1"})
+    assert oid in _synthetic_oids

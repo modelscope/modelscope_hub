@@ -43,6 +43,14 @@ _VERSION_REF_RE = re.compile(r"v(\d+)")
 # Full git commit hashes (SHA-1); lockfiles pin revisions this way.
 _COMMIT_HASH_RE = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 
+# A real commit hash a ref points at (SHA-1 40-hex or SHA-256 64-hex), as
+# accepted by ``Oid.from_str`` in kernels 0.18.
+_REAL_COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}", re.IGNORECASE)
+
+# Keys a ModelScope revisions entry may use to carry the real commit hash
+# (probed in order; none exists today, so synthetic OIDs stay the default).
+_COMMIT_KEY_CANDIDATES = ("Commit", "CommitHash", "commit")
+
 _LOCKFILE_COMMIT_HINT = (
     "Revision {revision!r} looks like a commit hash. Commit hashes are "
     "hub-specific: a kernel lockfile created against the Hugging Face Hub "
@@ -92,6 +100,24 @@ def _resolve_revision(revision: str | None) -> str | None:
     if revision is None:
         return None
     return _synthetic_oids.get(str(revision), revision)
+
+
+def _ref_target_commit(repo_id: str, ref: dict) -> str:
+    """A ref's target commit: the platform's real hash when it exposes one.
+
+    When the ModelScope revisions entry carries a real commit hash, it is
+    used verbatim: kernels lockfiles then pin an immutable snapshot instead
+    of a (moving) branch name. A real hash is *not* registered in the
+    synthetic-OID table, so downloads by hash pass through unchanged —
+    this relies on the platform's download API accepting commit hashes.
+    Without a hash the deterministic synthetic OID stands in (see
+    :func:`_synthetic_oid`), which pins the ref name rather than content.
+    """
+    for key in _COMMIT_KEY_CANDIDATES:
+        value = ref.get(key)
+        if isinstance(value, str) and _REAL_COMMIT_RE.fullmatch(value.strip()):
+            return value.strip().lower()
+    return _synthetic_oid(repo_id, ref["Revision"])
 
 
 def _ms_repo_type(repo_type: str | None) -> str:
@@ -215,10 +241,12 @@ class MsKernelApi:
     def list_repo_refs(self, repo_id: str | None = None, *, repo_type: str | None = None, **kwargs):
         """List repository branches and tags, mirroring ``HfApi.list_repo_refs``.
 
-        ModelScope's revision API does not expose git commit hashes, so every
-        ref's ``target_commit`` is a deterministic synthetic OID for the ref
-        name (see :func:`_synthetic_oid`); the download entry points map it
-        back to the real name, so both kernels 0.17 (which downloads by
+        When a revision entry carries a real commit hash, it becomes the
+        ref's ``target_commit`` verbatim (see :func:`_ref_target_commit`),
+        so kernel lockfiles pin an immutable snapshot. Otherwise
+        ``target_commit`` is a deterministic synthetic OID for the ref name
+        (see :func:`_synthetic_oid`); the download entry points map it back
+        to the real name, so both kernels 0.17 (which downloads by
         ``target_commit`` verbatim) and kernels 0.18 (which validates it with
         ``Oid.from_str`` before fetching) work unchanged. When the repository
         carries no ``v<N>`` refs at all (typical for a plain mirror with only
@@ -235,7 +263,7 @@ class MsKernelApi:
             GitRefInfo(
                 name=ref["Revision"],
                 ref=f"refs/heads/{ref['Revision']}",
-                target_commit=_synthetic_oid(repo_id, ref["Revision"]),
+                target_commit=_ref_target_commit(repo_id, ref),
             )
             for ref in branches or []
         ]
@@ -243,13 +271,16 @@ class MsKernelApi:
             GitRefInfo(
                 name=ref["Revision"],
                 ref=f"refs/tags/{ref['Revision']}",
-                target_commit=_synthetic_oid(repo_id, ref["Revision"]),
+                target_commit=_ref_target_commit(repo_id, ref),
             )
             for ref in tags or []
         ]
         if not any(_VERSION_REF_RE.fullmatch(ref.name) for ref in branch_refs + tag_refs):
+            # The synthesized v1 points at whatever master points at.
+            master = next((ref for ref in branches or [] if ref["Revision"] == "master"), None)
+            master = master if master is not None else {"Revision": "master"}
             branch_refs.append(
-                GitRefInfo(name="v1", ref="refs/heads/v1", target_commit=_synthetic_oid(repo_id, "master"))
+                GitRefInfo(name="v1", ref="refs/heads/v1", target_commit=_ref_target_commit(repo_id, master))
             )
         return SimpleNamespace(branches=branch_refs, tags=tag_refs, converts=[])
 
