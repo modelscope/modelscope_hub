@@ -305,12 +305,13 @@ class HubApi:
     def uploader(self) -> UploadManager:
         """Lazily-constructed :class:`UploadManager`.
 
-        The OpenAPI client is injected so small files (≤ 5 MiB) flow through
-        ``POST /files/upload`` instead of the legacy commit endpoint.
+        Both inline and LFS files use repository commits; large LFS payloads
+        are negotiated through the legacy batch endpoint.
         """
+        client = self.legacy
         if self._uploader is None:
             self._uploader = UploadManager(
-                self.legacy,
+                client,
                 self._config,
                 self.openapi,
                 create_repo_fn=self._create_repo_exist_ok,
