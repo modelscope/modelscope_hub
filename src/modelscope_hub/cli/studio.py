@@ -485,9 +485,10 @@ class _StudioVariable(CLICommand):
                 )
                 for item in variables
             ]
-            # Keys and values stay intact (both are copyable identifiers of the
-            # stored variable); only the description column is capped.
-            info(render_table(rows, headers=["key", "value", "description"], max_widths=(None, None, 80)))
+            # Keys (≤128 bytes) stay copyable; a value legally reaches 4096
+            # chars and is data, not an identifier — cap it like the
+            # description so one long value cannot destroy the layout.
+            info(render_table(rows, headers=["key", "value", "description"], max_widths=(None, 120, 80)))
             return
         if action == "add":
             api.add_variable(

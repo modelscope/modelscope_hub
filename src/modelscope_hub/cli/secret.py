@@ -54,15 +54,11 @@ class _SecretList(CLICommand):
         if not secrets:
             info("(no secrets)")
             return
-        rows = [
-            (
-                s.get("key") or s.get("name") or "-",
-                s.get("description") or "-",
-                s.get("created_at") or s.get("updated_at") or "-",
-            )
-            for s in secrets
-        ]
-        info(render_table(rows, headers=["key", "description", "updated_at"]))
+        rows = [(s.get("key") or s.get("name") or "-", s.get("description") or "-") for s in secrets]
+        # Keys can legally run to 128 bytes and must stay copyable; only the
+        # description is capped. StudioSecretItem has no timestamp field,
+        # so no updated_at column is rendered.
+        info(render_table(rows, headers=["key", "description"], max_widths=(None, 80)))
 
 
 class _SecretAdd(CLICommand):

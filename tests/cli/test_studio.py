@@ -478,6 +478,17 @@ class TestStudioExecute:
         assert code == 0
         assert "(no variables)" in out
 
+    def test_variable_list_caps_long_values(self, mock_api):
+        # A contract-legal 4096-char value would render as one giant cell
+        # and wreck the table; the value column is capped.
+        mock_api.list_variables.return_value = [{"key": "MODEL", "value": "V" * 300}]
+        with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
+            code, out, err = run_cli(["studio", "variable", "list", "org/demo"])
+        assert code == 0
+        assert "MODEL" in out
+        assert "V" * 300 not in out
+        assert "…" in out
+
     def test_variable_add(self, mock_api):
         with patch("modelscope_hub.cli.studio.make_api", return_value=mock_api):
             code, out, err = run_cli(["studio", "variable", "add", "org/demo", "MODEL", "Qwen"])
