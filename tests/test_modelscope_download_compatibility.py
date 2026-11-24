@@ -1,4 +1,4 @@
-"""从真实 modelscope shim 验证下载计数及历史接口兼容；只模拟底层 HTTP。"""
+"""Verify download counting and legacy API compatibility through the real modelscope shims; mock only HTTP."""
 
 from __future__ import annotations
 
@@ -144,7 +144,7 @@ def test_offline_shims_do_not_attempt_network_credentials_or_writes(sdk, tmp_pat
 
     def forbidden(*args, **kwargs):
         attempts.append(True)
-        raise AssertionError("离线入口不得访问网络、凭证或写盘")
+        raise AssertionError("offline entry points must not touch the network, credentials, or the filesystem")
 
     monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", forbidden)
     monkeypatch.setattr(config.HubConfig, "load_token", forbidden)
@@ -182,7 +182,7 @@ def test_sdk_reuses_legacy_offline_snapshot_without_network(sdk, tmp_path, monke
 
     def forbidden(*args, **kwargs):
         attempts.append(True)
-        raise AssertionError("旧缓存解析不得访问网络、凭证或写盘")
+        raise AssertionError("legacy cache resolution must not touch the network, credentials, or the filesystem")
 
     monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", forbidden)
     monkeypatch.setattr(config.HubConfig, "load_token", forbidden)
@@ -219,7 +219,7 @@ def test_missing_file_exception_is_preserved_at_the_sdk_boundary(sdk, name, tmp_
 def test_report_options_are_not_silently_injected_into_unsupported_shims(sdk):
     snapshots, _ = sdk
     if "continue_on_error" in inspect.signature(snapshots.snapshot_download).parameters:
-        pytest.skip("新版 SDK 已新增报告参数，需要对应扩展测试")
+        pytest.skip("the shim now accepts report options; extend this test to cover the supported path")
     with pytest.raises(TypeError):
         snapshots.snapshot_download(REPO, continue_on_error=True)
 

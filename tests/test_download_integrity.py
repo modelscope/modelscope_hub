@@ -772,7 +772,7 @@ class TestListingOptimisation:
         content = hub.add("a/good.bin", b"yes")
         manifest = [{"Path": "a/good.bin", "Size": 3, "Sha256": _sha256(content)}]
         monkeypatch.setattr(
-            api.legacy, "list_dataset_files_paginated", lambda *args, **kwargs: pytest.fail("列举了清单")
+            api.legacy, "list_dataset_files_paginated", lambda *args, **kwargs: pytest.fail("no listing allowed")
         )
         api.download_repo(REPO, "dataset", local_dir=dirs[0], cache_dir=dirs[1], file_list=manifest)
         assert (dirs[0] / "a/good.bin").read_bytes() == content
