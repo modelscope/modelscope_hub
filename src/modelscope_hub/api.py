@@ -2291,7 +2291,9 @@ class HubApi:
 
         The file is fetched into the local cache and a path pointing at the
         cached blob is returned. Subsequent calls reuse the cached copy
-        unless ``force=True``.
+        unless ``force=True``. A standalone file download sends no
+        ``snapshot-identifier``; the dataset service uses fractional per-file
+        counting for these requests. Model counting uses separate server logic.
 
         Parameters
         ----------
@@ -2404,6 +2406,9 @@ class HubApi:
         its JSON has the latest summary under 'report', without per-run files.
         iter_files streams temporary results owned by the live report; call
         report.close() after consumption. Persisted hints cannot prove success.
+        Every file request of a task carries one ``snapshot-identifier`` kept in
+        the same JSON: reruns of an unfinished task (PARTIAL or CANCELLED) reuse
+        it, and the run after a COMPLETE one starts a new task.
         """
         return self.downloader.download_repo_report(
             repo_id,
@@ -2441,7 +2446,11 @@ class HubApi:
         """Download an entire repository snapshot.
 
         All files at the given ``revision`` are fetched into the local cache
-        in parallel. The returned path is the snapshot root directory.
+        in parallel. The returned path is the snapshot root directory. Each
+        call is one logical snapshot download: all of its file requests,
+        including retries, resumed transfers and range parts, carry the same
+        ``snapshot-identifier`` for dataset counting within the server's
+        two-hour deduplication window. Cached files issue no download requests.
 
         Parameters
         ----------
