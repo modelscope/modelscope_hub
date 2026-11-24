@@ -5,6 +5,14 @@
 when the environment lacks it, because the shim imports its exception and ref
 types from ``huggingface_hub``; tests whose stack cannot be installed skip
 instead of failing.
+
+Every test that reaches into the ``kernels`` package (directly or through
+``modelscope_hub.kernels``) first asserts that the exact module is importable
+and skips otherwise, so a CI image without the optional extras stays green
+instead of reporting ``ModuleNotFoundError``. ``kernels`` 0.19 moved its
+modules under ``kernels._internals`` (so ``kernels.hf_hub`` and
+``kernels.locking`` no longer exist there); the lockfile cases skip on that
+layout rather than failing.
 """
 
 from __future__ import annotations
@@ -96,6 +104,25 @@ def _require_hf(submodule: str):
     if not _ensure_kernels_stack():
         pytest.skip(f"kernels/huggingface_hub unavailable: {_install_error or 'not installed'}")
     return pytest.importorskip(submodule)
+
+
+def _require_imports(*modules: str) -> None:
+    """Import optional-stack modules, skipping the test when any is missing.
+
+    ``kernels`` pulls ``huggingface_hub`` in transitively, and its submodules
+    (``kernels.hf_hub``, ``kernels._rust``, ...) fail at import time when that
+    dependency is absent. Checking the modules a test actually touches keeps
+    such environments on ``skip`` instead of a hard failure.
+    """
+    _ensure_kernels_stack()
+    missing = []
+    for module in modules:
+        try:
+            importlib.import_module(module)
+        except ImportError as e:
+            missing.append(f"{module}: {e}")
+    if missing:
+        pytest.skip("kernels stack unavailable (" + "; ".join(missing) + ")")
 
 
 @pytest.fixture(autouse=True)
@@ -742,6 +769,8 @@ def test_lock_kernels_writes_lockfile_and_uses_ms_api(tmp_path, monkeypatch):
     """lock_kernels resolves via the shim and writes the serialized locks."""
     import types
 
+    _require_imports("kernels", "kernels._rust", "kernels.hf_hub")
+
     captured = {}
     stub = types.ModuleType("kernels.locking")
 
@@ -774,6 +803,8 @@ def test_lock_kernels_default_lockfile_in_cwd(tmp_path, monkeypatch):
     """Without `lockfile` the locks land in ./kernels.lock."""
     import types
 
+    _require_imports("kernels", "kernels._rust", "kernels.hf_hub")
+
     stub = types.ModuleType("kernels.locking")
     stub.extract_dependency_locks = lambda depends, *, api: types.SimpleNamespace(to_json=lambda: "{}")
     monkeypatch.setitem(sys.modules, "kernels.locking", stub)
@@ -788,6 +819,8 @@ def test_lock_kernels_default_lockfile_in_cwd(tmp_path, monkeypatch):
 
 def test_lock_kernels_requires_kernels_018(monkeypatch):
     """A kernels install without the lockfile machinery gets an upgrade hint."""
+    _require_imports("kernels", "kernels._rust")
+
     # None in sys.modules makes `from kernels.locking import ...` fail on any
     # kernels version, simulating kernels<0.18.
     monkeypatch.setitem(sys.modules, "kernels.locking", None)
