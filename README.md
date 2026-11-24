@@ -33,14 +33,59 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 
 ## News
 
-**v0.7.2** (unreleased)
+**v0.7.2** (2026-11-24)
 - **Fix**: download counting — a snapshot download (`download_repo`, `snapshot_download`, `ms-hub download`, report mode) sends one `snapshot-identifier` per task, shared by every file, retry, resumed transfer and range part, instead of a new one per file; a resumed report-mode task keeps its identifier. Standalone file downloads (`download_file`, `model_file_download`, `dataset_file_download`, CLI file arguments) no longer send one, so the Hub counts them per file. Cached dataset meta files no longer trigger a download request
+
+**v0.7.1** (2026-11-10)
+- **Fix**: the intra-cloud region probe is bounded per hop by `MODELSCOPE_DOWNLOAD_REGION_PROBE_TIMEOUT_SECONDS` (default `1`), so a slow probe falls back to the default route instead of stalling the download
+
+**v0.7.0** (2026-11-09)
+- **Feature**: `modelscope_hub.kernels` loads optimized kernels from ModelScope (`kernels` extra); `modelscope_hub.compat.hf_hub_patcher` redirects `huggingface_hub` calls to ModelScope (`hf` extra); uploads route through the commit API instead of a git clone + push
+- **Enhance**: offline cache compatibility — `resolve_cached_snapshot` and `local_files_only` resolve standard and legacy cache layouts without network access or writes, legacy model-root links keep pre-snapshot paths valid, `ms-hub cache clear` validates scope and supports `--dry-run`, and `MODELSCOPE_CACHE` takes precedence over the `MS_CACHE_HOME` alias
+
+<details>
+<summary>v0.6.1 and older</summary>
 
 **v0.6.1** (2026-10-30)
 - **Feature**: `ms-hub download --total-timeout` (and `HubApi(download_total_timeout=...)`) sets a per-file time budget that overrides the environment variable; `0` means no limit
 - **Behaviour**: a transfer that keeps making progress is no longer capped by default — `MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT` now defaults to `0` (was `3600`), while idle timeouts, the low-speed watchdog and bounded retries still apply; set a positive value to restore a cap
 - **Fix**: a stop caused by an expired budget keeps its partial data and is reported as pending, so a plain re-run resumes it instead of requiring `--retry-failed`; trickling response headers stay bounded by the idle timeout when no overall budget is set
 - **Quality**: budget and cancellation messages are English and name both the budget and the variable that relaxes it
+
+**v0.6.0** (2026-10-29)
+- **Feature**: model and dataset writes moved to OpenAPI — repository creation, category set/update, detail reads, model option lists and repository settings; `get_model`/`get_dataset` keep the historical `Visibility` enum, while `gated_mode=True/False` is the separate application switch
+- **Breaking**: `approval_mode`, the `gated` request parameter and `--approval-mode` are removed; passing them through `**kwargs` raises `TypeError` before any request
+- **Enhance**: creation keeps the v0.5.1 legacy request format when `gated_mode` is explicit, and category/zone and set-only fields are validated before sending
+
+**v0.5.1** (2026-10-26)
+- **Feature**: `HubApi.download_repo_report` and `ms-hub download --continue-on-error` continue past isolated file failures and return a `COMPLETE`/`PARTIAL` report; `--retry-failed` reruns them and exit code `3` means partial. `download_repo` and `snapshot_download` stay strict
+- **Enhance**: recovery hints live in one hidden JSON per task (no embedded database), state is advisory and re-validated against actual size/hash, failed pages are isolated, and listings stream with bounded queues
+
+**v0.5.0** (2026-10-24)
+- **Feature**: downloads verify size and SHA-256 before replacing files, with safe resume, bounded retries, idle and total timeouts, low-speed detection, cancellation and per-file locks; an incomplete snapshot raises `FileDownloadError` (CLI exit code `1`) and keeps completed files
+- **Enhance**: every request sends the same `modelscope_hub/<version>` User-Agent, with custom information appended and CLI/compat markers propagated; errors name the next step
+- **Behaviour**: downloads and listings honour the new `MODELSCOPE_DOWNLOAD_*` and `MODELSCOPE_REPO_TREE_PAGE_*` variables listed in the environment-variable table
+
+**v0.4.6** (2026-10-09)
+- **Fix**: cross-region downloads cache a confirmed OSS-internal resolution per storage route (repository, revision and redirect endpoint) and probe routes in parallel, so a metadata route miss no longer suppresses the LFS probe or stalls the transfer
+
+**v0.4.5** (2026-09-21)
+- **Feature**: `ms agent install -r owner/name` installs an agent through a framework plugin published as a model repository, gated three times — explicit `--plugin-repo`/`MODELSCOPE_AGENT_PLUGIN_REPO`, a case-sensitive owner allow-list checked before any request, and a non-persisted trust prompt showing the manifest digest
+- **Enhance**: upload recovery retries commit-only failures without re-uploading blobs, splits policy rejections down to single files, aborts after three fully failed batches with a resumable tracker, and only warns about capacity limits
+- **Fix**: an `HTTP 200` create-commit answer carrying `Success:false` is reported as an error instead of a silent success
+
+**v0.4.4** (2026-09-20)
+- **Feature**: commit batching — at most `UPLOAD_COMMIT_BATCH_MAX_OPERATIONS` (256) actions and an 8 MiB estimated request body per commit, clamped to the server's 2000-action ceiling, with LFS pointers excluded from the body budget; oversized inline files get their own batch, and `path_in_repo` is normalised consistently below the API layer
+- **Fix**: a repository tree page answering `403` mid-enumeration is retried instead of aborting a listing that spans hundreds of requests
+
+**v0.4.3** (2026-09-15)
+- **Fix**: an agent list answering `200` with `OperationNotAllowed` is reported as a permission error instead of an empty result; MCP list replies with legacy `200` + `success:false` envelopes are decoded as errors
+
+**v0.4.2** (2026-09-10)
+- **Feature**: `delete_files` on `HubApi` and the compat `HubApi` deletes explicit paths or glob patterns resolved against the remote file list, applied as commit `delete` actions
+
+**v0.4.1** (2026-09-09)
+- **Feature**: deletions go through the commit path like uploads (`delete_files` on the commit manager), because the direct repository DELETE endpoint rejects API-token authentication
 
 **v0.4.0** (2026-09-01)
 - **Feature**: complete OpenAPI coverage for Agent-IDP, MCP, and Studios — Agent Ed25519 identities, OIDC discovery/JWKS and signed JWT issuance (`HubApi`, `ms-hub agent-idp`); Studio lists, variables and configuration options; hosted MCP discovery; protected visibility and runtime metadata; read-only tokens can log in and rejected writes name the required tier. Agent private JWKs are only written to an explicitly requested owner-only file.
@@ -55,9 +100,6 @@ The official Python SDK & CLI for [ModelScope Hub](https://modelscope.cn) — do
 **v0.3.0** (2026-08-19)
 - **Feature**: this package owns all four console scripts (`modelscope`, `ms`, `modelscope-hub`, `ms-hub`), adds `HubApi.get_current_username()`, and supports both agent visibility wire formats
 - **Fix**: large `repo/files` listings are re-enumerated when the server silently truncates results
-
-<details>
-<summary>Older releases</summary>
 
 **v0.2.0** (2026-08-01)
 - **Breaking**: `HubApi.login()` now raises `NetworkError` / `ServerError` / `RequestTimeoutError` for non-authentication failures instead of always raising `AuthenticationError` — widen `except AuthenticationError` to `HubError` if you catch *any* login failure
