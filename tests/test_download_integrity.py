@@ -70,6 +70,10 @@ class _Request:
     path: str
     range: str | None
     region: str | None
+    # ``None`` when the header is absent, so a blank value stays distinguishable.
+    snapshot: str | None = None
+    request_id: str | None = None
+    user_agent: str | None = None
 
 
 @dataclass
@@ -79,6 +83,8 @@ class _FakeHub:
     requests: list[_Request] = field(default_factory=list)
     truncated: set[str] = field(default_factory=set)
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # Zip body served by the ``/archive/zip/{revision}`` endpoint of skill repositories.
+    archive: bytes | None = None
 
     def add(self, path: str, content: bytes, **kwargs) -> bytes:
         self.files[path] = _RemoteFile(content, **kwargs)
@@ -98,7 +104,15 @@ def _handler(hub: _FakeHub) -> type[BaseHTTPRequestHandler]:
         def _record(self, kind: str, path: str) -> None:
             with hub.lock:
                 hub.requests.append(
-                    _Request(kind, path, self.headers.get("Range"), self.headers.get("x-aliyun-region-id"))
+                    _Request(
+                        kind,
+                        path,
+                        self.headers.get("Range"),
+                        self.headers.get("x-aliyun-region-id"),
+                        self.headers.get("snapshot-identifier"),
+                        self.headers.get("X-Request-ID"),
+                        self.headers.get("User-Agent"),
+                    )
                 )
 
         def _truncate_now(self, path: str) -> bool:
@@ -118,7 +132,10 @@ def _handler(hub: _FakeHub) -> type[BaseHTTPRequestHandler]:
 
         def do_GET(self) -> None:  # noqa: N802 - http.server API
             url = urlparse(self.path)
-            if url.path.endswith("/repo/tree"):
+            if "/archive/zip/" in url.path and hub.archive is not None:
+                self._record("archive", url.path)
+                return self._send(200, hub.archive, {"Content-Type": "application/zip"})
+            if url.path.endswith(("/repo/tree", "/repo/files")):
                 entries = [
                     {"Path": p, "Type": "blob", "Size": len(f.content), "Sha256": _sha256(f.content)}
                     for p, f in sorted(hub.files.items())
@@ -142,6 +159,17 @@ def _handler(hub: _FakeHub) -> type[BaseHTTPRequestHandler]:
                 self._record("cdn", path)
                 return self._serve_ranged(path)
             return self._send(404, b'{"Code": 404}', {"Content-Type": "application/json"})
+
+        def do_HEAD(self) -> None:  # noqa: N802 - http.server API
+            url = urlparse(self.path)
+            path = parse_qs(url.query).get("FilePath", [""])[0]
+            self._record("head", path)
+            redirect = url.path.endswith("/repo") and path in hub.files and hub.files[path].mode != "direct"
+            self.send_response(302 if redirect else 200)
+            if redirect:
+                self.send_header("Location", f"/cdn/{quote(path)}")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def _serve_whole(self, path: str) -> None:
             body = hub.files[path].body(self.headers.get("x-aliyun-region-id"))
@@ -744,7 +772,7 @@ class TestListingOptimisation:
         content = hub.add("a/good.bin", b"yes")
         manifest = [{"Path": "a/good.bin", "Size": 3, "Sha256": _sha256(content)}]
         monkeypatch.setattr(
-            api.legacy, "list_dataset_files_paginated", lambda *args, **kwargs: pytest.fail("列举了清单")
+            api.legacy, "list_dataset_files_paginated", lambda *args, **kwargs: pytest.fail("no listing allowed")
         )
         api.download_repo(REPO, "dataset", local_dir=dirs[0], cache_dir=dirs[1], file_list=manifest)
         assert (dirs[0] / "a/good.bin").read_bytes() == content
