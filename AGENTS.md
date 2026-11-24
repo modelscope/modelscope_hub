@@ -162,34 +162,38 @@ After changing the upload path, check whether the following must be updated as w
 
 ---
 
-## 9. 下载计数规约（`snapshot-identifier`）
+## 9. Download-Count Contract (`snapshot-identifier`)
 
-### 9.1 任务粒度与实现边界
-- `snapshot-identifier` 表示一次逻辑快照任务，不是文件、HTTP 请求、线程、进程或 UA 会话的标识。只能在 `download_repo` / `download_repo_report` 的任务入口生成一次，并显式向下透传；请求头构建器只读取标识，不生成 UUID。
-- 同一任务的所有文件、并发 worker、传输重试、完整性重试、Range 续传、并行分段及路由探测必须复用同一标识。一次单文件传输循环内复用标识，不足以证明整库粒度正确；完整性重试的外层调用链也必须覆盖。
-- 独立 `download_file`、compat 单文件、CLI 普通模式的显式文件列表及 kernels `hf_hub_download` 不发送该头。CLI 报告模式的文件列表作为快照过滤条件，仍共用任务标识；不得由 HTTP 层猜测任务类型。
-- 禁止把任务标识存成 `DownloadManager` / `HubApi` 的可变共享字段；同一实例并发或顺序发起的新任务必须相互隔离。非空白调用方标识不得被覆盖，不得替换为 UA `session_id`、拼接文件路径、合并 `X-Request-ID` 或按时间轮换。
-- 本地文件通过当前大小/可用哈希校验后，应在构建下载请求之前返回；元文件兼容路径同样必须缓存优先。不发送补计数请求，不因统计失败阻塞或伪造下载成功。
-- 报告模式复用原隐藏 JSON 的 `snapshot: {id, open}`：未结束任务复用 ID，`COMPLETE` 后新建 ID；健康文件不逐条持久化、不增加逐文件写盘。损坏、缺失或不可写的提示只能降低恢复/去重能力，不能代替文件完整性判定。
-- 严格模式每次调用是新任务；报告模式恢复必须区分新任务与旧任务。对已完成 tracker 后的新任务硬中断等未持久化边界，应说明可能多计，不承诺任意崩溃下严格去重。
+### 9.1 Task Granularity and Implementation Boundary
 
-### 9.2 服务端计数与证据边界
-- 本规约针对数据集文件入口：去重键是“数据集 ID + 标识”，不含用户、IP、文件、revision 或 UA。合格请求的非空白新标识计整库 +1；无标识/空白标识按服务端分母 N 折算。SDK 不自行提交权重，不把所有分母都假设为 1000。`Source=SDK` 与 UA 仅用于渠道归因，不能替代或修正快照标识；联调须核验目标服务协议版本。
-- HEAD、`View=true` 及根路径精确匹配的 `README.md`、`dataset_infos.json`、`.gitattributes` 不计数、不占用去重标识；嵌套目录同名文件不可套用根路径排除规则。
-- TTL 为首次占键后的 7200 秒，重复请求不刷新 TTL；超过两小时复用原 ID 仍可能再次 +1。整库 +1 发生在首个合格请求，而非完成时；302 不证明内容已接收完整，取消/失败没有回滚协议，异步去重与 DB 增量非原子，禁止宣称 exactly-once。
-- include/exclude 的快照仍按一次任务计数。模型、skill archive、显式 `download/increase` 及其他下载链路须分别核验，不推广数据集统计语义；模型计数新旧均为 0，只能记为统计未证实。
-- 每个场景先取稳定基线，再观察异步落库与稳定窗口，同时核验真实请求头、请求数、唯一 ID 数和整数/小数增量；有明确预期值时，必须断言实测增量等于预期，不能仅接受宽泛 oracle 区间。
-- legacy `Downloads` 与 OpenAPI `downloads` 的展示口径不得先验视为等价。使用 N 的整数倍独立请求检验小数折算，记录两接口差异；未读取动作日志、SQL 或部署元数据时，必须明确证据缺口，不把页面整数或动作日志条数当成 DB 精确值。
-- 抓取实际 `PreparedRequest`，大小写不敏感地核验头；仅记录必要字段及鉴权存在性，不保存 token、Cookie 值或签名 URL。WAF Cookie 不等于登录凭证，匿名断言应区分 Authorization / `m_session_id` 与普通 Cookie。
+- `snapshot-identifier` identifies one logical snapshot task, not a file, HTTP request, thread, process, or UA session. Generate it once at the `download_repo` / `download_repo_report` entry point and pass it down explicitly; header builders only read it and never generate a UUID.
+- Every file, worker, transport retry, integrity retry, Range resume, parallel part, and route probe of one task must reuse that identifier. Reuse inside a single file-transfer loop does not prove repository-wide granularity; the outer integrity-retry chain must carry it too.
+- Standalone `download_file`, compat single-file calls, an explicit file list in normal CLI mode, and kernels `hf_hub_download` must not send the header. In CLI report mode the file list is a snapshot filter and still shares the task identifier. The HTTP layer must never infer the task type.
+- Never store the identifier in a mutable shared field on `DownloadManager` or `HubApi`; concurrent or successive tasks on one instance must stay isolated. A non-blank caller-supplied identifier must not be overwritten, replaced by the UA `session_id`, derived from file paths, merged with `X-Request-ID`, or rotated over time.
+- Return a local file that passes the current size/hash check before building any download request; metadata compatibility paths are cache-first too. Never send requests only to increment counters, and never block or fake success on counting failures.
+- Report mode reuses `snapshot: {id, open}` in the existing hidden JSON: an unfinished task reuses the ID, and a new ID starts after `COMPLETE`. Healthy files are not persisted individually and no per-file writes are added. A corrupt, missing, or unwritable hint may only reduce recovery/deduplication and never replaces file-integrity validation.
+- Strict mode treats each call as a new task; report-mode resume must distinguish new from resumed tasks. For unpersisted boundaries such as a hard kill right after a `COMPLETE` tracker, state the possible over-count; never claim strict deduplication under arbitrary crashes.
 
-### 9.3 必须保留的回归矩阵
-- 涉及任务上下文、请求头、恢复状态或委托入口的变更，必须覆盖：整库 inline+LFS、多 worker、顺序与同实例并发任务、Range/断连重试/完整性重试、单文件、过滤、全缓存命中、根元文件与嵌套同名文件、报告模式取消/跨进程恢复/完成后新任务、损坏/不可写 tracker。
-- 离线测试只模拟最底层依赖，抓取实际 HTTP 请求；高层 `snapshot_download` mock 不能证明参数、UA、任务 ID 或兼容性透传正确。线上使用独立本地输出，核对下载大小/哈希和服务端实际文件列表，不用客户端上传路由预测代替服务端回显。
-- 线上验证显式固定 HTTPS 站点与授权 owner，优先复用登记的 private 测试仓库；public 只在已批准的白名单窗口开放，并在 finally 恢复 private。创建、上传、改可见性、删除不能由“验证”要求自行扩权；删除须先审批具体清单并硬校验作用域。
-- 保留未经改写的基线/失败请求证据；发现测试框架误判时记录原因并重判或重新运行，禁止通过放宽 SDK 不变量把失败变为成功。依赖/API 的既有失败应在未修改基线复现，再隔离版本验证，不混入本轮无关修复。
+### 9.2 Server-Side Counting and Evidence Boundary
 
-### 9.4 `modelscope` 与 Hub 双包兼容验收
-- “最新版本”必须核验官方稳定发布包及依赖约束，记录 wheel SHA-256、两包版本和实际导入路径；本地 `+main`、旧 editable 安装或 egg-info 不能充当最新发布版证据。使用工作区隔离环境，Hub 指向本地 `src`，不替换用户全局环境。
-- 从真实 `modelscope` 入口验证 snapshot/dataset snapshot、模型/数据集单文件、`HubApi.download_model` 与品牌 CLI；保留历史 positional 参数、`revision`、`cache_dir`、`local_dir`、token/endpoint 透传、str 返回值、异常和 UA `invoked_by/compat` / `invoked_by/cli`。
-- 必须覆盖线上下载、缓存复用和 `local_files_only`；离线不仅要返回正确路径，还必须确认无网络尝试、凭证初始化或写盘。shim 不支持的新报告参数应记录能力边界，不能动态打补丁伪装支持。
-- 不通过修改消费者/vLLM、新增 Hugging Face 依赖或运行时 hook 交付下载计数修复；安装可选依赖仅为隔离回归使用。修改影响第 8 节集成时仍执行其真实 vLLM 验证要求。
+- Scope is the dataset file endpoint. The deduplication key is dataset ID + identifier and excludes user, IP, file, revision, and UA. A qualifying request with a non-blank new identifier counts +1 for the dataset; a missing or blank identifier accrues fractionally against the server denominator N. The SDK never submits weights and never assumes N=1000. `Source=SDK` and UA are channel attribution only; they never replace or correct the snapshot identifier, and integrations must confirm the target protocol version.
+- HEAD, `View=true`, and exactly root-level `README.md`, `dataset_infos.json`, and `.gitattributes` are neither counted nor deduplicated. Same-named files in nested directories do not inherit the root-path exclusion.
+- The TTL is 7200 s from first insertion and repeats do not refresh it, so reusing an ID after two hours may count again. The +1 occurs on the first qualifying request, not at completion. A 302 does not prove full receipt, cancellation or failure has no rollback protocol, and asynchronous deduplication is not atomic with the DB increment. Never claim exactly-once.
+- Snapshots with include/exclude filters still count as one task. Model, skill archive, explicit `download/increase`, and other download paths must be verified separately; dataset semantics must not be generalized. Model counts remain 0 for both SDK generations and are recorded as unconfirmed only.
+- For every scenario, take a stable baseline, then observe asynchronous persistence within a stability window while verifying actual request headers, request count, unique-ID count, and integer/fractional delta. When an expected value exists, assert equality with the measured delta; a broad oracle range is not sufficient.
+- Legacy `Downloads` and OpenAPI `downloads` must not be assumed equivalent. Probe fractional conversion with independent requests at integer multiples of N and record both readings. Without action logs, SQL, or deployment metadata, state the evidence gap; never treat a page integer or a log-line count as the exact DB value.
+- Inspect the actual `PreparedRequest` with case-insensitive header lookup and record only required fields plus credential presence. Never persist tokens, cookie values, or presigned URLs. A WAF cookie is not a login credential; anonymous assertions must distinguish `Authorization` / `m_session_id` from ordinary cookies.
+
+### 9.3 Mandatory Regression Matrix
+
+- Changes touching task context, request headers, recovery state, or delegating entry points must cover: inline+LFS repositories, multiple workers, sequential and same-instance concurrent tasks, Range/disconnect/integrity retries, single file, filters, full cache hit, root metadata plus same-named nested files, report-mode cancellation / cross-process resume / a new task after `COMPLETE`, and a corrupt or unwritable tracker.
+- Offline tests mock only the lowest-level dependency and capture real HTTP requests; a high-level `snapshot_download` mock cannot prove argument, UA, task-ID, or compatibility propagation. Online runs use isolated local output, compare downloaded size/hash against the server-side file listing, and never substitute client-side upload routing for server echo.
+- Online verification pins the HTTPS endpoint and an authorized owner and prefers registered private test repositories. Public visibility is opened only in an approved whitelist window and restored to private in `finally`. Creation, upload, visibility change, and deletion are never self-authorized by "verification" needs; deletion requires prior approval of the exact list plus hard scope checks.
+- Preserve unmodified baseline and failure request evidence. When a framework assertion is found incorrect, record why and re-judge or rerun; never turn a failure into a pass by relaxing SDK invariants. Reproduce pre-existing dependency/API failures on the unmodified baseline, then isolate the version and verify, without folding them into the current fix.
+
+### 9.4 `modelscope` and Hub Dual-Package Compatibility
+
+- "Latest version" means the official stable release: verify its dependency constraint and record the wheel SHA-256, both package versions, and the actual import path. A local `+main` tree, a stale editable install, or egg-info is not evidence of a release. Use an isolated workspace environment with Hub pointing at local `src`; never replace the user's global environment.
+- Verify from real `modelscope` entry points: snapshot, dataset snapshot, model and dataset single file, `HubApi.download_model`, and the branded CLI. Preserve historical positional arguments, `revision`, `cache_dir`, `local_dir`, token and endpoint propagation, `str` return values, exceptions, and the UA markers `invoked_by/compat` / `invoked_by/cli`.
+- Cover online download, cache reuse, and `local_files_only`. Offline must not only return the correct path but also prove no network attempt, credential initialization, or disk write. Report parameters unsupported by a shim are recorded as capability boundaries and never faked by dynamic patching.
+- Never deliver a download-count fix by modifying consumers or vLLM, adding a Hugging Face dependency, or runtime hooks; optional installs serve isolated regression only. A change that affects the Section 8 integration still requires its real-vLLM verification.
