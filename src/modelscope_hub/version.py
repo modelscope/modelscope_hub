@@ -1,3 +1,3 @@
 """Version information for modelscope_hub."""
 
-__version__ = "0.7.2+main"
+__version__ = "0.8.0+main"
