@@ -75,10 +75,15 @@ def format_timesince(ts: float) -> str:
 # ---------------------------------------------------------------------------
 # Table rendering
 # ---------------------------------------------------------------------------
-def _cell(value: object, max_width: int) -> str:
-    """Stringify a cell, replacing ``None`` with ``-`` and truncating overlong text."""
+def _cell(value: object, max_width: int | None) -> str:
+    """Stringify a cell, replacing ``None`` with ``-`` and truncating overlong text.
+
+    ``max_width=None`` disables truncation for that cell — identifiers the user
+    must copy verbatim (e.g. studio secret keys, legal up to 128 bytes on the
+    server) must survive rendering untruncated.
+    """
     text = "-" if value is None else str(value)
-    if len(text) > max_width:
+    if max_width is not None and len(text) > max_width:
         return text[: max_width - 1] + "…"
     return text
 
@@ -89,19 +94,30 @@ def tabulate(
     *,
     sep: str = "  ",
     max_width: int = 80,
+    max_widths: Sequence[int | None] | None = None,
 ) -> str:
     """Render ``rows`` as a left-aligned ASCII table.
 
     Columns auto-size to their widest cell; cells longer than ``max_width`` are
-    truncated with an ellipsis. ``None`` values render as ``-``.
+    truncated with an ellipsis. ``None`` values render as ``-``. Per-column
+    overrides go in ``max_widths``: an entry of ``None`` leaves that column
+    untruncated regardless of ``max_width`` (for copyable identifiers), an
+    ``int`` caps that column only.
 
-    Raises :class:`ValueError` if ``max_width`` is less than 1.
+    Raises :class:`ValueError` if ``max_width`` is less than 1 or ``max_widths``
+    does not match the header count.
     """
     if max_width < 1:
         raise ValueError(f"max_width must be >= 1, got {max_width}")
     ncols = len(headers)
+    if max_widths is None:
+        limits: list[int | None] = [max_width] * ncols
+    else:
+        limits = list(max_widths)
+        if len(limits) != ncols:
+            raise ValueError(f"max_widths must have one entry per column ({ncols}), got {len(limits)}")
     str_rows: list[list[str]] = [
-        [_cell(row[i] if i < len(row) else "", max_width) for i in range(ncols)] for row in rows
+        [_cell(row[i] if i < len(row) else "", limits[i]) for i in range(ncols)] for row in rows
     ]
 
     widths = [len(h) for h in headers]

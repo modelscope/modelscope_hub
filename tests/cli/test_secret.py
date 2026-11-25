@@ -128,10 +128,18 @@ class TestSecretAddExecute:
         args = parser.parse_args(["secret", "add", "org/demo", "API_KEY", "sk-xxx"])
         with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
             _SecretAdd(args).execute()
-        mock_api.add_secret.assert_called_once_with("org/demo", "API_KEY", "sk-xxx", "studio")
+        mock_api.add_secret.assert_called_once_with("org/demo", "API_KEY", "sk-xxx", "studio", description=None)
         out = capsys.readouterr().out
         assert "Added" in out
         assert "API_KEY" in out
+
+    def test_add_secret_with_description(self, parser, mock_api, capsys):
+        args = parser.parse_args(["secret", "add", "org/demo", "API_KEY", "sk-xxx", "--description", "used by app"])
+        with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
+            _SecretAdd(args).execute()
+        mock_api.add_secret.assert_called_once_with(
+            "org/demo", "API_KEY", "sk-xxx", "studio", description="used by app"
+        )
 
 
 @pytest.mark.mock_only
@@ -152,6 +160,37 @@ class TestSecretListExecute:
         out = capsys.readouterr().out
         assert "no secrets" in out
 
+    def test_list_keeps_full_long_keys(self, parser, mock_api, capsys):
+        # Server-legal keys run to 128 bytes; the key column must render
+        # untruncated so it stays copyable for update/delete.
+        long_key = "K" * 128
+        mock_api.list_secrets.return_value = [{"key": long_key, "description": "d"}]
+        args = parser.parse_args(["secret", "list", "org/demo"])
+        with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
+            _SecretList(args).execute()
+        out = capsys.readouterr().out
+        assert long_key in out
+        assert "…" not in out.split(long_key)[0]
+
+    def test_list_truncates_long_descriptions(self, parser, mock_api, capsys):
+        mock_api.list_secrets.return_value = [{"key": "API_KEY", "description": "D" * 200}]
+        args = parser.parse_args(["secret", "list", "org/demo"])
+        with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
+            _SecretList(args).execute()
+        out = capsys.readouterr().out
+        assert "API_KEY" in out
+        assert "…" in out
+
+    def test_list_renders_no_updated_at_column(self, parser, mock_api, capsys):
+        # StudioSecretItem carries no timestamp field; the always-"-" column
+        # was removed.
+        mock_api.list_secrets.return_value = [{"key": "API_KEY", "description": "d"}]
+        args = parser.parse_args(["secret", "list", "org/demo"])
+        with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
+            _SecretList(args).execute()
+        out = capsys.readouterr().out
+        assert "updated_at" not in out
+
 
 @pytest.mark.mock_only
 class TestSecretUpdateExecute:
@@ -159,9 +198,15 @@ class TestSecretUpdateExecute:
         args = parser.parse_args(["secret", "update", "org/demo", "KEY", "new_val"])
         with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
             _SecretUpdate(args).execute()
-        mock_api.update_secret.assert_called_once_with("org/demo", "KEY", "new_val", "studio")
+        mock_api.update_secret.assert_called_once_with("org/demo", "KEY", "new_val", "studio", description=None)
         out = capsys.readouterr().out
         assert "Updated" in out
+
+    def test_update_secret_with_empty_description_clears(self, parser, mock_api, capsys):
+        args = parser.parse_args(["secret", "update", "org/demo", "KEY", "new_val", "--description", ""])
+        with patch("modelscope_hub.cli.secret.make_api", return_value=mock_api):
+            _SecretUpdate(args).execute()
+        mock_api.update_secret.assert_called_once_with("org/demo", "KEY", "new_val", "studio", description="")
 
 
 @pytest.mark.mock_only

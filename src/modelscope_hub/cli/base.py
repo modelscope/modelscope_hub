@@ -129,9 +129,18 @@ def error(message: str) -> None:
     print(f"error: {message}", file=sys.stderr)
 
 
-def render_table(rows: Iterable[Sequence[Any]], headers: Sequence[str]) -> str:
-    """Format rows as a fixed-width text table."""
-    return _tabulate(rows, headers)
+def render_table(
+    rows: Iterable[Sequence[Any]],
+    headers: Sequence[str],
+    *,
+    max_widths: Sequence[int | None] | None = None,
+) -> str:
+    """Format rows as a fixed-width text table.
+
+    ``max_widths`` forwards per-column truncation limits to :func:`tabulate`;
+    ``None`` entries leave that column untruncated.
+    """
+    return _tabulate(rows, headers, max_widths=max_widths)
 
 
 def parse_kv_pairs(values: Iterable[str]) -> dict[str, str]:

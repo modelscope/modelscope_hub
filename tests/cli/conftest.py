@@ -88,7 +88,7 @@ def mock_api():
     )
     api.clear_cache.return_value = 2048
     api.list_secrets.return_value = [
-        {"key": "API_KEY", "description": "test", "updated_at": "2000-01-01T00:00:00Z"},
+        {"key": "API_KEY", "description": "test"},
     ]
     api.list_mcp_servers.return_value = PagedResult(
         items=[{"id": "mcp-1", "name": "weather", "description": "Weather MCP"}],
