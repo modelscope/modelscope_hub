@@ -14,11 +14,14 @@ from pathlib import Path
 from typing import TextIO
 from urllib.parse import urlsplit, urlunsplit
 
+from ._download import _new_snapshot_id
 from .errors import InvalidParameter
 from .types import DownloadFileResult, DownloadReport
 from .utils.logger import get_logger
 
 logger = get_logger("download")
+
+_SNAPSHOT_ID_RE = re.compile(r"[0-9a-f]{32}")
 
 
 def safe_error(error: BaseException) -> str:
@@ -36,10 +39,17 @@ def safe_error(error: BaseException) -> str:
 class _DownloadState:
     """Sparse JSON recovery hints, never an authority for file completeness.
 
-    Persist exceptional files, failed pages, and the latest summary together.
-    Per-file results stay in an anonymous spool owned by the returned report;
-    no permanent JSONL or per-run summary files are created. Healthy transfers
-    do not rewrite the tracker; actual partial files suffice after a crash.
+    Persist exceptional files, failed pages, the latest summary and the task's
+    snapshot identifier together. Per-file results stay in an anonymous spool
+    owned by the returned report; no permanent JSONL or per-run summary files
+    are created. Healthy transfers do not rewrite the tracker; actual partial
+    files suffice after a crash.
+
+    The snapshot identifier stays open while the task is unfinished, so a rerun
+    after a PARTIAL or CANCELLED run (or a crash) keeps counting as the same
+    snapshot download. A COMPLETE run closes it and the next run starts a new
+    task. It is written only alongside the scope header of a new tracker, an
+    exceptional record or the final summary, never as an extra write.
     """
 
     def __init__(self, path: Path, identity: dict[str, str]) -> None:
@@ -55,14 +65,23 @@ class _DownloadState:
         self._spool: TextIO | None = tempfile.TemporaryFile(mode="w+t", encoding="utf-8")
         self._counts: dict[str, int] = {}
         self._summary: dict | None = None
+        self._snapshot: dict | None = None
         self.warnings: list[str] = []
         try:
             self._load()
+            if self._snapshot is None:
+                self._snapshot = {"id": _new_snapshot_id(), "open": True}
             if not path.exists():
                 self._save()
         except BaseException:
             self.close()
             raise
+
+    @property
+    def snapshot_id(self) -> str:
+        """Identifier shared by every file request of this download task."""
+        assert self._snapshot is not None
+        return str(self._snapshot["id"])
 
     def _warn(self, message: str) -> None:
         if message not in self.warnings and len(self.warnings) < 10:
@@ -80,6 +99,14 @@ class _DownloadState:
                 raise InvalidParameter(
                     "Download tracker belongs to a different endpoint/repository/revision/output directory"
                 )
+            snapshot = data.get("snapshot")
+            if (
+                isinstance(snapshot, dict)
+                and snapshot.get("open") is True
+                and isinstance(snapshot.get("id"), str)
+                and _SNAPSHOT_ID_RE.fullmatch(snapshot["id"])
+            ):
+                self._snapshot = {"id": snapshot["id"], "open": True}
             files, pages = data.get("files", {}), data.get("pages", {})
             if not isinstance(files, dict) or not isinstance(pages, dict):
                 raise ValueError("Invalid recovery records")
@@ -121,6 +148,7 @@ class _DownloadState:
         except (ValueError, UnicodeError, OSError):
             self._exceptions.clear()
             self._pages.clear()
+            self._snapshot = None
             self._warn(
                 "Cannot load download recovery hints; continuing with actual-file validation and bounded retries"
             )
@@ -144,6 +172,7 @@ class _DownloadState:
                         "files": {path: asdict(result) for path, result in self._exceptions.items()},
                         "pages": self._pages,
                         "report": self._summary,
+                        "snapshot": self._snapshot,
                     },
                     stream,
                     ensure_ascii=False,
@@ -256,6 +285,8 @@ class _DownloadState:
         report._attach_file_results(self._spool)
         self._spool = None
         self._summary = {**asdict(report), "run_id": run}
+        if self._snapshot is not None:
+            self._snapshot["open"] = report.status != "COMPLETE"
         self._save()
         report.state_warnings = list(self.warnings)
         return report

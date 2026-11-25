@@ -1247,16 +1247,17 @@ class LegacyHubApi:
             extension = os.path.splitext(file_path)[-1]
             if extension not in dataset_meta_format:
                 continue
+            local_path = os.path.join(meta_cache_dir, file_path)
+            if os.path.exists(local_path):
+                # A cached meta file must not cost a counted download request.
+                local_paths[extension].append(local_path)
+                continue
             resp = api.legacy._request(
                 "GET",
                 f"datasets/{namespace}/{dataset_name}/repo",
                 params={"Revision": revision, "FilePath": file_path},
             )
-            local_path = os.path.join(meta_cache_dir, file_path)
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
-            if os.path.exists(local_path):
-                local_paths[extension].append(local_path)
-                continue
             with open(local_path, "wb") as f:
                 f.write(resp.content)
             local_paths[extension].append(local_path)

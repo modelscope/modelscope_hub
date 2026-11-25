@@ -8,7 +8,7 @@ Supports single-file and whole-repo (snapshot) downloads with:
 - Parallel range download (split large files into parts)
 - Per-file download retry with backoff
 - File lock for multiprocess safety
-- User-agent / snapshot headers
+- User-agent headers and a task-scoped snapshot identifier
 - Intra-cloud acceleration
 - Local-files-only (offline) mode
 - Custom progress callbacks
@@ -54,6 +54,7 @@ from .constants import (
     DOWNLOAD_PARALLEL_THRESHOLD,
     DOWNLOAD_PARALLELS,
     DOWNLOAD_PART_SIZE,
+    DOWNLOAD_REGION_PROBE_TIMEOUT_SECONDS,
     DOWNLOAD_RETRY_MAX_DELAY_SECONDS,
     DOWNLOAD_RETRY_TIMES,
     DOWNLOAD_TIMEOUT,
@@ -101,6 +102,15 @@ DOWNLOAD_INTEGRITY_RETRY_BACKOFF = 1.0
 # are quoted in integrity errors so a broken object can be traced server-side.
 _DIAGNOSTIC_HEADERS = ("x-oss-request-id", "x-request-id", "eagleid", "x-cache", "x-linked-etag")
 _CONTENT_RANGE_RE = re.compile(r"bytes\s+(\d+)-(\d+)/(\d+|\*)", re.IGNORECASE)
+
+# Groups the file requests of one logical repository snapshot download so the Hub
+# counts the task once. Standalone file downloads never send it.
+_SNAPSHOT_IDENTIFIER_HEADER = "snapshot-identifier"
+
+
+def _new_snapshot_id() -> str:
+    """Return a fresh identifier for one logical repository snapshot download."""
+    return uuid.uuid4().hex
 
 
 # ---------------------------------------------------------------------------
@@ -653,6 +663,7 @@ class DownloadManager:
         # None defers to MODELSCOPE_DOWNLOAD_TOTAL_TIMEOUT; 0 or less means no limit.
         self._total_timeout = total_timeout
         self._cached_region: str | None = None
+        self._region_probe_failures = 0
         self._region_lock = threading.Lock()
         # Cache only confirmed OSS-internal resolutions. A repository can contain
         # Git metadata and LFS objects behind different download routes, so cache
@@ -672,17 +683,34 @@ class DownloadManager:
 
         return append_user_agent(self._user_agent, user_agent)
 
-    def _detect_region(self) -> str:
-        """Probe the region only once per DownloadManager instance."""
-        with self._region_lock:
-            if self._cached_region is None:
-                self._cached_region = ""
-                self._cached_region = self._detect_region_uncached()
-            return self._cached_region
+    # A probe that never reached the endpoint says nothing about the machine's
+    # location, so the result is not cached and a later call probes again. The
+    # budget keeps a broken route from costing a probe timeout on every file.
+    _REGION_PROBE_MAX_ATTEMPTS = 2
 
-    def _detect_region_uncached(self) -> str:
+    def _detect_region(self) -> str:
+        """Probe the region once per DownloadManager instance.
+
+        An inconclusive probe (the endpoint never answered) is retried on a
+        later call rather than cached: caching it would silently drop
+        intra-cloud acceleration for every remaining download of this instance.
+        """
+        with self._region_lock:
+            if self._cached_region is not None:
+                return self._cached_region
+            region = self._detect_region_uncached()
+            if region is not None:
+                self._cached_region = region
+                return region
+            self._region_probe_failures += 1
+            if self._region_probe_failures >= self._REGION_PROBE_MAX_ATTEMPTS:
+                self._cached_region = ""
+            return ""
+
+    def _detect_region_uncached(self) -> str | None:
         endpoint = self._client.endpoint
         internal_url = f"{endpoint}/api/v1/repos/internalAccelerationInfo"
+        timeout = DOWNLOAD_REGION_PROBE_TIMEOUT_SECONDS
 
         def _get(url: str, timeout: float):
             try:
@@ -699,18 +727,20 @@ class DownloadManager:
                 return None
 
         region_id = ""
-        resp = _get(internal_url, 0.2)
-        if resp is not None:
-            data = resp.json()
-            query_addr = ""
-            if "Data" in data:
-                query_addr = data["Data"].get("InternalRegionQueryAddress", "")
-            if query_addr:
-                domain_resp = _get(query_addr, 0.2)
-                if domain_resp is not None:
-                    region_id = domain_resp.text.strip()
+        resp = _get(internal_url, timeout)
+        if resp is None:
+            # Unreachable endpoint: no conclusion about this machine may be
+            # cached, so the caller can probe again on a later call.
+            return None
+        data = resp.json()
+        query_addr = ""
+        if "Data" in data:
+            query_addr = data["Data"].get("InternalRegionQueryAddress", "")
+        if query_addr:
+            domain_resp = _get(query_addr, timeout)
+            if domain_resp is not None:
+                region_id = domain_resp.text.strip()
 
-        self._cached_region = region_id
         return region_id
 
     # OSS internal endpoint hostname pattern:
@@ -846,14 +876,22 @@ class DownloadManager:
         user_agent: dict | str | None = None,
         *,
         accelerate: bool = True,
+        snapshot_id: str | None = None,
     ) -> dict[str, str]:
+        """Build the headers shared by every attempt of one file transfer.
+
+        *snapshot_id* identifies the snapshot download the file belongs to and is
+        sent verbatim when non-blank. It is never generated here: standalone file
+        downloads pass ``None`` and send no snapshot identifier.
+        """
         from .constants import _env, _env_bool
 
         headers: dict[str, str] = {
             "user-agent": self._build_user_agent(user_agent),
-            "snapshot-identifier": uuid.uuid4().hex,
             "Accept-Encoding": "identity",
         }
+        if snapshot_id and snapshot_id.strip():
+            headers[_SNAPSHOT_IDENTIFIER_HEADER] = snapshot_id
         if accelerate and _env_bool(ENV_INTRA_CLOUD_ACCELERATION, True):
             region = (_env(ENV_INTRA_CLOUD_REGION, "INTRA_CLOUD_ACCELERATION_REGION") or "").strip()
             if not region:
@@ -884,8 +922,13 @@ class DownloadManager:
         progress_callbacks: list[type[ProgressCallback]] | None = None,
         _cancel_event: threading.Event | None = None,
         _recovery: _RecoveryBudget | None = None,
+        _snapshot_id: str | None = None,
     ) -> Path:
-        """Download one file with cache-first lookup and a shared budget for locks, probes, and retries."""
+        """Download one file with cache-first lookup and a shared budget for locks, probes, and retries.
+
+        *_snapshot_id* is supplied only by snapshot downloads. A standalone call
+        sends no snapshot identifier, so the Hub counts it per file.
+        """
         with _DownloadControl(
             total_timeout=DOWNLOAD_TOTAL_TIMEOUT if self._total_timeout is None else self._total_timeout,
             cancel_event=_cancel_event,
@@ -913,6 +956,7 @@ class DownloadManager:
                     user_agent,
                     progress_callbacks,
                     _control=control,
+                    _snapshot_id=_snapshot_id,
                 )
 
     def _download_file(
@@ -931,6 +975,7 @@ class DownloadManager:
         progress_callbacks: list[type[ProgressCallback]] | None = None,
         *,
         _control: _DownloadControl,
+        _snapshot_id: str | None = None,
     ) -> Path:
         """Download a single file from a repository.
 
@@ -971,6 +1016,9 @@ class DownloadManager:
         progress_callbacks:
             List of :class:`ProgressCallback` *classes* (not instances).
             Each class is instantiated per-file with ``(filename, file_size)``.
+        _snapshot_id:
+            Identifier of the enclosing snapshot download, reused by every
+            attempt including integrity retries. ``None`` for standalone downloads.
 
         Returns
         -------
@@ -1049,6 +1097,7 @@ class DownloadManager:
                         prefer_default_route=prefer_default_route,
                         control=_control,
                         expected_sha256=expected_sha256,
+                        snapshot_id=_snapshot_id,
                     )
                     break
                 except FileIntegrityError as exc:
@@ -1134,8 +1183,15 @@ class DownloadManager:
         user_agent: dict | str | None = None,
         progress_callbacks: list[type[ProgressCallback]] | None = None,
         file_list: list[dict] | None = None,
+        _snapshot_id: str | None = None,
     ) -> Path:
         """Download an entire repository (snapshot download).
+
+        Each call is one logical snapshot download: every file request it issues,
+        including retries, resumed transfers and range parts, carries the same
+        ``snapshot-identifier`` for server-side dataset deduplication. A non-blank
+        caller-supplied *_snapshot_id* is preserved; otherwise a fresh one is generated.
+        Files that are already cached issue no requests.
 
         Parameters
         ----------
@@ -1268,6 +1324,8 @@ class DownloadManager:
             logger.info("No files to download for %s@%s", repo_id, effective_revision)
             return output_dir
 
+        snapshot_id = _snapshot_id if _snapshot_id and _snapshot_id.strip() else _new_snapshot_id()
+        logger.debug("Snapshot download %s of %s@%s", snapshot_id, repo_id, effective_revision)
         logger.info("Downloading %d files from %s@%s", len(download_items), repo_id, effective_revision)
 
         failures: dict[str, BaseException] = {}
@@ -1293,6 +1351,7 @@ class DownloadManager:
                 user_agent=user_agent,
                 progress_callbacks=progress_callbacks,
                 _cancel_event=cancel_event,
+                _snapshot_id=snapshot_id,
             )
             futures[future] = fp
 
@@ -1785,6 +1844,7 @@ class DownloadManager:
         prefer_default_route: bool = False,
         control: _DownloadControl,
         expected_sha256: str | None = None,
+        snapshot_id: str | None = None,
     ) -> Path:
         """Download a file with HTTP Range resume support and retry.
 
@@ -1794,11 +1854,14 @@ class DownloadManager:
         body whose size contradicts the listing raises
         :class:`~.errors.FileSizeMismatchError` and leaves no partial file.
         *prefer_default_route* skips intra-cloud and peer-region routing so a
-        retry can avoid a replica that served bad content.
+        retry can avoid a replica that served bad content. *snapshot_id* is
+        carried by every attempt, range part and route probe of this file.
         """
         use_parallel = file_size is not None and file_size > DOWNLOAD_PARALLEL_THRESHOLD and DOWNLOAD_PARALLELS > 1
 
-        download_headers = self._build_download_headers(user_agent, accelerate=not prefer_default_route)
+        download_headers = self._build_download_headers(
+            user_agent, accelerate=not prefer_default_route, snapshot_id=snapshot_id
+        )
 
         # Inter-region acceleration: first discover the file's storage route,
         # then cache only a confirmed internal resolution for that exact route.

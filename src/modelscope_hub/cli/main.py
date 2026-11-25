@@ -39,6 +39,7 @@ from .base import CLICommand, error, info
 from .cache import CacheCommand, _CacheClear, _CacheScan
 from .deploy import DeployCommand, LogsCommand, SettingsCommand, StopCommand
 from .download import DownloadCommand
+from .kernels import KernelsCommand
 from .login import LoginCommand, LogoutCommand, WhoamiCommand
 from .mcp import McpCommand
 from .repo import CreateCommand, DeleteCommand, InfoCommand, ListCommand, RepoCommand
@@ -68,6 +69,7 @@ _COMMANDS = [
     CacheCommand,
     AgentCommand,
     AgentIdpCommand,
+    KernelsCommand,
 ]
 
 # Plugin entry-point group name
