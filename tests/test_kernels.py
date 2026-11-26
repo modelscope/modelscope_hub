@@ -692,8 +692,9 @@ def test_list_repo_refs_uses_real_commit_when_exposed():
     """A real hash in the revisions entry becomes target_commit verbatim."""
     fake = mock.MagicMock()
     real = "b" * 40
+    # "Sha" is the field name the platform's revisions API actually returns.
     fake.legacy.list_revisions_detail.return_value = (
-        [{"Revision": "master", "Commit": real}],
+        [{"Revision": "master", "Sha": real}],
         [],
     )
     api = MsKernelApi(hub_api=fake)
@@ -705,6 +706,14 @@ def test_list_repo_refs_uses_real_commit_when_exposed():
     # pass through unchanged (relies on the platform accepting hash revisions).
     api.snapshot_download("kernels-community/activation", repo_type="kernel", revision=real)
     assert fake.download_repo.call_args.kwargs["revision"] == real
+
+
+def test_ref_target_commit_probes_alias_keys():
+    """Commit/CommitHash/commit aliases work alongside the real ``Sha`` key."""
+    from modelscope_hub.kernels._hub import _ref_target_commit
+
+    for key in ("Sha", "Commit", "CommitHash", "commit"):
+        assert _ref_target_commit("r", {"Revision": "v1", key: "e" * 40}) == "e" * 40
 
 
 def test_list_repo_refs_synthetic_v1_inherits_master_commit():

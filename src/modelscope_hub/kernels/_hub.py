@@ -47,9 +47,11 @@ _COMMIT_HASH_RE = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 # accepted by ``Oid.from_str`` in kernels 0.18.
 _REAL_COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}", re.IGNORECASE)
 
-# Keys a ModelScope revisions entry may use to carry the real commit hash
-# (probed in order; none exists today, so synthetic OIDs stay the default).
-_COMMIT_KEY_CANDIDATES = ("Commit", "CommitHash", "commit")
+# Keys a ModelScope revisions entry may use to carry the real commit hash.
+# ``Sha`` is the field the platform's revisions API actually returns
+# (verified against the pre-production environment); the others are kept as
+# defensive aliases. Without a hash the synthetic OID stays the default.
+_COMMIT_KEY_CANDIDATES = ("Sha", "Commit", "CommitHash", "commit")
 
 _LOCKFILE_COMMIT_HINT = (
     "Revision {revision!r} looks like a commit hash. Commit hashes are "
