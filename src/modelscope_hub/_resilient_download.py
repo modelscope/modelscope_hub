@@ -81,6 +81,9 @@ def download_repo_report(
     A tracker is scoped to endpoint, repo, revision and output, not include
     patterns, so repeated ten-file batches share quarantine and retry budgets.
     retry_failed is an explicit operator-authorized reset, never automatic.
+    Every file request of the task carries the snapshot identifier kept in the
+    tracker: reruns of an unfinished task reuse it, and the run after a
+    COMPLETE one starts a new task.
     """
     if not repo_id or max_workers < 1:
         raise InvalidParameter("repo_id and a positive max_workers are required")
@@ -160,6 +163,8 @@ def _run(
     cache_dir: Path | None,
 ) -> DownloadReport:
     run = uuid.uuid4().hex
+    snapshot_id = state.snapshot_id
+    logger.debug("Snapshot download %s of %s@%s", snapshot_id, repo_id, revision)
     report = DownloadReport(repo_id=repo_id, revision=revision, output_dir=str(output), tracker_path=str(state.path))
     stop = threading.Event()
     incoming: queue.Queue[tuple[dict | None, str | None]] = queue.Queue(maxsize=workers * 4)
@@ -273,6 +278,7 @@ def _run(
                 progress_callbacks=callbacks,
                 _cancel_event=stop,
                 _recovery=recovery,
+                _snapshot_id=snapshot_id,
             )
         except _DownloadCancelledError:
             state.finish(result.path, result.status if result.status in ("FAILED", "DEFERRED") else "PENDING")
