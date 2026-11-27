@@ -1,6 +1,7 @@
 """Monkey-patching of the ``kernels`` library onto the ModelScope Hub.
 
-Only ``kernels.hf_hub._get_hf_api`` is replaced; every download, file
+Only kernels' Hub-API factory (``_get_hf_api`` in ``kernels.hf_hub``, or
+``kernels._internals.hf_hub`` since 0.19) is replaced; every download, file
 listing, and revision lookup that ``kernels`` performs goes through
 :class:`modelscope_hub.kernels._hub.MsKernelApi`, so the kernel loading,
 variant resolution, and dependency logic stay untouched.
@@ -17,28 +18,57 @@ re-targeted from the legacy ``modelscope`` SDK to ``modelscope_hub``.
 from __future__ import annotations
 
 import contextlib
+import importlib
 import sys
+from types import ModuleType
 
 from modelscope_hub.kernels._hub import MsKernelApi
 
 __all__ = ["patch_kernels_hub", "patch_scope", "unpatch_kernels_hub"]
 
 
+def _kernels_package() -> str:
+    """The package holding kernels' private modules: whatever the installed layout.
+
+    kernels 0.19 moved every private module under ``kernels._internals``
+    (``kernels.hf_hub`` became ``kernels._internals.hf_hub``); earlier releases
+    keep them at the top level. Requires ``kernels`` to be installed.
+    """
+    try:
+        importlib.import_module("kernels._internals")
+        return "kernels._internals"
+    except ImportError:
+        return "kernels"
+
+
+def _kernels_submodule(name: str) -> ModuleType:
+    """Import a private ``kernels`` submodule (e.g. ``"locking"``) whatever its layout.
+
+    Importing by name (rather than ``from kernels.x import y``) resolves to the
+    very module object ``kernels`` itself bound its helpers from, which is what
+    the patch below has to replace. Raises ``ImportError`` when the submodule
+    does not exist.
+    """
+    return importlib.import_module(f"{_kernels_package()}.{name}")
+
+
 def _import_kernels_api_module():
     """Return the module holding ``_get_hf_api`` in the installed ``kernels``.
 
-    kernels >= 0.17 renamed ``kernels.utils`` to ``kernels.hf_hub`` (with
-    ``_get_hf_api`` moved along); support both layouts. Returns ``None``
-    when ``kernels`` is not installed.
+    kernels 0.19 keeps it in ``kernels._internals.hf_hub``, 0.17–0.18 in
+    ``kernels.hf_hub``, and older releases in ``kernels.utils``; support all
+    three layouts. Returns ``None`` when ``kernels`` is not installed.
     """
     try:
-        import kernels.hf_hub as kernels_api
+        import kernels  # noqa: F401
     except ImportError:
+        return None
+    for module_name in ("_internals.hf_hub", "hf_hub", "utils"):
         try:
-            import kernels.utils as kernels_api
+            return importlib.import_module(f"kernels.{module_name}")
         except ImportError:
-            return None
-    return kernels_api
+            continue
+    return None
 
 
 def _ms_api(user_agent=None):

@@ -15,6 +15,7 @@ from pathlib import Path
 from types import ModuleType
 
 from ..errors import InvalidParameter
+from ..kernels._patch import _kernels_submodule
 from .base import CLICommand, error, info
 
 
@@ -33,7 +34,7 @@ def _require_kernels() -> ModuleType:
 def _require_kernels_locking() -> None:
     """Fail early with an upgrade hint when ``kernels`` predates lockfiles."""
     try:
-        import kernels.locking  # noqa: F401
+        _kernels_submodule("locking")
     except ImportError as e:
         raise InvalidParameter(
             "Kernel lockfiles require `kernels>=0.18`, which is not installed. Upgrade with: pip install -U kernels",
@@ -46,8 +47,10 @@ def _read_dependencies(project_dir: Path) -> dict[str, int | str]:
         import tomllib
     except ImportError:
         try:
-            from kernels.compat import tomllib  # kernels>=0.18 ships a fallback
-        except ImportError:
+            # kernels>=0.18 ships a fallback in its `compat` module (top level
+            # before 0.19, `kernels._internals.compat` since).
+            tomllib = _kernels_submodule("compat").tomllib
+        except (AttributeError, ImportError):
             try:
                 import tomli as tomllib  # explicit fallback for Python < 3.11
             except ImportError as e:

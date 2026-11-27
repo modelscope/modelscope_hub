@@ -12,7 +12,8 @@ Method-to-method mapping:
 - ``snapshot_download``      -> :meth:`modelscope_hub.HubApi.download_repo`
 - ``hf_hub_download``        -> :meth:`modelscope_hub.HubApi.download_file`
 - ``list_repo_refs``         -> :meth:`modelscope_hub.legacy.list_revisions_detail`
-- ``list_repo_tree``         -> :meth:`modelscope_hub.HubApi.list_repo_files`
+- ``repo_info``               -> same revisions data, resolved to a commit for ``revision=``
+- ``list_repo_tree``         -> :meth:`modelscope_hub.HubApi.list_repo_files``
 - ``get_organization_overview`` -> local trusted-publisher allowlist
 
 ``huggingface_hub`` is imported lazily inside the methods that need its
@@ -47,9 +48,11 @@ _COMMIT_HASH_RE = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 # accepted by ``Oid.from_str`` in kernels 0.18.
 _REAL_COMMIT_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}", re.IGNORECASE)
 
-# Keys a ModelScope revisions entry may use to carry the real commit hash
-# (probed in order; none exists today, so synthetic OIDs stay the default).
-_COMMIT_KEY_CANDIDATES = ("Commit", "CommitHash", "commit")
+# Keys a ModelScope revisions entry may use to carry the real commit hash.
+# ``Sha`` is the field the platform's revisions API actually returns
+# (verified against the pre-production environment); the others are kept as
+# defensive aliases. Without a hash the synthetic OID stays the default.
+_COMMIT_KEY_CANDIDATES = ("Sha", "Commit", "CommitHash", "commit")
 
 _LOCKFILE_COMMIT_HINT = (
     "Revision {revision!r} looks like a commit hash. Commit hashes are "
@@ -283,6 +286,24 @@ class MsKernelApi:
                 GitRefInfo(name="v1", ref="refs/heads/v1", target_commit=_ref_target_commit(repo_id, master))
             )
         return SimpleNamespace(branches=branch_refs, tags=tag_refs, converts=[])
+
+    def repo_info(self, repo_id: str | None = None, *, repo_type: str | None = None, revision=None, **kwargs):
+        """Resolve a revision to its commit, mirroring the subset of ``HfApi.repo_info`` kernels uses.
+
+        kernels only reads ``.sha`` — to turn a branch/tag ``revision=`` into
+        the commit it points at (full commit hashes never reach this method).
+        The commit is whatever :meth:`list_repo_refs` reports for the ref: the
+        platform's real hash, or the synthetic OID that the download entry
+        points translate back to the ref name.
+        """
+        if repo_id is None:
+            raise ValueError("`repo_id` must be provided.")
+        name = _ms_revision(_resolve_revision(revision))
+        refs = self.list_repo_refs(repo_id, repo_type=repo_type)
+        for ref in refs.branches + refs.tags:
+            if ref.name == name:
+                return SimpleNamespace(sha=ref.target_commit)
+        raise modelscope_hub.NotExistError(f"Revision {name!r} does not exist in {repo_id}.")
 
     def list_repo_tree(
         self,

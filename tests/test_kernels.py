@@ -5,14 +5,6 @@
 when the environment lacks it, because the shim imports its exception and ref
 types from ``huggingface_hub``; tests whose stack cannot be installed skip
 instead of failing.
-
-Every test that reaches into the ``kernels`` package (directly or through
-``modelscope_hub.kernels``) first asserts that the exact module is importable
-and skips otherwise, so a CI image without the optional extras stays green
-instead of reporting ``ModuleNotFoundError``. ``kernels`` 0.19 moved its
-modules under ``kernels._internals`` (so ``kernels.hf_hub`` and
-``kernels.locking`` no longer exist there); the lockfile cases skip on that
-layout rather than failing.
 """
 
 from __future__ import annotations
@@ -20,6 +12,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import types
 from pathlib import Path
 from unittest import mock
 
@@ -29,7 +22,14 @@ from modelscope_hub import FileInfo
 from modelscope_hub.errors import CacheNotFound, NotExistError
 from modelscope_hub.kernels import get_kernel as kernels_get_kernel
 from modelscope_hub.kernels._hub import MsKernelApi, _ms_repo_type, _ms_revision
-from modelscope_hub.kernels._patch import _ms_api, patch_kernels_hub, patch_scope, unpatch_kernels_hub
+from modelscope_hub.kernels._patch import (
+    _kernels_package,
+    _kernels_submodule,
+    _ms_api,
+    patch_kernels_hub,
+    patch_scope,
+    unpatch_kernels_hub,
+)
 
 #: ``huggingface_hub`` only arrives as a transitive dependency of ``kernels``,
 #: so the default ``pip install -e ".[dev]"`` test environment provides neither.
@@ -104,25 +104,6 @@ def _require_hf(submodule: str):
     if not _ensure_kernels_stack():
         pytest.skip(f"kernels/huggingface_hub unavailable: {_install_error or 'not installed'}")
     return pytest.importorskip(submodule)
-
-
-def _require_imports(*modules: str) -> None:
-    """Import optional-stack modules, skipping the test when any is missing.
-
-    ``kernels`` pulls ``huggingface_hub`` in transitively, and its submodules
-    (``kernels.hf_hub``, ``kernels._rust``, ...) fail at import time when that
-    dependency is absent. Checking the modules a test actually touches keeps
-    such environments on ``skip`` instead of a hard failure.
-    """
-    _ensure_kernels_stack()
-    missing = []
-    for module in modules:
-        try:
-            importlib.import_module(module)
-        except ImportError as e:
-            missing.append(f"{module}: {e}")
-    if missing:
-        pytest.skip("kernels stack unavailable (" + "; ".join(missing) + ")")
 
 
 @pytest.fixture(autouse=True)
@@ -375,10 +356,24 @@ def test_trusted_publisher_allowlist_env_extension(monkeypatch):
 @pytest.fixture
 def kernels_modules():
     kernels = pytest.importorskip("kernels")
-    kernels_hf_hub = pytest.importorskip("kernels.hf_hub")
-    kernels_load = pytest.importorskip("kernels.load")
+    # kernels 0.19 moved its private modules under `kernels._internals`; the
+    # submodule helper resolves whichever layout is installed.
+    kernels_hf_hub = _kernels_submodule("hf_hub")
+    kernels_load = _kernels_submodule("load")
 
     return kernels, kernels_hf_hub, kernels_load
+
+
+def test_kernels_submodule_resolves_installed_layout():
+    """The submodule helper follows the installed kernels layout (0.19 `_internals` or older flat)."""
+    pytest.importorskip("kernels")
+    hf_hub = _kernels_submodule("hf_hub")
+    assert hf_hub.__name__ in ("kernels._internals.hf_hub", "kernels.hf_hub")
+    assert callable(hf_hub._get_hf_api)
+    assert _kernels_submodule("hf_hub") is hf_hub  # resolves through sys.modules
+    assert hf_hub is sys.modules[hf_hub.__name__]
+    with pytest.raises(ImportError):
+        _kernels_submodule("no_such_submodule")
 
 
 def test_patch_kernels_hub_roundtrip(kernels_modules):
@@ -549,9 +544,9 @@ def test_install_kernel_all_variants_wrapper_scopes_the_patch(kernels_modules, m
         calls["patched"] = kernels_hf_hub._get_hf_api is _ms_api
         return Path("/cache/build")
 
-    # `install_kernel_all_variants` lives in the `kernels.install` submodule
+    # `install_kernel_all_variants` lives in kernels' `install` submodule
     # and is not exported on the `kernels` top level.
-    monkeypatch.setattr(kernels.install, "install_kernel_all_variants", fake_install_all)
+    monkeypatch.setattr(_kernels_submodule("install"), "install_kernel_all_variants", fake_install_all)
 
     result = install_kernel_all_variants("kernels-community/activation", version=1)
     assert result == Path("/cache/build")
@@ -719,8 +714,9 @@ def test_list_repo_refs_uses_real_commit_when_exposed():
     """A real hash in the revisions entry becomes target_commit verbatim."""
     fake = mock.MagicMock()
     real = "b" * 40
+    # "Sha" is the field name the platform's revisions API actually returns.
     fake.legacy.list_revisions_detail.return_value = (
-        [{"Revision": "master", "Commit": real}],
+        [{"Revision": "master", "Sha": real}],
         [],
     )
     api = MsKernelApi(hub_api=fake)
@@ -732,6 +728,42 @@ def test_list_repo_refs_uses_real_commit_when_exposed():
     # pass through unchanged (relies on the platform accepting hash revisions).
     api.snapshot_download("kernels-community/activation", repo_type="kernel", revision=real)
     assert fake.download_repo.call_args.kwargs["revision"] == real
+
+
+def test_repo_info_resolves_revision_to_commit():
+    """`repo_info(revision=<ref>)` reports the same commit `list_repo_refs` gives the ref."""
+    fake = mock.MagicMock()
+    real = "c" * 40
+    fake.legacy.list_revisions_detail.return_value = (
+        [{"Revision": "master", "Sha": real}, {"Revision": "v1"}],
+        [{"Revision": "v1.5"}],
+    )
+    api = MsKernelApi(hub_api=fake)
+
+    # Real hash when the platform exposes one; "main" maps to "master".
+    assert api.repo_info("kernels-community/activation", revision="main").sha == real
+    assert api.repo_info("kernels-community/activation", revision="master").sha == real
+    # Without one, the synthetic OID — which the download entry points translate back.
+    v1 = api.repo_info("kernels-community/activation", revision="v1").sha
+    assert v1 == api.list_repo_refs("kernels-community/activation").branches[1].target_commit
+    # Tags resolve too.
+    assert (
+        api.repo_info("kernels-community/activation", revision="v1.5").sha
+        == api.list_repo_refs("kernels-community/activation").tags[0].target_commit
+    )
+    # Unknown refs fail the way a missing revision does on the Hub.
+    with pytest.raises(NotExistError):
+        api.repo_info("kernels-community/activation", revision="nope")
+    with pytest.raises(ValueError):
+        api.repo_info(None, revision="master")
+
+
+def test_ref_target_commit_probes_alias_keys():
+    """Commit/CommitHash/commit aliases work alongside the real ``Sha`` key."""
+    from modelscope_hub.kernels._hub import _ref_target_commit
+
+    for key in ("Sha", "Commit", "CommitHash", "commit"):
+        assert _ref_target_commit("r", {"Revision": "v1", key: "e" * 40}) == "e" * 40
 
 
 def test_list_repo_refs_synthetic_v1_inherits_master_commit():
@@ -765,23 +797,44 @@ def test_ref_target_commit_falls_back_to_synthetic_oid():
 # ---------------------------------------------------------------------------
 # lock_kernels: writing a ModelScope-resolved lockfile
 # ---------------------------------------------------------------------------
-def test_lock_kernels_writes_lockfile_and_uses_ms_api(tmp_path, monkeypatch):
-    """lock_kernels resolves via the shim and writes the serialized locks."""
+def _locking_module_name() -> str:
+    """The installed kernels layout's `locking` module name (needs the kernels extra).
+
+    Computed from the layout rather than imported: kernels 0.17 has no locking
+    module at all, and the stubs below must still land under the right name.
+    """
+    pytest.importorskip("kernels")
+    return f"{_kernels_package()}.locking"
+
+
+def _stub_locking_module(monkeypatch, **attrs):
+    """Replace kernels' `locking` submodule with a stub under its installed name.
+
+    kernels 0.19 keeps it at `kernels._internals.locking`, older releases at
+    `kernels.locking`; `lock_kernels` imports whichever is installed, so the
+    stub must land under that exact name.
+    """
     import types
 
-    _require_imports("kernels", "kernels._rust", "kernels.hf_hub")
+    name = _locking_module_name()
+    stub = types.ModuleType(name)
+    for attr, value in attrs.items():
+        setattr(stub, attr, value)
+    monkeypatch.setitem(sys.modules, name, stub)
+    return stub
 
+
+def test_lock_kernels_writes_lockfile_and_uses_ms_api(tmp_path, monkeypatch):
+    """lock_kernels resolves via the shim and writes the serialized locks."""
     captured = {}
-    stub = types.ModuleType("kernels.locking")
 
     def extract_dependency_locks(depends, *, api):
         captured["depends"], captured["api"] = depends, api
         return types.SimpleNamespace(to_json=lambda: '{"repo": "stub"}')
 
-    stub.extract_dependency_locks = extract_dependency_locks
     # 0.17 kernels has no locking module; 0.18+ has one. Either way the stub
     # wins for this test and monkeypatch restores the real module afterwards.
-    monkeypatch.setitem(sys.modules, "kernels.locking", stub)
+    _stub_locking_module(monkeypatch, extract_dependency_locks=extract_dependency_locks)
 
     from modelscope_hub.kernels import lock_kernels
     from modelscope_hub.kernels._hub import MsKernelApi
@@ -801,13 +854,10 @@ def test_lock_kernels_writes_lockfile_and_uses_ms_api(tmp_path, monkeypatch):
 
 def test_lock_kernels_default_lockfile_in_cwd(tmp_path, monkeypatch):
     """Without `lockfile` the locks land in ./kernels.lock."""
-    import types
-
-    _require_imports("kernels", "kernels._rust", "kernels.hf_hub")
-
-    stub = types.ModuleType("kernels.locking")
-    stub.extract_dependency_locks = lambda depends, *, api: types.SimpleNamespace(to_json=lambda: "{}")
-    monkeypatch.setitem(sys.modules, "kernels.locking", stub)
+    _stub_locking_module(
+        monkeypatch,
+        extract_dependency_locks=lambda depends, *, api: types.SimpleNamespace(to_json=lambda: "{}"),
+    )
     monkeypatch.chdir(tmp_path)
 
     from modelscope_hub.kernels import lock_kernels
@@ -819,11 +869,10 @@ def test_lock_kernels_default_lockfile_in_cwd(tmp_path, monkeypatch):
 
 def test_lock_kernels_requires_kernels_018(monkeypatch):
     """A kernels install without the lockfile machinery gets an upgrade hint."""
-    _require_imports("kernels", "kernels._rust")
-
-    # None in sys.modules makes `from kernels.locking import ...` fail on any
+    pytest.importorskip("kernels")
+    # None in sys.modules makes importing the locking module fail on any
     # kernels version, simulating kernels<0.18.
-    monkeypatch.setitem(sys.modules, "kernels.locking", None)
+    monkeypatch.setitem(sys.modules, _locking_module_name(), None)
 
     from modelscope_hub.kernels import lock_kernels
 

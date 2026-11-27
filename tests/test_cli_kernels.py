@@ -11,6 +11,28 @@ import pytest
 
 from modelscope_hub.cli.kernels import KernelsCommand, _read_dependencies
 from modelscope_hub.errors import InvalidParameter
+from modelscope_hub.kernels._patch import _kernels_package
+
+
+def _locking_module_name() -> str:
+    """The installed kernels layout's `locking` module name (needs the kernels extra).
+
+    Computed from the layout rather than imported: kernels 0.17 has no locking
+    module at all, and the stub below must still land under the right name.
+    """
+    pytest.importorskip("kernels")
+    return f"{_kernels_package()}.locking"
+
+
+def _stub_locking_module(monkeypatch) -> None:
+    """Register an empty kernels `locking` module under the installed layout's name.
+
+    Simulates kernels>=0.18 (the locking module exists) so the CLI's version
+    gate passes even on a 0.17 install. kernels 0.19 keeps it at
+    `kernels._internals.locking`, older releases at `kernels.locking`.
+    """
+    name = _locking_module_name()
+    monkeypatch.setitem(sys.modules, name, types.ModuleType(name))
 
 
 def _write_pyproject(tmp_path: Path, body: str) -> Path:
@@ -51,7 +73,7 @@ def test_lock_execute_assembles_the_call(tmp_path, monkeypatch, capsys):
 
     # Simulate kernels>=0.18 (the locking module exists) so the CLI's version
     # gate passes even on a 0.17 install.
-    monkeypatch.setitem(sys.modules, "kernels.locking", types.ModuleType("kernels.locking"))
+    _stub_locking_module(monkeypatch)
 
     captured = {}
 
@@ -79,7 +101,7 @@ def test_lock_execute_honours_explicit_lockfile(tmp_path, monkeypatch):
     )
     pytest.importorskip("kernels")  # load before the locking stub, see above
 
-    monkeypatch.setitem(sys.modules, "kernels.locking", types.ModuleType("kernels.locking"))
+    _stub_locking_module(monkeypatch)
 
     captured = {}
 
@@ -107,7 +129,7 @@ def test_lock_execute_rejects_non_table_dependencies(tmp_path, monkeypatch):
     project = _write_pyproject(tmp_path, "[tool.kernels]\ndependencies = 'not-a-table'\n")
     pytest.importorskip("kernels")  # load before the locking stub, see above
 
-    monkeypatch.setitem(sys.modules, "kernels.locking", types.ModuleType("kernels.locking"))
+    _stub_locking_module(monkeypatch)
 
     args = Namespace(kernels_command="lock", project_dir=project, lockfile=None)
     with pytest.raises(InvalidParameter):
