@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import ModuleType
 
-from modelscope_hub.kernels._patch import patch_scope
+from modelscope_hub.kernels._patch import _kernels_submodule, patch_scope
 
 __all__ = [
     "get_kernel",
@@ -245,9 +245,9 @@ def install_kernel_all_variants(
         `Path`: The path to the ``build`` directory of the requested kernel.
     """
     _require_kernels()
-    # Not exported on the `kernels` top level (0.17/0.18); live in the
-    # `kernels.install` submodule, which `kernels` itself imports at load time.
-    from kernels.install import install_kernel_all_variants as _install_all
+    # Not exported on the `kernels` top level (0.17/0.18); lives in kernels'
+    # `install` submodule, which `kernels` itself imports at load time.
+    _install_all = _kernels_submodule("install").install_kernel_all_variants
 
     with patch_scope():
         return _install_all(
@@ -347,8 +347,8 @@ def lock_kernels(
     ``kernels.lock`` JSON file that :func:`get_locked_kernel` /
     :func:`load_kernel` (and ``kernels`` itself) can consume.
 
-    Requires ``kernels>=0.18``: the lockfile machinery (``kernels.locking``)
-    does not exist in older releases.
+    Requires ``kernels>=0.18``: the lockfile machinery (kernels' ``locking``
+    module) does not exist in older releases.
 
     Args:
         dependencies (`dict[str, int | str]`):
@@ -374,7 +374,8 @@ def lock_kernels(
     _require_kernels()
     try:
         from kernels._rust import KernelDependency, KernelVersion
-        from kernels.locking import extract_dependency_locks
+
+        locking = _kernels_submodule("locking")
     except ImportError as e:
         raise ImportError(
             "Kernel lockfiles require `kernels>=0.18`, which is not installed. Upgrade with: pip install -U kernels"
@@ -390,9 +391,9 @@ def lock_kernels(
     with patch_scope():
         # Imported inside the scope: _get_hf_api is rebound to the ModelScope
         # factory while the patch is in effect, so `api` is our shim.
-        from kernels.hf_hub import _get_hf_api
+        _get_hf_api = _kernels_submodule("hf_hub")._get_hf_api
 
-        locks = extract_dependency_locks(depends, api=_get_hf_api())
+        locks = locking.extract_dependency_locks(depends, api=_get_hf_api())
     path = Path(lockfile) if lockfile is not None else Path("kernels.lock")
     path.write_text(locks.to_json(), encoding="utf-8")
     return path
